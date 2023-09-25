@@ -1,14 +1,15 @@
 [package]
 name = "rattler_libsolv_rs"
-version.workspace = true
-edition.workspace = true
-authors = ["Adolfo Ochagavía <github@adolfo.ochagavia.nl>"]
-description = "SAT solving library for dependency resolution"
-categories.workspace = true
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-readme.workspace = true
+version = "0.1.0"
+authors = ["Adolfo Ochagavía <github@adolfo.ochagavia.nl>", "Bas Zalmstra <zalmstra.bas@gmail.com>", "Tim de Jager <tdejager89@gmail.com>" ]
+description = "Fast package resolver written in Rust (CDCL based SAT solving)"
+keywords = ["dependency", "solver", "version"]
+categories = ["algorithms"]
+homepage = "https://github.com/mamba-org/resolvo"
+repository = "https://github.com/mamba-org/resolvo"
+license = "BSD-3-Clause"
+edition = "2021"
+readme = "README.md"
 
 [dependencies]
 itertools = "0.11.0"
