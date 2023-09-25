@@ -227,7 +227,9 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         let candidate = self.pool.resolve_solvable(solvable);
         let package_name = self.pool.resolve_package_name(candidate.name_id());
         let pack = candidate.inner();
-        let Some(deps) = self.packages.get(package_name).and_then(|v| v.get(pack)) else { return Default::default(); };
+        let Some(deps) = self.packages.get(package_name).and_then(|v| v.get(pack)) else {
+            return Default::default();
+        };
 
         let mut result = Dependencies {
             requirements: Vec::with_capacity(deps.dependencies.len()),

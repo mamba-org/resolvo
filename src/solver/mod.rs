@@ -501,7 +501,9 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
     fn resolve_dependencies(&mut self, mut level: u32) -> Result<u32, Problem> {
         loop {
             // Make a decision. If no decision could be made it means the problem is satisfyable.
-            let Some((candidate, required_by, clause_id)) = self.decide() else {break};
+            let Some((candidate, required_by, clause_id)) = self.decide() else {
+                break;
+            };
 
             // Propagate the decision
             level = self.set_propagate_learn(level, candidate, required_by, clause_id)?;
