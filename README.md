@@ -16,7 +16,7 @@
 [crates-badge]: https://img.shields.io/crates/v/resolvo.svg
 
 Resolvo implements a fast package resolution algorithm based on CDCL SAT solving.
-If resolvo is unable to find a solution it outputs a human readable error message:
+If resolvo is unable to find a solution it outputs a human-readable error message:
 
 ```
 The following packages are incompatible
@@ -36,7 +36,7 @@ Originally resolvo started out as a port/fork of [libsolv](https://github.com/op
 * Resolvo has support for incremental/lazy solving. This allows users to quickly find solutions in ecosystems where retrieving package metadata is expensive.
 * Resolvo is considerably faster than libsolv in large complex cases.
 * Resolvo can easily be used in multithreaded environments.
-* Resolvo provides human readable error messages out-of-the-box.
+* Resolvo provides human-readable error messages out-of-the-box.
 * However, Libsolv is more extensive and supports more complex queries.
 
 ## Contributing 😍
