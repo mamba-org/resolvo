@@ -1,5 +1,5 @@
 [package]
-name = "rattler_libsolv_rs"
+name = "resolvo"
 version = "0.1.0"
 authors = ["Adolfo Ochagavía <github@adolfo.ochagavia.nl>", "Bas Zalmstra <zalmstra.bas@gmail.com>", "Tim de Jager <tdejager89@gmail.com>" ]
 description = "Fast package resolver written in Rust (CDCL based SAT solving)"

@@ -1,0 +1,9 @@
+---
+source: tests/solver.rs
+assertion_line: 389
+expression: solved
+---
+asdf=3
+conflicting=0
+efgh=7
+

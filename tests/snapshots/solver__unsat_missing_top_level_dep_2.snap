@@ -1,0 +1,7 @@
+---
+source: tests/solver.rs
+assertion_line: 587
+expression: error
+---
+No candidates were found for b >=14, <15.
+

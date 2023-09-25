@@ -1,0 +1,8 @@
+---
+source: tests/solver.rs
+assertion_line: 733
+expression: "solve_snapshot(provider, &[\"quetz-server\", \"pydantic 0..10\"])"
+---
+pydantic=9
+quetz-server=1
+

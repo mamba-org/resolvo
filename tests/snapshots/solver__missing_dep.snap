@@ -1,0 +1,7 @@
+---
+source: tests/solver.rs
+assertion_line: 709
+expression: "solve_snapshot(provider, &[\"a\"])"
+---
+a=1
+

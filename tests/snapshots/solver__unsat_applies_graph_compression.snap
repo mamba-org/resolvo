@@ -1,6 +1,6 @@
 ---
-source: crates/rattler_libsolv_rs/src/solver/mod.rs
-assertion_line: 1684
+source: tests/solver.rs
+assertion_line: 671
 expression: error
 ---
 The following packages are incompatible

@@ -1,0 +1,7 @@
+---
+source: tests/solver.rs
+assertion_line: 580
+expression: error
+---
+No candidates were found for fghj *.
+

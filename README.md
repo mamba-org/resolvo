@@ -23,7 +23,6 @@ The following packages are incompatible
             |-- suitcase-utils 53
 |-- suitcase-utils >=54, <100 cannot be installed because there are no viable options:
     |-- suitcase-utils 54, which conflicts with the versions reported above.
-
 ```
 
 Resolve provides a generic interface which allows integrating the solver with a variety of package managers. For instance resolvo is used in [rattler](https://github.com/mamba-org/rattler) and [pixi](https://github.com/prefix-dev/pixi) to solve packages from the conda ecosystem.

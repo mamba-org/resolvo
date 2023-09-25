@@ -1,6 +1,6 @@
 ---
-source: crates/rattler_libsolv_rs/src/solver/mod.rs
-assertion_line: 1579
+source: tests/solver.rs
+assertion_line: 565
 expression: error
 ---
 asdf * cannot be installed because there are no viable options:
