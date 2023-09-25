@@ -300,7 +300,10 @@ fn test_unit_propagation_1() {
     assert_eq!(solved.len(), 1);
     let solvable = solver.pool().resolve_solvable(solved[0]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "asdf");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "asdf"
+    );
     assert_eq!(solvable.inner().0, 1);
 }
 
@@ -318,18 +321,20 @@ fn test_unit_propagation_nested() {
 
     assert_eq!(solved.len(), 2);
 
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[0]);
+    let solvable = solver.pool().resolve_solvable(solved[0]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "asdf");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "asdf"
+    );
     assert_eq!(solvable.inner().0, 1);
 
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[1]);
+    let solvable = solver.pool().resolve_solvable(solved[1]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "efgh");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "efgh"
+    );
     assert_eq!(solvable.inner().0, 4);
 }
 
@@ -348,20 +353,20 @@ fn test_resolve_multiple() {
 
     assert_eq!(solved.len(), 2);
 
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[0])
-        ;
+    let solvable = solver.pool().resolve_solvable(solved[0]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "asdf");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "asdf"
+    );
     assert_eq!(solvable.inner().0, 2);
 
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[1])
-;
+    let solvable = solver.pool().resolve_solvable(solved[1]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "efgh");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "efgh"
+    );
     assert_eq!(solvable.inner().0, 5);
 }
 
@@ -404,12 +409,12 @@ fn test_resolve_with_nonexisting() {
 
     assert_eq!(solved.len(), 1);
 
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[0])
-        ;
+    let solvable = solver.pool().resolve_solvable(solved[0]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "asdf");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "asdf"
+    );
     assert_eq!(solvable.inner().0, 3);
 }
 
@@ -428,14 +433,7 @@ fn test_resolve_locked_top_level() {
 
     assert_eq!(solved.len(), 1);
     let solvable_id = solved[0];
-    assert_eq!(
-        solver
-            .pool()
-            .resolve_solvable(solvable_id)
-            .inner()
-            .0,
-        3
-    );
+    assert_eq!(solver.pool().resolve_solvable(solvable_id).inner().0, 3);
 }
 
 /// Should ignore lock when it is not a top level package and a newer version exists without it
@@ -454,12 +452,12 @@ fn test_resolve_ignored_locked_top_level() {
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
-    let solvable = solver
-        .pool()
-        .resolve_solvable(solved[0])
-        ;
+    let solvable = solver.pool().resolve_solvable(solved[0]);
 
-    assert_eq!(solver.pool().resolve_package_name(solvable.name_id()), "asdf");
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "asdf"
+    );
     assert_eq!(solvable.inner().0, 4);
 }
 
