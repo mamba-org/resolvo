@@ -1,3 +1,11 @@
+<a href="https://github.com/prefix-dev/pixi/">
+    <picture>
+      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/1600bd1c-a4ff-4b98-8b5b-2d4b026b444f" type="image/webp">
+      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/95ceacc1-86c7-42d5-8669-4ba91de8709f" type="image/png">
+      <img src="https://github.com/mamba-org/resolvo/assets/4995967/95ceacc1-86c7-42d5-8669-4ba91de8709f" alt="banner">
+    </picture>
+</a>
+
 # Resolvo: Fast package resolver written in Rust
 
 ![License][license-badge]
