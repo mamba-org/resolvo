@@ -1,8 +1,8 @@
 <a href="https://github.com/mamba-org/resolvo/">
     <picture>
-      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/1600bd1c-a4ff-4b98-8b5b-2d4b026b444f" type="image/webp">
-      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/95ceacc1-86c7-42d5-8669-4ba91de8709f" type="image/png">
-      <img src="https://github.com/mamba-org/resolvo/assets/4995967/95ceacc1-86c7-42d5-8669-4ba91de8709f" alt="banner">
+      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/f039aae2-a658-4b88-9dbf-3376b837e85d" type="image/webp">
+      <source srcset="https://github.com/mamba-org/resolvo/assets/4995967/7f20c0e2-756f-47bf-b3d4-9df06f9da54e" type="image/png">
+      <img src="https://github.com/mamba-org/resolvo/assets/4995967/7f20c0e2-756f-47bf-b3d4-9df06f9da54e" alt="banner">
     </picture>
 </a>
 
