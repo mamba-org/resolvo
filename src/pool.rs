@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 
+use crate::internal::id::StringId;
 use crate::{
     internal::{
         arena::Arena,
@@ -9,7 +10,6 @@ use crate::{
     solvable::{InternalSolvable, Solvable},
     PackageName, VersionSet,
 };
-use crate::internal::id::StringId;
 
 /// A pool that stores data related to the available packages.
 ///
@@ -65,8 +65,7 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
 
     /// Interns a generic string into the `Pool` and returns its `StringId`. Strings are
     /// deduplicated.
-    pub fn intern_string(&self, name: impl Into<String> + AsRef<str>) -> StringId
-    {
+    pub fn intern_string(&self, name: impl Into<String> + AsRef<str>) -> StringId {
         if let Some(id) = self.string_to_ids.get_copy(name.as_ref()) {
             return id;
         }
@@ -89,9 +88,9 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
     ///
     /// The original name can be resolved using the [`Self::resolve_package_name`] function.
     pub fn intern_package_name<NValue>(&self, name: NValue) -> NameId
-        where
-            NValue: Into<N>,
-            N: Clone,
+    where
+        NValue: Into<N>,
+        N: Clone,
     {
         let name = name.into();
         if let Some(id) = self.names_to_ids.get_copy(&name) {

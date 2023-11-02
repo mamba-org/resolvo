@@ -791,7 +791,7 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                                 .display_candidates(self.pool, &[solvable_id])
                         )?;
                     }
-                    &ConflictCause::Disabled(solvable_id, _) => continue,
+                    ConflictCause::Disabled(_, _) => continue,
                 };
             }
         }

@@ -799,10 +799,7 @@ fn test_disabled() {
 
 #[test]
 fn test_merge_disabled() {
-    let mut provider = BundleBoxProvider::from_packages(&[
-        ("a", 1, vec![]),
-        ("a", 2, vec![]),
-    ]);
+    let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![]), ("a", 2, vec![])]);
     provider.set_disabled("a", 1, "it is externally disabled");
     provider.set_disabled("a", 2, "it is externally disabled");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
@@ -810,9 +807,7 @@ fn test_merge_disabled() {
 
 #[test]
 fn test_root_disabled() {
-    let mut provider = BundleBoxProvider::from_packages(&[
-        ("a", 1, vec![]),
-    ]);
+    let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![])]);
     provider.set_disabled("a", 1, "it is externally disabled");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
 }

@@ -19,6 +19,7 @@ mod solver;
 
 use itertools::Itertools;
 
+use crate::internal::id::StringId;
 pub use internal::{
     id::{NameId, SolvableId, VersionSetId},
     mapping::Mapping,
@@ -30,7 +31,6 @@ use std::{
     fmt::{Debug, Display},
     hash::Hash,
 };
-use crate::internal::id::StringId;
 
 /// The solver is based around the fact that for for every package name we are trying to find a
 /// single variant. Variants are grouped by their respective package name. A package name is
@@ -143,8 +143,8 @@ pub trait SolvableDisplay<VS: VersionSet, Name: PackageName = String> {
 pub struct DefaultSolvableDisplay;
 
 impl<VS: VersionSet, Name: Hash + Eq> SolvableDisplay<VS, Name> for DefaultSolvableDisplay
-    where
-        VS::V: Ord,
+where
+    VS::V: Ord,
 {
     fn display_candidates(
         &self,
