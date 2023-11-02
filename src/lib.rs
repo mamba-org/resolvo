@@ -19,9 +19,8 @@ mod solver;
 
 use itertools::Itertools;
 
-use crate::internal::id::StringId;
 pub use internal::{
-    id::{NameId, SolvableId, VersionSetId},
+    id::{NameId, SolvableId, StringId, VersionSetId},
     mapping::Mapping,
 };
 pub use pool::Pool;
