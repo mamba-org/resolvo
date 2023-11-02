@@ -8,6 +8,7 @@ use crate::{
     PackageName, VersionSet,
 };
 
+use crate::internal::id::StringId;
 use elsa::FrozenMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -76,6 +77,9 @@ pub(crate) enum Clause {
     /// The learnt clause id can be used to retrieve the clause's literals, which are stored
     /// elsewhere to prevent the size of [`Clause`] from blowing up
     Learnt(LearntClauseId),
+
+    /// A clause that forbids a package from being installed for an external reason.
+    Disabled(SolvableId, StringId),
 }
 
 impl Clause {
@@ -122,6 +126,10 @@ impl Clause {
         (Clause::InstallRoot, None)
     }
 
+    fn disable(candidate: SolvableId, reason: StringId) -> (Self, Option<[SolvableId; 2]>) {
+        (Clause::Disabled(candidate, reason), None)
+    }
+
     fn lock(
         locked_candidate: SolvableId,
         other_candidate: SolvableId,
@@ -160,6 +168,12 @@ impl Clause {
     ) {
         match *self {
             Clause::InstallRoot => unreachable!(),
+            Clause::Disabled(solvable, _) => {
+                visit(Literal {
+                    solvable_id: solvable,
+                    negate: true,
+                });
+            }
             Clause::Learnt(learnt_id) => {
                 for &literal in &learnt_clauses[learnt_id] {
                     visit(literal);
@@ -262,6 +276,11 @@ impl ClauseState {
 
     pub fn learnt(learnt_clause_id: LearntClauseId, literals: &[Literal]) -> Self {
         let (kind, watched_literals) = Clause::learnt(learnt_clause_id, literals);
+        Self::from_kind_and_initial_watches(kind, watched_literals)
+    }
+
+    pub fn disable(candidate: SolvableId, reason: StringId) -> Self {
+        let (kind, watched_literals) = Clause::disable(candidate, reason);
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
@@ -368,6 +387,7 @@ impl ClauseState {
 
         match self.kind {
             Clause::InstallRoot => unreachable!(),
+            Clause::Disabled(_, _) => unreachable!(),
             Clause::Learnt(learnt_id) => {
                 // TODO: we might want to do something else for performance, like keeping the whole
                 // literal in `self.watched_literals`, to avoid lookups... But first we should
@@ -413,6 +433,7 @@ impl ClauseState {
 
         match self.kind {
             Clause::InstallRoot => unreachable!(),
+            Clause::Disabled(_, _) => unreachable!(),
             Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
                 .iter()
                 .cloned()
@@ -486,6 +507,9 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             Clause::InstallRoot => write!(f, "install root"),
+            Clause::Disabled(_, reason) => {
+                write!(f, "disabled because {}", self.pool.resolve_string(reason))
+            }
             Clause::Learnt(learnt_id) => write!(f, "learnt clause {learnt_id:?}"),
             Clause::Requires(solvable_id, match_spec_id) => {
                 let match_spec = self.pool.resolve_version_set(match_spec_id).to_string();

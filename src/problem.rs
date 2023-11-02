@@ -12,6 +12,7 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
+use crate::internal::id::StringId;
 use crate::{
     internal::id::{ClauseId, SolvableId, VersionSetId},
     pool::Pool,
@@ -54,6 +55,12 @@ impl Problem {
             let clause = &solver.clauses[*clause_id].kind;
             match clause {
                 Clause::InstallRoot => (),
+                Clause::Disabled(solvable, reason) => {
+                    tracing::info!("{solvable:?} is disabled");
+                    let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
+                    let conflict = ConflictCause::Disabled(*solvable, *reason);
+                    graph.add_edge(root_node, package_node, ProblemEdge::Conflict(conflict));
+                }
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
                     let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
@@ -214,6 +221,8 @@ pub enum ConflictCause {
     Constrains(VersionSetId),
     /// It is forbidden to install multiple instances of the same dependency
     ForbidMultipleInstances,
+    /// The node was disabled
+    Disabled(SolvableId, StringId),
 }
 
 /// Represents a node that has been merged with others
@@ -290,6 +299,9 @@ impl ProblemGraph {
                     ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances)
                     | ProblemEdge::Conflict(ConflictCause::Locked(_)) => {
                         "already installed".to_string()
+                    }
+                    ProblemEdge::Conflict(ConflictCause::Disabled(_, reason)) => {
+                        format!("disabled because {}", pool.resolve_string(*reason))
                     }
                 };
 
@@ -396,6 +408,17 @@ impl ProblemGraph {
         'outer_loop: while let Some(nx) = dfs.next(&self.graph) {
             if self.unresolved_node == Some(nx) {
                 // The unresolved node isn't installable
+                continue;
+            }
+
+            let disabling_edges = self.graph.edges_directed(nx, Direction::Incoming).any(|e| {
+                matches!(
+                    e.weight(),
+                    ProblemEdge::Conflict(ConflictCause::Disabled(_, _))
+                )
+            });
+            if disabling_edges {
+                // Nodes with incoming disabling edges aren't installable
                 continue;
             }
 
@@ -645,6 +668,14 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                             .display_candidates(self.pool, &[solvable_id])
                     };
 
+                    let disabled = graph
+                        .edges_directed(candidate, Direction::Incoming)
+                        .find_map(|e| match e.weight() {
+                            ProblemEdge::Conflict(ConflictCause::Disabled(_, reason)) => {
+                                Some(reason)
+                            }
+                            _ => None,
+                        });
                     let already_installed = graph.edges(candidate).any(|e| {
                         e.weight() == &ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances)
                     });
@@ -656,7 +687,13 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     });
                     let is_leaf = graph.edges(candidate).next().is_none();
 
-                    if is_leaf {
+                    if let Some(disabled_reason) = disabled {
+                        writeln!(
+                            f,
+                            "{indent}{name} {version} is disabled because {reason}",
+                            reason = self.pool.resolve_string(*disabled_reason)
+                        )?;
+                    } else if is_leaf {
                         writeln!(f, "{indent}{name} {version}")?;
                     } else if already_installed {
                         writeln!(f, "{indent}{name} {version}, which conflicts with the versions reported above.")?;
@@ -740,21 +777,22 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                 };
 
                 // The only possible conflict at the root level is a Locked conflict
-                let locked_id = match conflict {
+                match conflict {
                     ConflictCause::Constrains(_) | ConflictCause::ForbidMultipleInstances => {
                         unreachable!()
                     }
-                    &ConflictCause::Locked(solvable_id) => solvable_id,
+                    &ConflictCause::Locked(solvable_id) => {
+                        let locked = self.pool.resolve_solvable(solvable_id);
+                        writeln!(
+                            f,
+                            "{indent}{} {} is locked, but another version is required as reported above",
+                            locked.name.display(self.pool),
+                            self.merged_solvable_display
+                                .display_candidates(self.pool, &[solvable_id])
+                        )?;
+                    }
+                    &ConflictCause::Disabled(solvable_id, _) => continue,
                 };
-
-                let locked = self.pool.resolve_solvable(locked_id);
-                writeln!(
-                    f,
-                    "{indent}{} {} is locked, but another version is required as reported above",
-                    locked.name.display(self.pool),
-                    self.merged_solvable_display
-                        .display_candidates(self.pool, &[locked_id])
-                )?;
             }
         }
 

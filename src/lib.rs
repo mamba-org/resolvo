@@ -9,6 +9,7 @@
 //! comments.
 
 #![deny(missing_docs)]
+
 pub(crate) mod internal;
 mod pool;
 pub mod problem;
@@ -29,6 +30,7 @@ use std::{
     fmt::{Debug, Display},
     hash::Hash,
 };
+use crate::internal::id::StringId;
 
 /// The solver is based around the fact that for for every package name we are trying to find a
 /// single variant. Variants are grouped by their respective package name. A package name is
@@ -39,6 +41,7 @@ use std::{
 ///
 /// A blanket trait implementation is provided for any type that implements [`Eq`] and [`Hash`].
 pub trait PackageName: Eq + Hash {}
+
 impl<N: Eq + Hash> PackageName for N {}
 
 /// A [`VersionSet`] is describes a set of "versions". The trait defines whether a given version
@@ -104,6 +107,12 @@ pub struct Candidates {
     /// solver doesnt actually need this information to form a solution. In general though, if the
     /// dependencies can easily be provided one should provide them up-front.
     pub hint_dependencies_available: Vec<SolvableId>,
+
+    /// A list of solvables that are available but have been disabled for reasons outside of the
+    /// solver. For example, a package might be disabled because it is not compatible with the the
+    /// runtime. The solver will not consider these solvables when forming a solution but will use
+    /// them in the error message if no solution could be found.
+    pub disabled: Vec<(SolvableId, StringId)>,
 }
 
 /// Holds information about the dependencies of a package.
@@ -134,8 +143,8 @@ pub trait SolvableDisplay<VS: VersionSet, Name: PackageName = String> {
 pub struct DefaultSolvableDisplay;
 
 impl<VS: VersionSet, Name: Hash + Eq> SolvableDisplay<VS, Name> for DefaultSolvableDisplay
-where
-    VS::V: Ord,
+    where
+        VS::V: Ord,
 {
     fn display_candidates(
         &self,

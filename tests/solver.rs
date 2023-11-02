@@ -7,6 +7,8 @@ use resolvo::{
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Formatter},
+    io::stderr,
+    io::Write,
     num::ParseIntError,
     str::FromStr,
 };
@@ -109,6 +111,7 @@ struct BundleBoxProvider {
     packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,
+    disabled: HashMap<String, HashMap<Pack, String>>,
 }
 
 struct BundleBoxPackageDependencies {
@@ -143,6 +146,13 @@ impl BundleBoxProvider {
 
     pub fn set_favored(&mut self, package_name: &str, version: u32) {
         self.favored.insert(package_name.to_owned(), Pack(version));
+    }
+
+    pub fn set_disabled(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
+        self.disabled
+            .entry(package_name.to_owned())
+            .or_default()
+            .insert(Pack(version), reason.into());
     }
 
     pub fn set_locked(&mut self, package_name: &str, version: u32) {
@@ -209,6 +219,7 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         };
         let favor = self.favored.get(package_name);
         let locked = self.locked.get(package_name);
+        let disabled = self.disabled.get(package_name);
         for pack in package.keys() {
             let solvable = self.pool.intern_solvable(name, *pack);
             candidates.candidates.push(solvable);
@@ -217,6 +228,11 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
             }
             if Some(pack) == locked {
                 candidates.locked = Some(solvable);
+            }
+            if let Some(disabled) = disabled.and_then(|d| d.get(pack)) {
+                candidates
+                    .disabled
+                    .push((solvable, self.pool.intern_string(disabled)));
             }
         }
 
@@ -273,9 +289,19 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let mut solver = Solver::new(provider);
     match solver.solve(requirements) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
-        Err(problem) => problem
-            .display_user_friendly(&solver, &DefaultSolvableDisplay)
-            .to_string(),
+        Err(problem) => {
+            // Write the problem graphviz to stderr
+            let graph = problem.graph(&solver);
+            let mut output = stderr();
+            writeln!(output, "UNSOLVABLE:").unwrap();
+            graph.graphviz(&mut output, solver.pool(), true).unwrap();
+            writeln!(output, "\n").unwrap();
+
+            // Format a user friendly error message
+            problem
+                .display_user_friendly(&solver, &DefaultSolvableDisplay)
+                .to_string()
+        }
     }
 }
 
@@ -285,9 +311,19 @@ fn solve_snapshot(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let mut solver = Solver::new(provider);
     match solver.solve(requirements) {
         Ok(solvables) => transaction_to_string(solver.pool(), &solvables),
-        Err(problem) => problem
-            .display_user_friendly(&solver, &DefaultSolvableDisplay)
-            .to_string(),
+        Err(problem) => {
+            // Write the problem graphviz to stderr
+            let graph = problem.graph(&solver);
+            let mut output = stderr();
+            writeln!(output, "UNSOLVABLE:").unwrap();
+            graph.graphviz(&mut output, solver.pool(), true).unwrap();
+            writeln!(output, "\n").unwrap();
+
+            // Format a user friendly error message
+            problem
+                .display_user_friendly(&solver, &DefaultSolvableDisplay)
+                .to_string()
+        }
     }
 }
 
@@ -553,8 +589,7 @@ fn test_unsat_locked_and_excluded() {
         ("c", 1, vec![]),
     ]);
     provider.set_locked("c", 1);
-    let error = solve_unsat(provider, &["asdf"]);
-    insta::assert_snapshot!(error);
+    insta::assert_snapshot!(solve_snapshot(provider, &["asdf"]));
 }
 
 #[test]
@@ -746,5 +781,38 @@ fn test_incremental_crash() {
         ("b", 2, vec!["a 2..4"]),
         ("b", 1, vec![]),
     ]);
+    insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
+}
+
+#[test]
+fn test_disabled() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 2, vec!["b"]),
+        ("a", 1, vec!["c"]),
+        ("b", 1, vec![]),
+        ("c", 1, vec![]),
+    ]);
+    provider.set_disabled("b", 1, "it is externally disabled");
+    provider.set_disabled("c", 1, "it is externally disabled");
+    insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
+}
+
+#[test]
+fn test_merge_disabled() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec![]),
+        ("a", 2, vec![]),
+    ]);
+    provider.set_disabled("a", 1, "it is externally disabled");
+    provider.set_disabled("a", 2, "it is externally disabled");
+    insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
+}
+
+#[test]
+fn test_root_disabled() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec![]),
+    ]);
+    provider.set_disabled("a", 1, "it is externally disabled");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
 }

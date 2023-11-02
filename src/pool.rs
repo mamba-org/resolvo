@@ -9,6 +9,7 @@ use crate::{
     solvable::{InternalSolvable, Solvable},
     PackageName, VersionSet,
 };
+use crate::internal::id::StringId;
 
 /// A pool that stores data related to the available packages.
 ///
@@ -26,6 +27,12 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
     /// Map from package names to the id of their interned counterpart
     pub(crate) names_to_ids: FrozenCopyMap<N, NameId>,
 
+    /// Interned strings
+    strings: Arena<StringId, String>,
+
+    /// Map from package names to the id of their interned counterpart
+    pub(crate) string_to_ids: FrozenCopyMap<String, StringId>,
+
     /// Interned match specs
     pub(crate) version_sets: Arena<VersionSetId, (NameId, VS)>,
 
@@ -40,9 +47,10 @@ impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
 
         Self {
             solvables,
-
             names_to_ids: Default::default(),
             package_names: Arena::new(),
+            strings: Arena::new(),
+            string_to_ids: Default::default(),
             version_set_to_id: Default::default(),
             version_sets: Arena::new(),
         }
@@ -55,14 +63,35 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         Self::default()
     }
 
+    /// Interns a generic string into the `Pool` and returns its `StringId`. Strings are
+    /// deduplicated.
+    pub fn intern_string(&self, name: impl Into<String> + AsRef<str>) -> StringId
+    {
+        if let Some(id) = self.string_to_ids.get_copy(name.as_ref()) {
+            return id;
+        }
+
+        let string = name.into();
+        let id = self.strings.alloc(string.clone());
+        self.string_to_ids.insert_copy(string, id);
+        id
+    }
+
+    /// Returns the string associated with the provided [`StringId`].
+    ///
+    /// Panics if the string is not found in the pool.
+    pub fn resolve_string(&self, string_id: StringId) -> &str {
+        &self.strings[string_id]
+    }
+
     /// Interns a package name into the `Pool`, returning its `NameId`. Names are deduplicated. If
     /// the same name is inserted twice the same `NameId` will be returned.
     ///
     /// The original name can be resolved using the [`Self::resolve_package_name`] function.
     pub fn intern_package_name<NValue>(&self, name: NValue) -> NameId
-    where
-        NValue: Into<N>,
-        N: Clone,
+        where
+            NValue: Into<N>,
+            N: Clone,
     {
         let name = name.into();
         if let Some(id) = self.names_to_ids.get_copy(&name) {
