@@ -145,7 +145,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
         while let Some(solvable_id) = queue.pop() {
             let solvable = self.pool().resolve_internal_solvable(solvable_id);
-            tracing::info!(
+            tracing::trace!(
                 "┝━ adding clauses for dependencies of {}",
                 solvable.display(self.pool())
             );
@@ -236,7 +236,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             return;
         }
 
-        tracing::info!(
+        tracing::trace!(
             "┝━ adding clauses for package '{}'",
             self.pool().resolve_package_name(package_name)
         );
@@ -368,7 +368,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 return Ok(());
             }
 
-            tracing::info!(
+            tracing::debug!(
                 "====\n==Found newly selected solvables\n- {}\n====",
                 new_solvables
                     .iter()
@@ -405,7 +405,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                 // conflict. We have to backtrack to the point where we made the
                                 // decision to select
                                 if all_candidates_assigned_false {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         "├─ there are no selectable candidates for {clause:?}",
                                         clause = self.clauses[clause_id].debug(self.pool())
                                     );
@@ -415,7 +415,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
                                     break;
                                 } else if is_empty {
-                                    tracing::info!("├─ added clause {clause:?} has no candidates which invalidates the partial solution",
+                                    tracing::debug!("├─ added clause {clause:?} has no candidates which invalidates the partial solution",
                                     clause=self.clauses[clause_id].debug(self.pool()));
 
                                     self.decision_tracker.clear();
@@ -428,7 +428,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                             if self.decision_tracker.assigned_value(forbidden) == Some(true)
                                 && self.decision_tracker.assigned_value(dependent) == Some(true)
                             {
-                                tracing::info!(
+                                tracing::debug!(
                                     "├─ {clause:?} which was already set to true",
                                     clause = self.clauses[clause_id].debug(self.pool())
                                 );
@@ -454,7 +454,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
         &mut self,
         clauses: &[ClauseId],
     ) -> Result<bool, ClauseId> {
-        tracing::info!("=== Deciding assertions for requires without candidates");
+        tracing::trace!("=== Deciding assertions for requires without candidates");
 
         let mut conflicting_clause = None;
         let mut made_a_decision = false;
@@ -476,7 +476,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                     };
 
                     if decided {
-                        tracing::info!("Set {} = false", solvable_id.display(self.pool()));
+                        tracing::debug!("Set {} = false", solvable_id.display(self.pool()));
                         made_a_decision = true;
                     }
                 }
@@ -607,7 +607,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             let r = self.propagate(level);
             let Err((conflicting_solvable, attempted_value, conflicting_clause)) = r else {
                 // Propagation succeeded
-                tracing::info!("╘══ Propagation succeeded");
+                tracing::debug!("╘══ Propagation succeeded");
                 break;
             };
 
@@ -676,7 +676,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             self.analyze(level, conflicting_solvable, conflicting_clause);
         level = new_level;
 
-        tracing::info!("├─ Backtracked to level {level}");
+        tracing::debug!("├─ Backtracked to level {level}");
 
         // Optimization: propagate right now, since we know that the clause is a unit clause
         let decision = literal.satisfying_value();
@@ -686,7 +686,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 level,
             )
             .expect("bug: solvable was already decided!");
-        tracing::info!(
+        tracing::debug!(
             "├─ Propagate after learn: {} = {decision}",
             literal.solvable_id.display(self.pool())
         );
@@ -730,7 +730,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 .map_err(|_| (literal.solvable_id, decision, clause_id))?;
 
             if decided {
-                tracing::info!(
+                tracing::trace!(
                     "├─ Propagate assertion {} = {}",
                     literal.solvable_id.display(self.pool()),
                     decision
@@ -822,7 +822,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                 // Skip logging for ForbidMultipleInstances, which is so noisy
                                 Clause::ForbidMultipleInstances(..) => {}
                                 _ => {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         "├─ Propagate {} = {}. {:?}",
                                         remaining_watch.solvable_id.display(self.cache.pool()),
                                         remaining_watch.satisfying_value(),
@@ -1038,9 +1038,9 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             self.watches.start_watching(clause, clause_id);
         }
 
-        tracing::info!("├─ Learnt disjunction:",);
+        tracing::debug!("├─ Learnt disjunction:",);
         for lit in learnt {
-            tracing::info!(
+            tracing::debug!(
                 "│  - {}{}",
                 if lit.negate { "NOT " } else { "" },
                 lit.solvable_id.display(self.pool())
