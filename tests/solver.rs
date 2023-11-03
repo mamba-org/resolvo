@@ -111,7 +111,7 @@ struct BundleBoxProvider {
     packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,
-    disabled: HashMap<String, HashMap<Pack, String>>,
+    excluded: HashMap<String, HashMap<Pack, String>>,
 }
 
 struct BundleBoxPackageDependencies {
@@ -148,8 +148,8 @@ impl BundleBoxProvider {
         self.favored.insert(package_name.to_owned(), Pack(version));
     }
 
-    pub fn set_disabled(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
-        self.disabled
+    pub fn exclude(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
+        self.excluded
             .entry(package_name.to_owned())
             .or_default()
             .insert(Pack(version), reason.into());
@@ -219,7 +219,7 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         };
         let favor = self.favored.get(package_name);
         let locked = self.locked.get(package_name);
-        let disabled = self.disabled.get(package_name);
+        let excluded = self.excluded.get(package_name);
         for pack in package.keys() {
             let solvable = self.pool.intern_solvable(name, *pack);
             candidates.candidates.push(solvable);
@@ -229,10 +229,10 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
             if Some(pack) == locked {
                 candidates.locked = Some(solvable);
             }
-            if let Some(disabled) = disabled.and_then(|d| d.get(pack)) {
+            if let Some(excluded) = excluded.and_then(|d| d.get(pack)) {
                 candidates
-                    .disabled
-                    .push((solvable, self.pool.intern_string(disabled)));
+                    .excluded
+                    .push((solvable, self.pool.intern_string(excluded)));
             }
         }
 
@@ -785,29 +785,29 @@ fn test_incremental_crash() {
 }
 
 #[test]
-fn test_disabled() {
+fn test_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[
         ("a", 2, vec!["b"]),
         ("a", 1, vec!["c"]),
         ("b", 1, vec![]),
         ("c", 1, vec![]),
     ]);
-    provider.set_disabled("b", 1, "it is externally disabled");
-    provider.set_disabled("c", 1, "it is externally disabled");
+    provider.exclude("b", 1, "it is externally excluded");
+    provider.exclude("c", 1, "it is externally excluded");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
 }
 
 #[test]
-fn test_merge_disabled() {
+fn test_merge_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![]), ("a", 2, vec![])]);
-    provider.set_disabled("a", 1, "it is externally disabled");
-    provider.set_disabled("a", 2, "it is externally disabled");
+    provider.exclude("a", 1, "it is externally excluded");
+    provider.exclude("a", 2, "it is externally excluded");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
 }
 
 #[test]
-fn test_root_disabled() {
+fn test_root_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![])]);
-    provider.set_disabled("a", 1, "it is externally disabled");
+    provider.exclude("a", 1, "it is externally excluded");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
 }

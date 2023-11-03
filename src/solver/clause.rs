@@ -79,7 +79,7 @@ pub(crate) enum Clause {
     Learnt(LearntClauseId),
 
     /// A clause that forbids a package from being installed for an external reason.
-    Disabled(SolvableId, StringId),
+    Excluded(SolvableId, StringId),
 }
 
 impl Clause {
@@ -126,8 +126,8 @@ impl Clause {
         (Clause::InstallRoot, None)
     }
 
-    fn disable(candidate: SolvableId, reason: StringId) -> (Self, Option<[SolvableId; 2]>) {
-        (Clause::Disabled(candidate, reason), None)
+    fn exclude(candidate: SolvableId, reason: StringId) -> (Self, Option<[SolvableId; 2]>) {
+        (Clause::Excluded(candidate, reason), None)
     }
 
     fn lock(
@@ -168,7 +168,7 @@ impl Clause {
     ) {
         match *self {
             Clause::InstallRoot => unreachable!(),
-            Clause::Disabled(solvable, _) => {
+            Clause::Excluded(solvable, _) => {
                 visit(Literal {
                     solvable_id: solvable,
                     negate: true,
@@ -279,8 +279,8 @@ impl ClauseState {
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
-    pub fn disable(candidate: SolvableId, reason: StringId) -> Self {
-        let (kind, watched_literals) = Clause::disable(candidate, reason);
+    pub fn exclude(candidate: SolvableId, reason: StringId) -> Self {
+        let (kind, watched_literals) = Clause::exclude(candidate, reason);
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
@@ -387,7 +387,7 @@ impl ClauseState {
 
         match self.kind {
             Clause::InstallRoot => unreachable!(),
-            Clause::Disabled(_, _) => unreachable!(),
+            Clause::Excluded(_, _) => unreachable!(),
             Clause::Learnt(learnt_id) => {
                 // TODO: we might want to do something else for performance, like keeping the whole
                 // literal in `self.watched_literals`, to avoid lookups... But first we should
@@ -433,7 +433,7 @@ impl ClauseState {
 
         match self.kind {
             Clause::InstallRoot => unreachable!(),
-            Clause::Disabled(_, _) => unreachable!(),
+            Clause::Excluded(_, _) => unreachable!(),
             Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
                 .iter()
                 .cloned()
@@ -507,8 +507,8 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             Clause::InstallRoot => write!(f, "install root"),
-            Clause::Disabled(_, reason) => {
-                write!(f, "disabled because {}", self.pool.resolve_string(reason))
+            Clause::Excluded(_, reason) => {
+                write!(f, "excluded because {}", self.pool.resolve_string(reason))
             }
             Clause::Learnt(learnt_id) => write!(f, "learnt clause {learnt_id:?}"),
             Clause::Requires(solvable_id, match_spec_id) => {

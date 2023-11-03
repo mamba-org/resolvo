@@ -55,10 +55,10 @@ impl Problem {
             let clause = &solver.clauses[*clause_id].kind;
             match clause {
                 Clause::InstallRoot => (),
-                Clause::Disabled(solvable, reason) => {
-                    tracing::info!("{solvable:?} is disabled");
+                Clause::Excluded(solvable, reason) => {
+                    tracing::info!("{solvable:?} is excluded");
                     let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
-                    let conflict = ConflictCause::Disabled(*solvable, *reason);
+                    let conflict = ConflictCause::Excluded(*solvable, *reason);
                     graph.add_edge(root_node, package_node, ProblemEdge::Conflict(conflict));
                 }
                 Clause::Learnt(..) => unreachable!(),
@@ -221,8 +221,8 @@ pub enum ConflictCause {
     Constrains(VersionSetId),
     /// It is forbidden to install multiple instances of the same dependency
     ForbidMultipleInstances,
-    /// The node was disabled
-    Disabled(SolvableId, StringId),
+    /// The node was excluded
+    Excluded(SolvableId, StringId),
 }
 
 /// Represents a node that has been merged with others
@@ -300,8 +300,8 @@ impl ProblemGraph {
                     | ProblemEdge::Conflict(ConflictCause::Locked(_)) => {
                         "already installed".to_string()
                     }
-                    ProblemEdge::Conflict(ConflictCause::Disabled(_, reason)) => {
-                        format!("disabled because {}", pool.resolve_string(*reason))
+                    ProblemEdge::Conflict(ConflictCause::Excluded(_, reason)) => {
+                        format!("excluded because {}", pool.resolve_string(*reason))
                     }
                 };
 
@@ -411,13 +411,15 @@ impl ProblemGraph {
                 continue;
             }
 
-            let disabling_edges = self.graph.edges_directed(nx, Direction::Incoming).any(|e| {
+            // Determine any incoming "exclude" edges to the node. This would indicate that the
+            // node is disabled for external reasons.
+            let excluding_edges = self.graph.edges_directed(nx, Direction::Incoming).any(|e| {
                 matches!(
                     e.weight(),
-                    ProblemEdge::Conflict(ConflictCause::Disabled(_, _))
+                    ProblemEdge::Conflict(ConflictCause::Excluded(_, _))
                 )
             });
-            if disabling_edges {
+            if excluding_edges {
                 // Nodes with incoming disabling edges aren't installable
                 continue;
             }
@@ -668,10 +670,10 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                             .display_candidates(self.pool, &[solvable_id])
                     };
 
-                    let disabled = graph
+                    let excluded = graph
                         .edges_directed(candidate, Direction::Incoming)
                         .find_map(|e| match e.weight() {
-                            ProblemEdge::Conflict(ConflictCause::Disabled(_, reason)) => {
+                            ProblemEdge::Conflict(ConflictCause::Excluded(_, reason)) => {
                                 Some(reason)
                             }
                             _ => None,
@@ -687,11 +689,11 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     });
                     let is_leaf = graph.edges(candidate).next().is_none();
 
-                    if let Some(disabled_reason) = disabled {
+                    if let Some(excluded_reason) = excluded {
                         writeln!(
                             f,
-                            "{indent}{name} {version} is disabled because {reason}",
-                            reason = self.pool.resolve_string(*disabled_reason)
+                            "{indent}{name} {version} is excluded because {reason}",
+                            reason = self.pool.resolve_string(*excluded_reason)
                         )?;
                     } else if is_leaf {
                         writeln!(f, "{indent}{name} {version}")?;
@@ -791,7 +793,7 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                                 .display_candidates(self.pool, &[solvable_id])
                         )?;
                     }
-                    ConflictCause::Disabled(_, _) => continue,
+                    ConflictCause::Excluded(_, _) => continue,
                 };
             }
         }

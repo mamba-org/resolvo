@@ -107,11 +107,11 @@ pub struct Candidates {
     /// dependencies can easily be provided one should provide them up-front.
     pub hint_dependencies_available: Vec<SolvableId>,
 
-    /// A list of solvables that are available but have been disabled for reasons outside of the
-    /// solver. For example, a package might be disabled because it is not compatible with the
+    /// A list of solvables that are available but have been excluded from the solver. For example,
+    /// a package might be excluded from the solver because it is not compatible with the
     /// runtime. The solver will not consider these solvables when forming a solution but will use
     /// them in the error message if no solution could be found.
-    pub disabled: Vec<(SolvableId, StringId)>,
+    pub excluded: Vec<(SolvableId, StringId)>,
 }
 
 /// Holds information about the dependencies of a package.

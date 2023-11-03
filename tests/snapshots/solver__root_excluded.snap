@@ -4,5 +4,5 @@ expression: "solve_snapshot(provider, &[\"a\"])"
 ---
 The following packages are incompatible
 |-- a * cannot be installed because there are no viable options:
-    |-- a 1 is disabled because it is externally disabled
+    |-- a 1 is excluded because it is externally excluded
 

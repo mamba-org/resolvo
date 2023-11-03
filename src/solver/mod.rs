@@ -285,15 +285,15 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             }
         }
 
-        // Disable any solvable that was externally disabled
-        for (solvable, reason) in package_candidates.disabled.iter().copied() {
-            let clause_id = self.clauses.alloc(ClauseState::disable(solvable, reason));
+        // Add a clause for solvables that are externally excluded.
+        for (solvable, reason) in package_candidates.excluded.iter().copied() {
+            let clause_id = self.clauses.alloc(ClauseState::exclude(solvable, reason));
 
             // Immediately add the decision to unselect this solvable. This should be fine because
             // no other decision should have been made about this solvable in the first place.
-            let disable_decision = Decision::new(solvable, false, clause_id);
+            let exclude_descision = Decision::new(solvable, false, clause_id);
             self.decision_tracker
-                .try_add_fixed_assignment(disable_decision)
+                .try_add_fixed_assignment(exclude_descision)
                 .expect("already decided about a solvable that wasn't properly added yet.");
 
             // No need to add watches for this clause because the clause is an assertion on which
