@@ -49,7 +49,7 @@ pub struct Solver<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> 
     root_requirements: Vec<VersionSetId>,
 }
 
-impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Solver<VS, N, D> {
+impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> Solver<VS, N, D> {
     /// Create a solver, using the provided pool
     pub fn new(provider: D) -> Self {
         Self {
@@ -71,7 +71,9 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
     pub fn pool(&self) -> &Pool<VS, N> {
         self.cache.pool()
     }
+}
 
+impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Solver<VS, N, D> {
     /// Solves the provided `jobs` and returns a transaction from the found solution
     ///
     /// Returns a [`Problem`] if no solution was found, which provides ways to inspect the causes
@@ -283,6 +285,21 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             }
         }
 
+        // Add a clause for solvables that are externally excluded.
+        for (solvable, reason) in package_candidates.excluded.iter().copied() {
+            let clause_id = self.clauses.alloc(ClauseState::exclude(solvable, reason));
+
+            // Immediately add the decision to unselect this solvable. This should be fine because
+            // no other decision should have been made about this solvable in the first place.
+            let exclude_descision = Decision::new(solvable, false, clause_id);
+            self.decision_tracker
+                .try_add_fixed_assignment(exclude_descision)
+                .expect("already decided about a solvable that wasn't properly added yet.");
+
+            // No need to add watches for this clause because the clause is an assertion on which
+            // we already decided.
+        }
+
         self.clauses_added_for_package.insert(package_name);
     }
 
@@ -460,27 +477,31 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
         let mut made_a_decision = false;
         for &clause_id in clauses.iter() {
             let clause = &self.clauses[clause_id];
-            if let Clause::Requires(solvable_id, _) = clause.kind {
-                if !clause.has_watches() {
-                    // A requires clause without watches means it has a single literal (i.e.
-                    // there are no candidates)
-                    let decided = match self
-                        .decision_tracker
-                        .try_add_fixed_assignment(Decision::new(solvable_id, false, clause_id))
-                    {
-                        Ok(decided) => decided,
-                        Err(_) => {
-                            conflicting_clause = Some(clause_id);
-                            true
-                        }
-                    };
+            let decision = match clause.kind {
+                // A requires clause without watches means it has a single literal (i.e.
+                // there are no candidates)
+                Clause::Requires(solvable_id, _) if !clause.has_watches() => self
+                    .decision_tracker
+                    .try_add_fixed_assignment(Decision::new(solvable_id, false, clause_id))
+                    .map(|b| b.then_some(solvable_id)),
+                _ => continue,
+            };
 
-                    if decided {
-                        tracing::debug!("Set {} = false", solvable_id.display(self.pool()));
-                        made_a_decision = true;
-                    }
+            match decision {
+                Ok(Some(solvable_id)) => {
+                    // We made a decision without conflict.
+                    tracing::debug!("Set {} = false", solvable_id.display(self.pool()));
+                    made_a_decision = true;
                 }
-            }
+                Err(_) => {
+                    // Decision immediately caused a conflict!
+                    conflicting_clause = Some(clause_id);
+                    made_a_decision = true;
+                }
+                Ok(None) => {
+                    // No new decision
+                }
+            };
         }
 
         match conflicting_clause {
@@ -555,13 +576,22 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                         None => (count, possible_decision),
                         Some((best_count, _)) if count < best_count => {
                             (count, possible_decision)
-                        },
+                        }
                         Some(best_decision) => best_decision,
                     })
-                },
+                }
                 ControlFlow::Break(_) => continue,
                 ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
             }
+        }
+
+        if let Some((count, (candidate, solvable_id, _clause_id))) = best_decision {
+            tracing::info!(
+                "deciding to assign {} with {} candidates (required by {})",
+                candidate.display(self.pool()),
+                count,
+                solvable_id.display(self.pool())
+            );
         }
 
         // Could not find a requirement that needs satisfying.

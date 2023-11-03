@@ -18,6 +18,21 @@ impl ArenaId for NameId {
     }
 }
 
+/// The id associated with a generic string
+#[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
+pub struct StringId(u32);
+
+impl ArenaId for StringId {
+    fn from_usize(x: usize) -> Self {
+        Self(x as u32)
+    }
+
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// The id associated with a VersionSet.
 #[repr(transparent)]
 #[derive(Clone, Default, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
