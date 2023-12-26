@@ -456,6 +456,38 @@ fn test_resolve_with_nonexisting() {
     assert_eq!(solvable.inner().0, 3);
 }
 
+// More on this: https://github.com/prefix-dev/rip/issues/75
+#[test]
+#[traced_test]
+fn test_resolve_with_nested_deps() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("apache-airflow", 3, vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"]),
+        ("apache-airflow", 2, vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"]),
+        ("apache-airflow", 1, vec![]),
+        ("opentelemetry-api", 3, vec!["opentelemetry-sdk"]),
+        ("opentelemetry-api", 2, vec![]),
+        ("opentelemetry-api", 1, vec![]),
+        ("opentelemetry-exporter-otlp", 2, vec!["opentelemetry-grpc"]),
+        ("opentelemetry-exporter-otlp", 1, vec!["opentelemetry-grpc"]),
+        ("opentelemetry-grpc", 2, vec!["opentelemetry-api 2..4", "opentelemetry-sdk"]),
+        ("opentelemetry-grpc", 1, vec!["opentelemetry-api 1"]),
+
+    ]);
+    let requirements = provider.requirements(&["apache-airflow"]);
+    let mut solver = Solver::new(provider);
+    let solved = solver.solve(requirements).unwrap();
+
+    assert_eq!(solved.len(), 1);
+
+    let solvable = solver.pool().resolve_solvable(solved[0]);
+
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "apache-airflow"
+    );
+    assert_eq!(solvable.inner().0, 1);
+}
+
 /// Locking a specific package version in this case a lower version namely `3` should result
 /// in the higher package not being considered
 #[test]
