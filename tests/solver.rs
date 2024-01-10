@@ -461,15 +461,22 @@ fn test_resolve_with_nonexisting() {
 #[should_panic] // TODO: Should be fixed, https://github.com/prefix-dev/rip/issues/75
 fn test_resolve_with_nested_deps() {
     let provider = BundleBoxProvider::from_packages(&[
-        ("apache-airflow", 3, vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"]),
-        ("apache-airflow", 2, vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"]),
+        (
+            "apache-airflow",
+            3,
+            vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"],
+        ),
+        (
+            "apache-airflow",
+            2,
+            vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"],
+        ),
         ("apache-airflow", 1, vec![]),
         ("opentelemetry-api", 3, vec!["opentelemetry-sdk"]),
         ("opentelemetry-api", 2, vec![]),
         ("opentelemetry-api", 1, vec![]),
         ("opentelemetry-exporter-otlp", 1, vec!["opentelemetry-grpc"]),
         ("opentelemetry-grpc", 1, vec!["opentelemetry-api 1"]),
-
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let mut solver = Solver::new(provider);
