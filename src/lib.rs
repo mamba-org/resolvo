@@ -52,8 +52,11 @@ pub trait VersionSet: Debug + Display + Clone + Eq + Hash {
     /// The element type that is included in the set.
     type V: Display + Ord;
 
+    /// Options for matching versions.
+    type O;
+
     /// Evaluate membership of a version in this set.
-    fn contains(&self, v: &Self::V) -> bool;
+    fn contains(&self, v: &Self::V, options: &Self::O) -> bool;
 }
 
 /// Defines implementation specific behavior for the solver and a way for the solver to access the
@@ -75,6 +78,9 @@ pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
 
     /// Returns the dependencies for the specified solvable.
     fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
+
+    /// Returns the options that should be used when matching versions.
+    fn version_match_options(&self) -> &VS::O;
 }
 
 /// A list of candidate solvables for a specific package. This is returned from

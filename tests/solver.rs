@@ -265,6 +265,10 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
 
         result
     }
+
+    fn version_match_options(&self) -> &<Range<Pack> as VersionSet>::O {
+        &()
+    }
 }
 
 /// Create a string from a [`Transaction`]

@@ -49,7 +49,6 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     pub fn new(provider: D) -> Self {
         Self {
             provider,
-
             candidates: Default::default(),
             package_name_to_candidates: Default::default(),
             version_set_candidates: Default::default(),
@@ -123,7 +122,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     .copied()
                     .filter(|&p| {
                         let version = self.pool().resolve_internal_solvable(p).solvable().inner();
-                        version_set.contains(version)
+                        version_set.contains(version, self.provider.version_match_options())
                     })
                     .collect();
 
@@ -151,7 +150,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     .copied()
                     .filter(|&p| {
                         let version = self.pool().resolve_internal_solvable(p).solvable().inner();
-                        !version_set.contains(version)
+                        !version_set.contains(version, self.provider.version_match_options())
                     })
                     .collect();
 
@@ -165,7 +164,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     /// [`Self::get_or_cache_candidates`] sorted from highest to lowest.
     pub fn get_or_cache_sorted_candidates(&self, version_set_id: VersionSetId) -> &[SolvableId] {
         match self.version_set_to_sorted_candidates.get(&version_set_id) {
-            Some(canidates) => canidates,
+            Some(candidates) => candidates,
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
                 let matching_candidates = self.get_or_cache_matching_candidates(version_set_id);

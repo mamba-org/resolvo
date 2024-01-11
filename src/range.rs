@@ -305,8 +305,9 @@ impl<V: Ord + Clone> Range<V> {
 
 impl<T: Debug + Display + Clone + Eq + Ord + Hash> VersionSet for Range<T> {
     type V = T;
+    type O = ();
 
-    fn contains(&self, v: &Self::V) -> bool {
+    fn contains(&self, v: &Self::V, _o: &Self::O) -> bool {
         Range::contains(self, v)
     }
 }
