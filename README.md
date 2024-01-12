@@ -12,6 +12,7 @@
 [![crates.io][crates-badge]][crates]
 [![Build Status][build-badge]][build]
 [![Project Chat][chat-badge]][chat-url]
+[![Docs][docs-main-badge]][docs-main]
 
 [license-badge]: https://img.shields.io/badge/license-BSD--3--Clause-blue?style=flat-square
 [build-badge]: https://img.shields.io/github/actions/workflow/status/mamba-org/resolvo/rust-compile.yml?style=flat-square&branch=main
