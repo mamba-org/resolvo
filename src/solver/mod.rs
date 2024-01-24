@@ -293,9 +293,8 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                     .alloc(ClauseState::forbid_multiple(candidate, other_candidate));
 
                 let clause = &mut self.clauses[clause_id];
-                if clause.has_watches() {
-                    self.watches.start_watching(clause, clause_id);
-                }
+                debug_assert!(clause.has_watches());
+                self.watches.start_watching(clause, clause_id);
             }
         }
 
@@ -308,9 +307,9 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                         .alloc(ClauseState::lock(locked_solvable_id, other_candidate));
 
                     let clause = &mut self.clauses[clause_id];
-                    if clause.has_watches() {
-                        self.watches.start_watching(clause, clause_id);
-                    }
+
+                    debug_assert!(clause.has_watches());
+                    self.watches.start_watching(clause, clause_id);
                 }
             }
         }
@@ -319,15 +318,11 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
         for (solvable, reason) in package_candidates.excluded.iter().copied() {
             let clause_id = self.clauses.alloc(ClauseState::exclude(solvable, reason));
 
-            // Immediately add the decision to unselect this solvable. This should be fine because
-            // no other decision should have been made about this solvable in the first place.
-            let exclude_descision = Decision::new(solvable, false, clause_id);
-            self.decision_tracker
-                .try_add_fixed_assignment(exclude_descision)
-                .expect("already decided about a solvable that wasn't properly added yet.");
+            // Exclusions are negative assertions, tracked outside of the watcher system
+            self.negative_assertions.push((solvable, clause_id));
 
-            // No need to add watches for this clause because the clause is an assertion on which
-            // we already decided.
+            // Conflicts should be impossible here
+            debug_assert!(self.decision_tracker.assigned_value(solvable) != Some(true));
         }
 
         self.clauses_added_for_package.insert(package_name);
