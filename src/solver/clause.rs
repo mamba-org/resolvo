@@ -574,8 +574,13 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             Clause::InstallRoot => write!(f, "install root"),
-            Clause::Excluded(_, reason) => {
-                write!(f, "excluded because {}", self.pool.resolve_string(reason))
+            Clause::Excluded(solvable_id, reason) => {
+                write!(
+                    f,
+                    "{} excluded because: {}",
+                    solvable_id.display(self.pool),
+                    self.pool.resolve_string(reason)
+                )
             }
             Clause::Learnt(learnt_id) => write!(f, "learnt clause {learnt_id:?}"),
             Clause::Requires(solvable_id, match_spec_id) => {
