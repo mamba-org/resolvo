@@ -9,6 +9,7 @@ use crate::{
 };
 
 use crate::internal::id::StringId;
+use crate::solver::decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -83,31 +84,74 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
-    /// Returns the ids of the solvables that will be watched as well as the clause itself.
+    /// Returns the building blocks needed for a new [ClauseState] of the [Clause::Requires] kind.
+    ///
+    /// These building blocks are:
+    ///
+    /// - The [Clause] itself;
+    /// - The ids of the solvables that will be watched (unless there are no candidates, i.e. the
+    ///   clause is actually an assertion);
+    /// - A boolean indicating whether the clause conflicts with existing decisions. This should
+    ///   always be false when adding clauses before starting the solving process, but can be true
+    ///   for clauses that are added dynamically.
     fn requires(
-        candidate: SolvableId,
+        parent: SolvableId,
         requirement: VersionSetId,
         candidates: &[SolvableId],
-    ) -> (Self, Option<[SolvableId; 2]>) {
-        (
-            Clause::Requires(candidate, requirement),
-            if candidates.is_empty() {
-                None
-            } else {
-                Some([candidate, candidates[0]])
-            },
-        )
+        decision_tracker: &DecisionTracker,
+    ) -> (Self, Option<[SolvableId; 2]>, bool) {
+        // It only makes sense to introduce a requires clause when the parent solvable is undecided
+        // or going to be installed
+        assert_ne!(decision_tracker.assigned_value(parent), Some(false));
+
+        let kind = Clause::Requires(parent, requirement);
+        if candidates.is_empty() {
+            (kind, None, false)
+        } else {
+            match candidates
+                .iter()
+                .find(|&&c| decision_tracker.assigned_value(c) != Some(false))
+            {
+                // Watch any candidate that is not assigned to false
+                Some(watched_candidate) => (kind, Some([parent, *watched_candidate]), false),
+
+                // All candidates are assigned to false! Therefore the clause conflicts with the
+                // current decisions. There are no valid watches for it at the moment, but we will
+                // assign default ones nevertheless, because they will become valid after the solver
+                // restarts.
+                None => (kind, Some([parent, candidates[0]]), true),
+            }
+        }
     }
 
-    /// Returns the ids of the solvables that will be watched as well as the clause itself.
+    /// Returns the building blocks needed for a new [ClauseState] of the [Clause::Constrains] kind.
+    ///
+    /// These building blocks are:
+    ///
+    /// - The [Clause] itself;
+    /// - The ids of the solvables that will be watched;
+    /// - A boolean indicating whether the clause conflicts with existing decisions. This should
+    ///   always be false when adding clauses before starting the solving process, but can be true
+    ///   for clauses that are added dynamically.
     fn constrains(
-        candidate: SolvableId,
-        constrained_candidate: SolvableId,
+        parent: SolvableId,
+        forbidden_solvable: SolvableId,
         via: VersionSetId,
-    ) -> (Self, Option<[SolvableId; 2]>) {
+        decision_tracker: &DecisionTracker,
+    ) -> (Self, Option<[SolvableId; 2]>, bool) {
+        // It only makes sense to introduce a constrains clause when the parent solvable is
+        // undecided or going to be installed
+        assert_ne!(decision_tracker.assigned_value(parent), Some(false));
+
+        // If the forbidden solvable is already assigned to true, that means that there is a
+        // conflict with current decisions, because it implies the parent solvable would be false
+        // (and we just asserted that it is not)
+        let conflict = decision_tracker.assigned_value(forbidden_solvable) == Some(true);
+
         (
-            Clause::Constrains(candidate, constrained_candidate, via),
-            Some([candidate, constrained_candidate]),
+            Clause::Constrains(parent, forbidden_solvable, via),
+            Some([parent, forbidden_solvable]),
+            conflict,
         )
     }
 
@@ -243,25 +287,48 @@ impl ClauseState {
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
-    /// Shorthand method to construct a Clause::Requires without requiring complicated arguments.
+    /// Shorthand method to construct a [Clause::Requires] without requiring complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a conflict.
     pub fn requires(
         candidate: SolvableId,
         requirement: VersionSetId,
         matching_candidates: &[SolvableId],
-    ) -> Self {
-        let (kind, watched_literals) =
-            Clause::requires(candidate, requirement, matching_candidates);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
+        decision_tracker: &DecisionTracker,
+    ) -> (Self, bool) {
+        let (kind, watched_literals, conflict) = Clause::requires(
+            candidate,
+            requirement,
+            matching_candidates,
+            decision_tracker,
+        );
+
+        (
+            Self::from_kind_and_initial_watches(kind, watched_literals),
+            conflict,
+        )
     }
 
+    /// Shorthand method to construct a [Clause::Constrains] without requiring complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a conflict.
     pub fn constrains(
         candidate: SolvableId,
         constrained_package: SolvableId,
         requirement: VersionSetId,
-    ) -> Self {
-        let (kind, watched_literals) =
-            Clause::constrains(candidate, constrained_package, requirement);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
+        decision_tracker: &DecisionTracker,
+    ) -> (Self, bool) {
+        let (kind, watched_literals, conflict) = Clause::constrains(
+            candidate,
+            constrained_package,
+            requirement,
+            decision_tracker,
+        );
+
+        (
+            Self::from_kind_and_initial_watches(kind, watched_literals),
+            conflict,
+        )
     }
 
     pub fn lock(locked_candidate: SolvableId, other_candidate: SolvableId) -> Self {
@@ -556,6 +623,7 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
 mod test {
     use super::*;
     use crate::internal::arena::ArenaId;
+    use crate::solver::decision::Decision;
 
     fn clause(next_clauses: [ClauseId; 2], watched_solvables: [SolvableId; 2]) -> ClauseState {
         ClauseState {
@@ -692,6 +760,104 @@ mod test {
                 [ClauseId::from_usize(2), ClauseId::null()]
             )
         }
+    }
+
+    #[test]
+    fn test_requires_with_and_without_conflict() {
+        let mut decisions = DecisionTracker::new();
+
+        let parent = SolvableId::from_usize(1);
+        let candidate1 = SolvableId::from_usize(2);
+        let candidate2 = SolvableId::from_usize(3);
+
+        // No conflict, all candidates available
+        let (clause, conflict) = ClauseState::requires(
+            parent,
+            VersionSetId::from_usize(0),
+            &[candidate1, candidate2],
+            &decisions,
+        );
+        assert!(!conflict);
+        assert_eq!(clause.watched_literals[0], parent);
+        assert_eq!(clause.watched_literals[1], candidate1);
+
+        // No conflict, still one candidate available
+        decisions
+            .try_add_decision(Decision::new(candidate1, false, ClauseId::null()), 1)
+            .unwrap();
+        let (clause, conflict) = ClauseState::requires(
+            parent,
+            VersionSetId::from_usize(0),
+            &[candidate1, candidate2],
+            &decisions,
+        );
+        assert!(!conflict);
+        assert_eq!(clause.watched_literals[0], parent);
+        assert_eq!(clause.watched_literals[1], candidate2);
+
+        // Conflict, no candidates available
+        decisions
+            .try_add_decision(Decision::new(candidate2, false, ClauseId::null()), 1)
+            .unwrap();
+        let (clause, conflict) = ClauseState::requires(
+            parent,
+            VersionSetId::from_usize(0),
+            &[candidate1, candidate2],
+            &decisions,
+        );
+        assert!(conflict);
+        assert_eq!(clause.watched_literals[0], parent);
+        assert_eq!(clause.watched_literals[1], candidate1);
+
+        // Panic
+        decisions
+            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .unwrap();
+        let panicked = std::panic::catch_unwind(|| {
+            ClauseState::requires(
+                parent,
+                VersionSetId::from_usize(0),
+                &[candidate1, candidate2],
+                &decisions,
+            )
+        })
+        .is_err();
+        assert!(panicked);
+    }
+
+    #[test]
+    fn test_constrains_with_and_without_conflict() {
+        let mut decisions = DecisionTracker::new();
+
+        let parent = SolvableId::from_usize(1);
+        let forbidden = SolvableId::from_usize(2);
+
+        // No conflict, forbidden package not installed
+        let (clause, conflict) =
+            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+        assert!(!conflict);
+        assert_eq!(clause.watched_literals[0], parent);
+        assert_eq!(clause.watched_literals[1], forbidden);
+
+        // Conflict, forbidden package installed
+        decisions
+            .try_add_decision(Decision::new(forbidden, true, ClauseId::null()), 1)
+            .unwrap();
+        let (clause, conflict) =
+            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+        assert!(conflict);
+        assert_eq!(clause.watched_literals[0], parent);
+        assert_eq!(clause.watched_literals[1], forbidden);
+
+        // Panic
+        decisions
+            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .unwrap();
+        let panicked = std::panic::catch_unwind(|| {
+            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
+        })
+        .is_err();
+        assert!(panicked);
     }
 
     #[test]
