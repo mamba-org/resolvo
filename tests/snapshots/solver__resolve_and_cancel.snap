@@ -1,0 +1,5 @@
+---
+source: tests/solver.rs
+expression: error
+---
+cancelled!

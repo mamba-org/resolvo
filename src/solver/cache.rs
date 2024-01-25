@@ -10,13 +10,14 @@ use crate::{
 };
 use bitvec::vec::BitVec;
 use elsa::FrozenMap;
+use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.
 pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> {
-    provider: D,
+    pub(crate) provider: D,
 
     /// A mapping from package name to a list of candidates.
     candidates: Arena<CandidatesId, Candidates>,
@@ -70,11 +71,24 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
 
     /// Returns the candidates for the package with the given name. This will either ask the
     /// [`DependencyProvider`] for the entries or a cached value.
-    pub fn get_or_cache_candidates(&self, package_name: NameId) -> &Candidates {
+    ///
+    /// If the provider has requested the solving process to be cancelled, the cancellation value
+    /// will be returned as an `Err(...)`.
+    pub fn get_or_cache_candidates(
+        &self,
+        package_name: NameId,
+    ) -> Result<&Candidates, Box<dyn Any>> {
         // If we already have the candidates for this package cached we can simply return
         let candidates_id = match self.package_name_to_candidates.get_copy(&package_name) {
             Some(id) => id,
             None => {
+                // Since getting the candidates from the provider is a potentially blocking
+                // operation, we want to check beforehand whether we should cancel the solving
+                // process
+                if let Some(value) = self.provider.should_cancel_with_value() {
+                    return Err(value);
+                }
+
                 // Otherwise we have to get them from the DependencyProvider
                 let candidates = self
                     .provider
@@ -105,17 +119,23 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
         };
 
         // Returns a reference from the arena
-        &self.candidates[candidates_id]
+        Ok(&self.candidates[candidates_id])
     }
 
     /// Returns the candidates of a package that match the specified version set.
-    pub fn get_or_cache_matching_candidates(&self, version_set_id: VersionSetId) -> &[SolvableId] {
+    ///
+    /// If the provider has requested the solving process to be cancelled, the cancellation value
+    /// will be returned as an `Err(...)`.
+    pub fn get_or_cache_matching_candidates(
+        &self,
+        version_set_id: VersionSetId,
+    ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_candidates.get(&version_set_id) {
-            Some(candidates) => candidates,
+            Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
                 let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name);
+                let candidates = self.get_or_cache_candidates(package_name)?;
 
                 let matching_candidates = candidates
                     .candidates
@@ -127,23 +147,27 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     })
                     .collect();
 
-                self.version_set_candidates
-                    .insert(version_set_id, matching_candidates)
+                Ok(self
+                    .version_set_candidates
+                    .insert(version_set_id, matching_candidates))
             }
         }
     }
 
     /// Returns the candidates that do *not* match the specified requirement.
+    ///
+    /// If the provider has requested the solving process to be cancelled, the cancellation value
+    /// will be returned as an `Err(...)`.
     pub fn get_or_cache_non_matching_candidates(
         &self,
         version_set_id: VersionSetId,
-    ) -> &[SolvableId] {
+    ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_inverse_candidates.get(&version_set_id) {
-            Some(candidates) => candidates,
+            Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
                 let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name);
+                let candidates = self.get_or_cache_candidates(package_name)?;
 
                 let matching_candidates = candidates
                     .candidates
@@ -155,23 +179,30 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     })
                     .collect();
 
-                self.version_set_inverse_candidates
-                    .insert(version_set_id, matching_candidates)
+                Ok(self
+                    .version_set_inverse_candidates
+                    .insert(version_set_id, matching_candidates))
             }
         }
     }
 
     /// Returns the candidates for the package with the given name similar to
     /// [`Self::get_or_cache_candidates`] sorted from highest to lowest.
-    pub fn get_or_cache_sorted_candidates(&self, version_set_id: VersionSetId) -> &[SolvableId] {
+    ///
+    /// If the provider has requested the solving process to be cancelled, the cancellation value
+    /// will be returned as an `Err(...)`.
+    pub fn get_or_cache_sorted_candidates(
+        &self,
+        version_set_id: VersionSetId,
+    ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_to_sorted_candidates.get(&version_set_id) {
-            Some(canidates) => canidates,
+            Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let matching_candidates = self.get_or_cache_matching_candidates(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name);
+                let matching_candidates = self.get_or_cache_matching_candidates(version_set_id)?;
+                let candidates = self.get_or_cache_candidates(package_name)?;
 
-                // Sort all the candidates in order in which they should betried by the solver.
+                // Sort all the candidates in order in which they should be tried by the solver.
                 let mut sorted_candidates = Vec::new();
                 sorted_candidates.extend_from_slice(matching_candidates);
                 self.provider.sort_candidates(self, &mut sorted_candidates);
@@ -185,18 +216,32 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     }
                 }
 
-                self.version_set_to_sorted_candidates
-                    .insert(version_set_id, sorted_candidates)
+                Ok(self
+                    .version_set_to_sorted_candidates
+                    .insert(version_set_id, sorted_candidates))
             }
         }
     }
 
     /// Returns the dependencies of a solvable. Requests the solvables from the
     /// [`DependencyProvider`] if they are not known yet.
-    pub fn get_or_cache_dependencies(&self, solvable_id: SolvableId) -> &Dependencies {
+    ///
+    /// If the provider has requested the solving process to be cancelled, the cancellation value
+    /// will be returned as an `Err(...)`.
+    pub fn get_or_cache_dependencies(
+        &self,
+        solvable_id: SolvableId,
+    ) -> Result<&Dependencies, Box<dyn Any>> {
         let dependencies_id = match self.solvable_to_dependencies.get_copy(&solvable_id) {
             Some(id) => id,
             None => {
+                // Since getting the dependencies from the provider is a potentially blocking
+                // operation, we want to check beforehand whether we should cancel the solving
+                // process
+                if let Some(value) = self.provider.should_cancel_with_value() {
+                    return Err(value);
+                }
+
                 let dependencies = self.provider.get_dependencies(solvable_id);
                 let dependencies_id = self.solvable_dependencies.alloc(dependencies);
                 self.solvable_to_dependencies
@@ -205,7 +250,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
             }
         };
 
-        &self.solvable_dependencies[dependencies_id]
+        Ok(&self.solvable_dependencies[dependencies_id])
     }
 
     /// Returns true if the dependencies for the given solvable are "cheaply" available. This means

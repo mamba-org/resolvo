@@ -65,7 +65,9 @@ impl Problem {
                 &Clause::Requires(package_id, version_set_id) => {
                     let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
 
-                    let candidates = solver.cache.get_or_cache_sorted_candidates(version_set_id);
+                    let candidates = solver.cache.get_or_cache_sorted_candidates(version_set_id).unwrap_or_else(|_| {
+                        unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
+                    });
                     if candidates.is_empty() {
                         tracing::info!(
                             "{package_id:?} requires {version_set_id:?}, which has no candidates"

@@ -2,9 +2,12 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 use resolvo::{
     range::Range, Candidates, DefaultSolvableDisplay, Dependencies, DependencyProvider,
-    KnownDependencies, NameId, Pool, SolvableId, Solver, SolverCache, VersionSet, VersionSetId,
+    KnownDependencies, NameId, Pool, SolvableId, Solver, SolverCache, UnsolvableOrCancelled,
+    VersionSet, VersionSetId,
 };
 use std::{
+    any::Any,
+    cell::Cell,
     collections::HashMap,
     fmt::{Debug, Display, Formatter},
     io::stderr,
@@ -32,39 +35,44 @@ use tracing_test::traced_test;
 struct Pack {
     version: u32,
     unknown_deps: bool,
+    cancel_during_get_dependencies: bool,
 }
 
 impl Pack {
-    fn with_version(version: u32) -> Pack {
+    fn new(version: u32) -> Pack {
         Pack {
             version,
             unknown_deps: false,
+            cancel_during_get_dependencies: false,
         }
     }
 
+    fn with_unknown_deps(mut self) -> Pack {
+        self.unknown_deps = true;
+        self
+    }
+
+    fn cancel_during_get_dependencies(mut self) -> Pack {
+        self.cancel_during_get_dependencies = true;
+        self
+    }
+
     fn offset(&self, version_offset: i32) -> Pack {
-        Pack {
-            version: self.version.wrapping_add_signed(version_offset),
-            unknown_deps: self.unknown_deps,
-        }
+        let mut pack = self.clone();
+        pack.version = pack.version.wrapping_add_signed(version_offset);
+        pack
     }
 }
 
 impl From<u32> for Pack {
     fn from(value: u32) -> Self {
-        Pack {
-            version: value,
-            unknown_deps: false,
-        }
+        Pack::new(value)
     }
 }
 
 impl From<i32> for Pack {
     fn from(value: i32) -> Self {
-        Pack {
-            version: value as u32,
-            unknown_deps: false,
-        }
+        Pack::new(value as u32)
     }
 }
 
@@ -78,7 +86,7 @@ impl FromStr for Pack {
     type Err = ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        u32::from_str(s).map(Pack::with_version)
+        u32::from_str(s).map(Pack::new)
     }
 }
 
@@ -136,6 +144,7 @@ struct BundleBoxProvider {
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,
     excluded: HashMap<String, HashMap<Pack, String>>,
+    cancel_solving: Cell<bool>,
 }
 
 struct BundleBoxPackageDependencies {
@@ -163,26 +172,26 @@ impl BundleBoxProvider {
     pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
         let mut result = Self::new();
         for (name, version, deps) in packages {
-            result.add_package(name, Pack::with_version(*version), deps, &[]);
+            result.add_package(name, Pack::new(*version), deps, &[]);
         }
         result
     }
 
     pub fn set_favored(&mut self, package_name: &str, version: u32) {
         self.favored
-            .insert(package_name.to_owned(), Pack::with_version(version));
+            .insert(package_name.to_owned(), Pack::new(version));
     }
 
     pub fn exclude(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
         self.excluded
             .entry(package_name.to_owned())
             .or_default()
-            .insert(Pack::with_version(version), reason.into());
+            .insert(Pack::new(version), reason.into());
     }
 
     pub fn set_locked(&mut self, package_name: &str, version: u32) {
         self.locked
-            .insert(package_name.to_owned(), Pack::with_version(version));
+            .insert(package_name.to_owned(), Pack::new(version));
     }
 
     pub fn add_package(
@@ -270,6 +279,12 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         let package_name = self.pool.resolve_package_name(candidate.name_id());
         let pack = candidate.inner();
 
+        if pack.cancel_during_get_dependencies {
+            self.cancel_solving.set(true);
+            let reason = self.pool.intern_string("cancelled");
+            return Dependencies::Unknown(reason);
+        }
+
         if pack.unknown_deps {
             let reason = self.pool.intern_string("could not retrieve deps");
             return Dependencies::Unknown(reason);
@@ -297,6 +312,14 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
 
         Dependencies::Known(result)
     }
+
+    fn should_cancel_with_value(&self) -> Option<Box<dyn Any>> {
+        if self.cancel_solving.get() {
+            Some(Box::new("cancelled!".to_string()))
+        } else {
+            None
+        }
+    }
 }
 
 /// Create a string from a [`Transaction`]
@@ -321,7 +344,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let mut solver = Solver::new(provider);
     match solver.solve(requirements) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
-        Err(problem) => {
+        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
             // Write the problem graphviz to stderr
             let graph = problem.graph(&solver);
             let mut output = stderr();
@@ -334,6 +357,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
                 .display_user_friendly(&solver, &DefaultSolvableDisplay)
                 .to_string()
         }
+        Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
 }
 
@@ -343,7 +367,7 @@ fn solve_snapshot(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let mut solver = Solver::new(provider);
     match solver.solve(requirements) {
         Ok(solvables) => transaction_to_string(solver.pool(), &solvables),
-        Err(problem) => {
+        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
             // Write the problem graphviz to stderr
             let graph = problem.graph(&solver);
             let mut output = stderr();
@@ -356,6 +380,7 @@ fn solve_snapshot(provider: BundleBoxProvider, specs: &[&str]) -> String {
                 .display_user_friendly(&solver, &DefaultSolvableDisplay)
                 .to_string()
         }
+        Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
 }
 
@@ -451,17 +476,8 @@ fn test_resolve_with_conflict() {
         ("conflicting", 1, vec![]),
         ("conflicting", 0, vec![]),
     ]);
-    let requirements = provider.requirements(&["asdf", "efgh"]);
-    let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements);
-    let solved = match solved {
-        Ok(solved) => transaction_to_string(solver.pool(), &solved),
-        Err(p) => panic!(
-            "{}",
-            p.display_user_friendly(&solver, &DefaultSolvableDisplay)
-        ),
-    };
-    insta::assert_snapshot!(solved);
+    let result = solve_snapshot(provider, &["asdf", "efgh"]);
+    insta::assert_snapshot!(result);
 }
 
 /// The non-existing package should not be selected
@@ -530,22 +546,11 @@ fn test_resolve_with_unknown_deps() {
     let mut provider = BundleBoxProvider::new();
     provider.add_package(
         "opentelemetry-api",
-        Pack {
-            version: 3,
-            unknown_deps: true,
-        },
+        Pack::new(3).with_unknown_deps(),
         &[],
         &[],
     );
-    provider.add_package(
-        "opentelemetry-api",
-        Pack {
-            version: 2,
-            unknown_deps: false,
-        },
-        &[],
-        &[],
-    );
+    provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
@@ -559,6 +564,26 @@ fn test_resolve_with_unknown_deps() {
         "opentelemetry-api"
     );
     assert_eq!(solvable.inner().version, 2);
+}
+
+#[test]
+#[traced_test]
+fn test_resolve_and_cancel() {
+    let mut provider = BundleBoxProvider::new();
+    provider.add_package(
+        "opentelemetry-api",
+        Pack::new(3).with_unknown_deps(),
+        &[],
+        &[],
+    );
+    provider.add_package(
+        "opentelemetry-api",
+        Pack::new(2).cancel_during_get_dependencies(),
+        &[],
+        &[],
+    );
+    let error = solve_unsat(provider, &["opentelemetry-api"]);
+    insta::assert_snapshot!(error);
 }
 
 /// Locking a specific package version in this case a lower version namely `3` should result
@@ -619,20 +644,8 @@ fn test_resolve_favor_without_conflict() {
     provider.set_favored("a", 1);
     provider.set_favored("b", 1);
 
-    let requirements = provider.requirements(&["a", "b 2"]);
-
     // Already installed: A=1; B=1
-    let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements);
-    let solved = match solved {
-        Ok(solved) => solved,
-        Err(p) => panic!(
-            "{}",
-            p.display_user_friendly(&solver, &DefaultSolvableDisplay)
-        ),
-    };
-
-    let result = transaction_to_string(&solver.pool(), &solved);
+    let result = solve_snapshot(provider, &["a", "b 2"]);
     insta::assert_snapshot!(result, @r###"
         a=1
         b=2
@@ -653,19 +666,7 @@ fn test_resolve_favor_with_conflict() {
     provider.set_favored("b", 1);
     provider.set_favored("c", 1);
 
-    let requirements = provider.requirements(&["a", "b 2"]);
-
-    let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements);
-    let solved = match solved {
-        Ok(solved) => solved,
-        Err(p) => panic!(
-            "{}",
-            p.display_user_friendly(&solver, &DefaultSolvableDisplay)
-        ),
-    };
-
-    let result = transaction_to_string(&solver.pool(), &solved);
+    let result = solve_snapshot(provider, &["a", "b 2"]);
     insta::assert_snapshot!(result, @r###"
         a=2
         b=2

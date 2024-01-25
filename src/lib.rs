@@ -25,8 +25,9 @@ pub use internal::{
 };
 pub use pool::Pool;
 pub use solvable::Solvable;
-pub use solver::{Solver, SolverCache};
+pub use solver::{Solver, SolverCache, UnsolvableOrCancelled};
 use std::{
+    any::Any,
     fmt::{Debug, Display},
     hash::Hash,
 };
@@ -75,6 +76,16 @@ pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
 
     /// Returns the dependencies for the specified solvable.
     fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
+
+    /// Whether the solver should stop the dependency resolution algorithm.
+    ///
+    /// This method gets called at the beginning of each unit propagation round and before
+    /// potentially blocking operations (like [Self::get_dependencies] and [Self::get_candidates]).
+    /// If it returns `Some(...)`, the solver will stop and return
+    /// [UnsolvableOrCancelled::Cancelled].
+    fn should_cancel_with_value(&self) -> Option<Box<dyn Any>> {
+        None
+    }
 }
 
 /// A list of candidate solvables for a specific package. This is returned from
