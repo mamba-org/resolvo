@@ -7,7 +7,7 @@ use crate::{
     pool::Pool,
     problem::Problem,
     solvable::SolvableInner,
-    DependencyProvider, PackageName, VersionSet, VersionSetId,
+    Dependencies, DependencyProvider, PackageName, VersionSet, VersionSetId,
 };
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -170,7 +170,31 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 SolvableInner::Root => (self.root_requirements.clone(), Vec::new()),
                 SolvableInner::Package(_) => {
                     let deps = self.cache.get_or_cache_dependencies(solvable_id);
-                    (deps.requirements.clone(), deps.constrains.clone())
+                    match deps {
+                        Dependencies::Known(deps) => {
+                            (deps.requirements.clone(), deps.constrains.clone())
+                        }
+                        Dependencies::Unknown(reason) => {
+                            // There is no information about the solvable's dependencies, so we add
+                            // an exclusion clause for it
+                            let clause_id = self
+                                .clauses
+                                .alloc(ClauseState::exclude(solvable_id, *reason));
+
+                            // Exclusions are negative assertions, tracked outside of the watcher system
+                            self.negative_assertions.push((solvable_id, clause_id));
+
+                            // There should always be a conflict here
+                            debug_assert!(
+                                self.decision_tracker.assigned_value(solvable_id) == Some(true)
+                            );
+
+                            // The new assertion should be kept (it is returned in the lhs of the
+                            // tuple), but it should also be marked as the source of a conflict (rhs
+                            // of the tuple)
+                            return (vec![clause_id], vec![clause_id]);
+                        }
+                    }
                 }
             };
 

@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 use itertools::Itertools;
 use resolvo::{
-    range::Range, Candidates, DefaultSolvableDisplay, Dependencies, DependencyProvider, NameId,
-    Pool, SolvableId, Solver, SolverCache, VersionSet, VersionSetId,
+    range::Range, Candidates, DefaultSolvableDisplay, Dependencies, DependencyProvider,
+    KnownDependencies, NameId, Pool, SolvableId, Solver, SolverCache, VersionSet, VersionSetId,
 };
 use std::{
     collections::HashMap,
@@ -29,24 +29,48 @@ use tracing_test::traced_test;
 
 /// This is `Pack` which is a unique version and name in our bespoke packaging system
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Hash)]
-#[repr(transparent)]
-struct Pack(u32);
+struct Pack {
+    version: u32,
+    unknown_deps: bool,
+}
+
+impl Pack {
+    fn with_version(version: u32) -> Pack {
+        Pack {
+            version,
+            unknown_deps: false,
+        }
+    }
+
+    fn offset(&self, version_offset: i32) -> Pack {
+        Pack {
+            version: self.version.wrapping_add_signed(version_offset),
+            unknown_deps: self.unknown_deps,
+        }
+    }
+}
 
 impl From<u32> for Pack {
     fn from(value: u32) -> Self {
-        Pack(value)
+        Pack {
+            version: value,
+            unknown_deps: false,
+        }
     }
 }
 
 impl From<i32> for Pack {
     fn from(value: i32) -> Self {
-        Pack(value as u32)
+        Pack {
+            version: value as u32,
+            unknown_deps: false,
+        }
     }
 }
 
 impl Display for Pack {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.version)
     }
 }
 
@@ -54,7 +78,7 @@ impl FromStr for Pack {
     type Err = ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        u32::from_str(s).map(Self)
+        u32::from_str(s).map(Pack::with_version)
     }
 }
 
@@ -91,7 +115,7 @@ impl FromStr for Spec {
                     .map(FromStr::from_str)
                     .transpose()
                     .unwrap()
-                    .unwrap_or(Pack(start.0 + 1));
+                    .unwrap_or(start.offset(1));
                 Range::between(start, end)
             } else {
                 Range::full()
@@ -139,24 +163,26 @@ impl BundleBoxProvider {
     pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
         let mut result = Self::new();
         for (name, version, deps) in packages {
-            result.add_package(name, Pack(*version), deps, &[]);
+            result.add_package(name, Pack::with_version(*version), deps, &[]);
         }
         result
     }
 
     pub fn set_favored(&mut self, package_name: &str, version: u32) {
-        self.favored.insert(package_name.to_owned(), Pack(version));
+        self.favored
+            .insert(package_name.to_owned(), Pack::with_version(version));
     }
 
     pub fn exclude(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
         self.excluded
             .entry(package_name.to_owned())
             .or_default()
-            .insert(Pack(version), reason.into());
+            .insert(Pack::with_version(version), reason.into());
     }
 
     pub fn set_locked(&mut self, package_name: &str, version: u32) {
-        self.locked.insert(package_name.to_owned(), Pack(version));
+        self.locked
+            .insert(package_name.to_owned(), Pack::with_version(version));
     }
 
     pub fn add_package(
@@ -205,7 +231,7 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
             let a = self.pool.resolve_solvable(*a).inner();
             let b = self.pool.resolve_solvable(*b).inner();
             // We want to sort with highest version on top
-            b.0.cmp(&a.0)
+            b.version.cmp(&a.version)
         });
     }
 
@@ -243,11 +269,17 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         let candidate = self.pool.resolve_solvable(solvable);
         let package_name = self.pool.resolve_package_name(candidate.name_id());
         let pack = candidate.inner();
+
+        if pack.unknown_deps {
+            let reason = self.pool.intern_string("could not retrieve deps");
+            return Dependencies::Unknown(reason);
+        }
+
         let Some(deps) = self.packages.get(package_name).and_then(|v| v.get(pack)) else {
-            return Default::default();
+            return Dependencies::Known(Default::default());
         };
 
-        let mut result = Dependencies {
+        let mut result = KnownDependencies {
             requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
@@ -263,7 +295,7 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
             result.constrains.push(dep_spec);
         }
 
-        result
+        Dependencies::Known(result)
     }
 }
 
@@ -342,7 +374,7 @@ fn test_unit_propagation_1() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "asdf"
     );
-    assert_eq!(solvable.inner().0, 1);
+    assert_eq!(solvable.inner().version, 1);
 }
 
 /// Test if we can also select a nested version
@@ -365,7 +397,7 @@ fn test_unit_propagation_nested() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "asdf"
     );
-    assert_eq!(solvable.inner().0, 1);
+    assert_eq!(solvable.inner().version, 1);
 
     let solvable = solver.pool().resolve_solvable(solved[1]);
 
@@ -373,7 +405,7 @@ fn test_unit_propagation_nested() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "efgh"
     );
-    assert_eq!(solvable.inner().0, 4);
+    assert_eq!(solvable.inner().version, 4);
 }
 
 /// Test if we can resolve multiple versions at once
@@ -397,7 +429,7 @@ fn test_resolve_multiple() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "asdf"
     );
-    assert_eq!(solvable.inner().0, 2);
+    assert_eq!(solvable.inner().version, 2);
 
     let solvable = solver.pool().resolve_solvable(solved[1]);
 
@@ -405,7 +437,7 @@ fn test_resolve_multiple() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "efgh"
     );
-    assert_eq!(solvable.inner().0, 5);
+    assert_eq!(solvable.inner().version, 5);
 }
 
 /// In case of a conflict the version should not be selected with the conflict
@@ -453,7 +485,7 @@ fn test_resolve_with_nonexisting() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "asdf"
     );
-    assert_eq!(solvable.inner().0, 3);
+    assert_eq!(solvable.inner().version, 3);
 }
 
 #[test]
@@ -489,7 +521,44 @@ fn test_resolve_with_nested_deps() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "apache-airflow"
     );
-    assert_eq!(solvable.inner().0, 1);
+    assert_eq!(solvable.inner().version, 1);
+}
+
+#[test]
+#[traced_test]
+fn test_resolve_with_unknown_deps() {
+    let mut provider = BundleBoxProvider::new();
+    provider.add_package(
+        "opentelemetry-api",
+        Pack {
+            version: 3,
+            unknown_deps: true,
+        },
+        &[],
+        &[],
+    );
+    provider.add_package(
+        "opentelemetry-api",
+        Pack {
+            version: 2,
+            unknown_deps: false,
+        },
+        &[],
+        &[],
+    );
+    let requirements = provider.requirements(&["opentelemetry-api"]);
+    let mut solver = Solver::new(provider);
+    let solved = solver.solve(requirements).unwrap();
+
+    assert_eq!(solved.len(), 1);
+
+    let solvable = solver.pool().resolve_solvable(solved[0]);
+
+    assert_eq!(
+        solver.pool().resolve_package_name(solvable.name_id()),
+        "opentelemetry-api"
+    );
+    assert_eq!(solvable.inner().version, 2);
 }
 
 /// Locking a specific package version in this case a lower version namely `3` should result
@@ -507,7 +576,10 @@ fn test_resolve_locked_top_level() {
 
     assert_eq!(solved.len(), 1);
     let solvable_id = solved[0];
-    assert_eq!(solver.pool().resolve_solvable(solvable_id).inner().0, 3);
+    assert_eq!(
+        solver.pool().resolve_solvable(solvable_id).inner().version,
+        3
+    );
 }
 
 /// Should ignore lock when it is not a top level package and a newer version exists without it
@@ -532,7 +604,7 @@ fn test_resolve_ignored_locked_top_level() {
         solver.pool().resolve_package_name(solvable.name_id()),
         "asdf"
     );
-    assert_eq!(solvable.inner().0, 4);
+    assert_eq!(solvable.inner().version, 4);
 }
 
 /// Test checks if favoring without a conflict results in a package upgrade
@@ -567,7 +639,6 @@ fn test_resolve_favor_without_conflict() {
         "###);
 }
 
-//
 #[test]
 fn test_resolve_favor_with_conflict() {
     let mut provider = BundleBoxProvider::from_packages(&[
@@ -742,7 +813,6 @@ fn test_unsat_applies_graph_compression() {
     insta::assert_snapshot!(error);
 }
 
-//
 #[test]
 fn test_unsat_constrains() {
     let mut provider = BundleBoxProvider::from_packages(&[

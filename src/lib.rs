@@ -89,7 +89,7 @@ pub struct Candidates {
     /// no solution could be found otherwise.
     ///
     /// The same behavior can be achieved by sorting this candidate to the top using the
-    /// [`DependencyProvider::sort_candidates`] function but using this method providers better
+    /// [`DependencyProvider::sort_candidates`] function but using this method provides better
     /// error messages to the user.
     pub favored: Option<SolvableId>,
 
@@ -115,14 +115,25 @@ pub struct Candidates {
 }
 
 /// Holds information about the dependencies of a package.
+pub enum Dependencies {
+    /// The dependencies are known.
+    Known(KnownDependencies),
+    /// The dependencies are unknown, so the parent solvable should be excluded from the solution.
+    ///
+    /// The string provides more information about why the dependencies are unknown (e.g. an error
+    /// message).
+    Unknown(StringId),
+}
+
+/// Holds information about the dependencies of a package when they are known.
 #[derive(Default, Clone, Debug)]
-pub struct Dependencies {
+pub struct KnownDependencies {
     /// Defines which packages should be installed alongside the depending package and the
     /// constraints applied to the package.
     pub requirements: Vec<VersionSetId>,
 
     /// Defines additional constraints on packages that may or may not be part of the solution.
-    /// Different from `requirements` packages in this set are not necessarily included in the
+    /// Different from `requirements`, packages in this set are not necessarily included in the
     /// solution. Only when one or more packages list the package in their `requirements` is the
     /// package also added to the solution.
     ///
