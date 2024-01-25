@@ -458,7 +458,6 @@ fn test_resolve_with_nonexisting() {
 
 #[test]
 #[traced_test]
-#[should_panic] // TODO: Should be fixed, https://github.com/prefix-dev/rip/issues/75
 fn test_resolve_with_nested_deps() {
     let provider = BundleBoxProvider::from_packages(&[
         (

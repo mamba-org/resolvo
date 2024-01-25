@@ -36,6 +36,8 @@ pub struct Solver<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> 
     requires_clauses: Vec<(SolvableId, VersionSetId, ClauseId)>,
     watches: WatchMap,
 
+    negative_assertions: Vec<(SolvableId, ClauseId)>,
+
     learnt_clauses: Arena<LearntClauseId, Vec<Literal>>,
     learnt_why: Mapping<LearntClauseId, Vec<ClauseId>>,
     learnt_clause_ids: Vec<ClauseId>,
@@ -57,6 +59,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> Solver<VS, N,
             clauses: Arena::new(),
             requires_clauses: Default::default(),
             watches: WatchMap::new(),
+            negative_assertions: Vec::new(),
             learnt_clauses: Arena::new(),
             learnt_why: Mapping::new(),
             learnt_clause_ids: Vec::new(),
@@ -84,6 +87,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
     ) -> Result<Vec<SolvableId>, Problem> {
         // Clear state
         self.decision_tracker.clear();
+        self.negative_assertions.clear();
         self.learnt_clauses.clear();
         self.learnt_why = Mapping::new();
         self.clauses = Default::default();
@@ -135,12 +139,18 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
     /// Adds clauses for a solvable. These clauses include requirements and constrains on other
     /// solvables.
-    fn add_clauses_for_solvable(&mut self, solvable_id: SolvableId) -> Vec<ClauseId> {
+    ///
+    /// Returns the added clauses, and an additional list with conflicting clauses (if any).
+    fn add_clauses_for_solvable(
+        &mut self,
+        solvable_id: SolvableId,
+    ) -> (Vec<ClauseId>, Vec<ClauseId>) {
         if self.clauses_added_for_solvable.contains(&solvable_id) {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         let mut new_clauses = Vec::new();
+        let mut conflicting_clauses = Vec::new();
         let mut queue = vec![solvable_id];
         let mut seen = HashSet::new();
         seen.insert(solvable_id);
@@ -166,7 +176,6 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
             // Add clauses for the requirements
             for version_set_id in requirements {
-                //self.add_clauses_for_requirement(solvable_id, requirement);
                 let dependency_name = self.pool().resolve_version_set_package_name(version_set_id);
                 self.add_clauses_for_package(dependency_name);
 
@@ -185,11 +194,22 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 }
 
                 // Add the requires clause
-                let clause_id = self.add_and_watch_clause(ClauseState::requires(
+                let no_candidates = candidates.is_empty();
+                let (clause, conflict) = ClauseState::requires(
                     solvable_id,
                     version_set_id,
                     candidates,
-                ));
+                    &self.decision_tracker,
+                );
+
+                let clause_id = self.add_and_watch_clause(clause);
+
+                if conflict {
+                    conflicting_clauses.push(clause_id);
+                } else if no_candidates {
+                    // Add assertions for unit clauses (i.e. those with no matching candidates)
+                    self.negative_assertions.push((solvable_id, clause_id));
+                }
 
                 new_clauses.push(clause_id);
             }
@@ -206,9 +226,19 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
                 // Add forbidden clauses for the candidates
                 for forbidden_candidate in constrained_candidates.iter().copied().collect_vec() {
-                    let clause =
-                        ClauseState::constrains(solvable_id, forbidden_candidate, version_set_id);
+                    let (clause, conflict) = ClauseState::constrains(
+                        solvable_id,
+                        forbidden_candidate,
+                        version_set_id,
+                        &self.decision_tracker,
+                    );
+
                     let clause_id = self.add_and_watch_clause(clause);
+
+                    if conflict {
+                        conflicting_clauses.push(clause_id);
+                    }
+
                     new_clauses.push(clause_id)
                 }
             }
@@ -217,7 +247,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             self.clauses_added_for_solvable.insert(solvable_id);
         }
 
-        new_clauses
+        (new_clauses, conflicting_clauses)
     }
 
     /// Adds all clauses for a specific package name.
@@ -330,9 +360,12 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
         let mut new_clauses = Vec::new();
         loop {
-            // If the decision loop has been completely reset we want to
+            // A level of 0 means the decision loop has been completely reset because a partial
+            // solution was invalidated by newly added clauses.
             if level == 0 {
+                // Level 1 is the initial decision level
                 level = 1;
+
                 // Assign `true` to the root solvable. This must be installed to satisfy the solution.
                 // The root solvable contains the dependencies that were injected when calling
                 // `Solver::solve`. If we can find a solution were the root is installable we found a
@@ -349,17 +382,29 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                     .expect("already decided");
 
                 // Add the clauses for the root solvable.
-                new_clauses.append(&mut self.add_clauses_for_solvable(SolvableId::root()));
+                let (mut clauses, conflicting_clauses) =
+                    self.add_clauses_for_solvable(SolvableId::root());
+                if let Some(clause_id) = conflicting_clauses.into_iter().next() {
+                    return Err(self.analyze_unsolvable(clause_id));
+                }
+                new_clauses.append(&mut clauses);
             }
 
-            // Add decisions for Require clauses that form unit clauses. E.g. require clauses that
-            // have no matching candidates.
-            self.decide_requires_without_candidates(&std::mem::take(&mut new_clauses))
-                .map_err(|clause_id| self.analyze_unsolvable(clause_id))?;
-
-            // Propagate any decisions from assignments above.
-            self.propagate(level)
-                .map_err(|(_, _, clause_id)| self.analyze_unsolvable(clause_id))?;
+            // Propagate decisions from assignments above
+            let propagate_result = self.propagate(level);
+            if let Err((_, _, clause_id)) = propagate_result {
+                if level == 1 {
+                    return Err(self.analyze_unsolvable(clause_id));
+                } else {
+                    // When the level is higher than 1, that means the conflict was caused because
+                    // new clauses have been added dynamically. We need to start over.
+                    tracing::debug!("├─ added clause {clause:?} introduces a conflict which invalidates the partial solution",
+                                clause=self.clauses[clause_id].debug(self.pool()));
+                    level = 0;
+                    self.decision_tracker.clear();
+                    continue;
+                }
+            }
 
             // Enter the solver loop, return immediately if no new assignments have been made.
             level = self.resolve_dependencies(level)?;
@@ -399,114 +444,21 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
             for (solvable, _) in new_solvables {
                 // Add the clauses for this particular solvable.
-                let mut clauses_for_solvable = self.add_clauses_for_solvable(solvable);
-
-                // Immediately assign unit clauses. If clause is found that is a unit clause we
-                // permanently fix that assignment to false and an error is returned.
-                for clause_id in clauses_for_solvable.iter().copied() {
-                    let clause = &self.clauses[clause_id];
-
-                    match clause.kind {
-                        Clause::Requires(dependent, requirement) => {
-                            let solvable_is_assigned =
-                                self.decision_tracker.assigned_value(dependent) == Some(true);
-                            if solvable_is_assigned {
-                                let candidates =
-                                    self.cache.get_or_cache_matching_candidates(requirement);
-                                let all_candidates_assigned_false = candidates.iter().all(|&s| {
-                                    self.decision_tracker.assigned_value(s) == Some(false)
-                                });
-                                let is_empty = candidates.is_empty();
-
-                                // If none of the candidates is selectable this clause will cause a
-                                // conflict. We have to backtrack to the point where we made the
-                                // decision to select
-                                if all_candidates_assigned_false {
-                                    tracing::debug!(
-                                        "├─ there are no selectable candidates for {clause:?}",
-                                        clause = self.clauses[clause_id].debug(self.pool())
-                                    );
-
-                                    self.decision_tracker.clear();
-                                    level = 0;
-
-                                    break;
-                                } else if is_empty {
-                                    tracing::debug!("├─ added clause {clause:?} has no candidates which invalidates the partial solution",
-                                    clause=self.clauses[clause_id].debug(self.pool()));
-
-                                    self.decision_tracker.clear();
-                                    level = 0;
-                                    break;
-                                }
-                            }
-                        }
-                        Clause::Constrains(dependent, forbidden, _) => {
-                            if self.decision_tracker.assigned_value(forbidden) == Some(true)
-                                && self.decision_tracker.assigned_value(dependent) == Some(true)
-                            {
-                                tracing::debug!(
-                                    "├─ {clause:?} which was already set to true",
-                                    clause = self.clauses[clause_id].debug(self.pool())
-                                );
-                                self.decision_tracker.clear();
-                                level = 0;
-                                break;
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-
+                let (mut clauses_for_solvable, conflicting_causes) =
+                    self.add_clauses_for_solvable(solvable);
                 new_clauses.append(&mut clauses_for_solvable);
+
+                for &clause_id in &conflicting_causes {
+                    // Backtrack in the case of conflicts
+                    tracing::debug!("├─ added clause {clause:?} introduces a conflict which invalidates the partial solution",
+                                clause=self.clauses[clause_id].debug(self.pool()));
+                }
+
+                if !conflicting_causes.is_empty() {
+                    self.decision_tracker.clear();
+                    level = 0;
+                }
             }
-        }
-    }
-
-    /// Forbid packages that rely on dependencies without candidates
-    ///
-    /// Since a requires clause is represented as (¬A ∨ candidate_1 ∨ ... ∨ candidate_n),
-    /// a dependency without candidates becomes (¬A), which means that A should always be false.
-    fn decide_requires_without_candidates(
-        &mut self,
-        clauses: &[ClauseId],
-    ) -> Result<bool, ClauseId> {
-        tracing::trace!("=== Deciding assertions for requires without candidates");
-
-        let mut conflicting_clause = None;
-        let mut made_a_decision = false;
-        for &clause_id in clauses.iter() {
-            let clause = &self.clauses[clause_id];
-            let decision = match clause.kind {
-                // A requires clause without watches means it has a single literal (i.e.
-                // there are no candidates)
-                Clause::Requires(solvable_id, _) if !clause.has_watches() => self
-                    .decision_tracker
-                    .try_add_fixed_assignment(Decision::new(solvable_id, false, clause_id))
-                    .map(|b| b.then_some(solvable_id)),
-                _ => continue,
-            };
-
-            match decision {
-                Ok(Some(solvable_id)) => {
-                    // We made a decision without conflict.
-                    tracing::debug!("Set {} = false", solvable_id.display(self.pool()));
-                    made_a_decision = true;
-                }
-                Err(_) => {
-                    // Decision immediately caused a conflict!
-                    conflicting_clause = Some(clause_id);
-                    made_a_decision = true;
-                }
-                Ok(None) => {
-                    // No new decision
-                }
-            };
-        }
-
-        match conflicting_clause {
-            None => Ok(made_a_decision),
-            Some(clause_id) => Err(clause_id),
         }
     }
 
@@ -732,8 +684,25 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
     /// way, the clause can check whether the literal that is using the solvable has become false, in
     /// which case it picks a new solvable to watch (if available) or triggers an assignment.
     fn propagate(&mut self, level: u32) -> Result<(), (SolvableId, bool, ClauseId)> {
-        // Learnt assertions (assertions are clauses that consist of a single literal, and therefore
-        // do not have watches)
+        // Negative assertions derived from other rules (assertions are clauses that consist of a
+        // single literal, and therefore do not have watches)
+        for &(solvable_id, clause_id) in &self.negative_assertions {
+            let value = false;
+            let decided = self
+                .decision_tracker
+                .try_add_decision(Decision::new(solvable_id, value, clause_id), level)
+                .map_err(|_| (solvable_id, value, clause_id))?;
+
+            if decided {
+                tracing::trace!(
+                    "├─ Propagate assertion {} = {}",
+                    solvable_id.display(self.pool()),
+                    value
+                );
+            }
+        }
+
+        // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
             let clause = &self.clauses[clause_id];
