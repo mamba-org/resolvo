@@ -215,15 +215,19 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                             // Exclusions are negative assertions, tracked outside of the watcher system
                             self.negative_assertions.push((solvable_id, clause_id));
 
-                            // There should always be a conflict here
-                            debug_assert!(
-                                self.decision_tracker.assigned_value(solvable_id) == Some(true)
-                            );
+                            // There might be a conflict now
+                            let conflicts = if self.decision_tracker.assigned_value(solvable_id)
+                                == Some(true)
+                            {
+                                vec![clause_id]
+                            } else {
+                                Vec::new()
+                            };
 
-                            // The new assertion should be kept (it is returned in the lhs of the
-                            // tuple), but it should also be marked as the source of a conflict (rhs
+                            // The new assertion should be kept in all cases (it is returned in the
+                            // lhs of the tuple), and a conflicts should be reported if present (rhs
                             // of the tuple)
-                            return Ok((vec![clause_id], vec![clause_id]));
+                            return Ok((vec![clause_id], conflicts));
                         }
                     }
                 }
