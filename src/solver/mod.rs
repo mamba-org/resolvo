@@ -608,12 +608,12 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             }
         }
 
-        if let Some((count, (candidate, solvable_id, _clause_id))) = best_decision {
+        if let Some((count, (candidate, _solvable_id, clause_id))) = best_decision {
             tracing::info!(
-                "deciding to assign {} with {} candidates (required by {})",
+                "deciding to assign {}, ({:?}, {} possible candidates)",
                 candidate.display(self.pool()),
+                self.clauses[clause_id].debug(self.pool()),
                 count,
-                solvable_id.display(self.pool())
             );
         }
 
