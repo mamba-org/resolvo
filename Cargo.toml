@@ -18,9 +18,12 @@ tracing = "0.1.37"
 elsa = "1.9.0"
 bitvec = "1.0.1"
 serde = { version = "1.0", features = ["derive"], optional = true }
+futures = { version = "0.3.30", default-features = false, features = ["alloc"] }
+tokio = { version = "1.35.1", features = ["rt", "sync"] }
 
 [dev-dependencies]
 insta = "1.31.0"
 indexmap = "2.0.0"
 proptest = "1.2.0"
 tracing-test = { version = "0.2.4", features = ["no-env-filter"] }
+tokio = { version = "1.35.1", features = ["time"] }

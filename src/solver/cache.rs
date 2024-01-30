@@ -13,6 +13,7 @@ use elsa::FrozenMap;
 use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.
@@ -65,7 +66,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     }
 
     /// Returns a reference to the pool used by the solver
-    pub fn pool(&self) -> &Pool<VS, N> {
+    pub fn pool(&self) -> Rc<Pool<VS, N>> {
         self.provider.pool()
     }
 
@@ -74,7 +75,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_candidates(
+    pub async fn get_or_cache_candidates(
         &self,
         package_name: NameId,
     ) -> Result<&Candidates, Box<dyn Any>> {
@@ -93,6 +94,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                 let candidates = self
                     .provider
                     .get_candidates(package_name)
+                    .await
                     .unwrap_or_default();
 
                 // Store information about which solvables dependency information is easy to
@@ -126,23 +128,24 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_matching_candidates(
+    pub async fn get_or_cache_matching_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let pool = self.pool();
+                let package_name = pool.resolve_version_set_package_name(version_set_id);
+                let version_set = pool.resolve_version_set(version_set_id);
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 let matching_candidates = candidates
                     .candidates
                     .iter()
                     .copied()
                     .filter(|&p| {
-                        let version = self.pool().resolve_internal_solvable(p).solvable().inner();
+                        let version = pool.resolve_internal_solvable(p).solvable().inner();
                         version_set.contains(version)
                     })
                     .collect();
@@ -158,23 +161,24 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_non_matching_candidates(
+    pub async fn get_or_cache_non_matching_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_inverse_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let pool = self.pool();
+                let package_name = pool.resolve_version_set_package_name(version_set_id);
+                let version_set = pool.resolve_version_set(version_set_id);
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 let matching_candidates = candidates
                     .candidates
                     .iter()
                     .copied()
                     .filter(|&p| {
-                        let version = self.pool().resolve_internal_solvable(p).solvable().inner();
+                        let version = pool.resolve_internal_solvable(p).solvable().inner();
                         !version_set.contains(version)
                     })
                     .collect();
@@ -191,7 +195,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_sorted_candidates(
+    pub async fn get_or_cache_sorted_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
@@ -199,8 +203,10 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
             Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let matching_candidates = self.get_or_cache_matching_candidates(version_set_id)?;
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let matching_candidates = self
+                    .get_or_cache_matching_candidates(version_set_id)
+                    .await?;
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 // Sort all the candidates in order in which they should be tried by the solver.
                 let mut sorted_candidates = Vec::new();
@@ -228,7 +234,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_dependencies(
+    pub async fn get_or_cache_dependencies(
         &self,
         solvable_id: SolvableId,
     ) -> Result<&Dependencies, Box<dyn Any>> {
@@ -242,7 +248,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     return Err(value);
                 }
 
-                let dependencies = self.provider.get_dependencies(solvable_id);
+                let dependencies = self.provider.get_dependencies(solvable_id).await;
                 let dependencies_id = self.solvable_dependencies.alloc(dependencies);
                 self.solvable_to_dependencies
                     .insert_copy(solvable_id, dependencies_id);

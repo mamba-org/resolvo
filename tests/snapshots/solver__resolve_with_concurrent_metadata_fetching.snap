@@ -1,0 +1,8 @@
+---
+source: tests/solver.rs
+expression: result
+---
+child1=3
+child2=2
+parent=4
+

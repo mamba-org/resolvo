@@ -30,6 +30,7 @@ use std::{
     any::Any,
     fmt::{Debug, Display},
     hash::Hash,
+    rc::Rc,
 };
 
 /// The solver is based around the fact that for for every package name we are trying to find a
@@ -61,21 +62,37 @@ pub trait VersionSet: Debug + Display + Clone + Eq + Hash {
 /// packages that are available in the system.
 pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
     /// Returns the [`Pool`] that is used to allocate the Ids returned from this instance
-    fn pool(&self) -> &Pool<VS, N>;
+    fn pool(&self) -> Rc<Pool<VS, N>>;
 
     /// Sort the specified solvables based on which solvable to try first. The solver will
     /// iteratively try to select the highest version. If a conflict is found with the highest
     /// version the next version is tried. This continues until a solution is found.
     fn sort_candidates(&self, solver: &SolverCache<VS, N, Self>, solvables: &mut [SolvableId]);
 
-    /// Returns a list of solvables that should be considered when a package with the given name is
+    /// Obtains a list of solvables that should be considered when a package with the given name is
     /// requested.
     ///
-    /// Returns `None` if no such package exist.
-    fn get_candidates(&self, name: NameId) -> Option<Candidates>;
+    /// # Async
+    ///
+    /// The returned future will be awaited by a tokio runtime blocking the main thread. You are
+    /// free to use other runtimes in your implementation, as long as the runtime-specific code runs
+    /// in threads controlled by that runtime (and _not_ in the main thread). For instance, you can
+    /// use `async_std::task::spawn` to spawn a new task, use `async_std::io` inside the task to
+    /// retrieve necessary information from the network, and `await` the returned task handle.
+    #[allow(async_fn_in_trait)]
+    async fn get_candidates(&self, name: NameId) -> Option<Candidates>;
 
     /// Returns the dependencies for the specified solvable.
-    fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
+    ///
+    /// # Async
+    ///
+    /// The returned future will be awaited by a tokio runtime blocking the main thread. You are
+    /// free to use other runtimes in your implementation, as long as the runtime-specific code runs
+    /// in threads controlled by that runtime (and _not_ in the main thread). For instance, you can
+    /// use `async_std::task::spawn` to spawn a new task, use `async_std::io` inside the task to
+    /// retrieve necessary information from the network, and `await` the returned task handle.
+    #[allow(async_fn_in_trait)]
+    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
 
     /// Whether the solver should stop the dependency resolution algorithm.
     ///
