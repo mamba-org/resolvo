@@ -47,6 +47,7 @@ impl Problem {
     ) -> ProblemGraph {
         let mut graph = DiGraph::<ProblemNode, ProblemEdge>::default();
         let mut nodes: HashMap<SolvableId, NodeIndex> = HashMap::default();
+        let mut excluded_nodes: HashMap<StringId, NodeIndex> = HashMap::default();
 
         let root_node = Self::add_node(&mut graph, &mut nodes, SolvableId::root());
         let unresolved_node = graph.add_node(ProblemNode::UnresolvedDependency);
@@ -58,8 +59,15 @@ impl Problem {
                 Clause::Excluded(solvable, reason) => {
                     tracing::info!("{solvable:?} is excluded");
                     let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
-                    let conflict = ConflictCause::Excluded(*solvable, *reason);
-                    graph.add_edge(root_node, package_node, ProblemEdge::Conflict(conflict));
+                    let excluded_node = excluded_nodes
+                        .entry(*reason)
+                        .or_insert_with(|| graph.add_node(ProblemNode::Excluded(*reason)));
+
+                    graph.add_edge(
+                        package_node,
+                        *excluded_node,
+                        ProblemEdge::Conflict(ConflictCause::Excluded),
+                    );
                 }
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
@@ -176,6 +184,8 @@ pub enum ProblemNode {
     Solvable(SolvableId),
     /// Node representing a dependency without candidates
     UnresolvedDependency,
+    /// Node representing an exclude reason
+    Excluded(StringId),
 }
 
 impl ProblemNode {
@@ -184,6 +194,9 @@ impl ProblemNode {
             ProblemNode::Solvable(solvable_id) => solvable_id,
             ProblemNode::UnresolvedDependency => {
                 panic!("expected solvable node, found unresolved dependency")
+            }
+            ProblemNode::Excluded(_) => {
+                panic!("expected solvable node, found excluded node")
             }
         }
     }
@@ -224,7 +237,7 @@ pub enum ConflictCause {
     /// It is forbidden to install multiple instances of the same dependency
     ForbidMultipleInstances,
     /// The node was excluded
-    Excluded(SolvableId, StringId),
+    Excluded,
 }
 
 /// Represents a node that has been merged with others
@@ -302,9 +315,7 @@ impl ProblemGraph {
                     | ProblemEdge::Conflict(ConflictCause::Locked(_)) => {
                         "already installed".to_string()
                     }
-                    ProblemEdge::Conflict(ConflictCause::Excluded(_, reason)) => {
-                        format!("excluded because {}", pool.resolve_string(*reason))
-                    }
+                    ProblemEdge::Conflict(ConflictCause::Excluded) => "excluded".to_string(),
                 };
 
                 let target = match target {
@@ -322,6 +333,9 @@ impl ProblemGraph {
                         solvable_2.display(pool).to_string()
                     }
                     ProblemNode::UnresolvedDependency => "unresolved".to_string(),
+                    ProblemNode::Excluded(reason) => {
+                        format!("reason: {}", pool.resolve_string(reason))
+                    }
                 };
 
                 write!(
@@ -346,7 +360,7 @@ impl ProblemGraph {
         let mut maybe_merge = HashMap::new();
         for node_id in graph.node_indices() {
             let candidate = match graph[node_id] {
-                ProblemNode::UnresolvedDependency => continue,
+                ProblemNode::UnresolvedDependency | ProblemNode::Excluded(_) => continue,
                 ProblemNode::Solvable(solvable_id) => {
                     if solvable_id.is_root() {
                         continue;
@@ -415,12 +429,10 @@ impl ProblemGraph {
 
             // Determine any incoming "exclude" edges to the node. This would indicate that the
             // node is disabled for external reasons.
-            let excluding_edges = self.graph.edges_directed(nx, Direction::Incoming).any(|e| {
-                matches!(
-                    e.weight(),
-                    ProblemEdge::Conflict(ConflictCause::Excluded(_, _))
-                )
-            });
+            let excluding_edges = self
+                .graph
+                .edges_directed(nx, Direction::Incoming)
+                .any(|e| matches!(e.weight(), ProblemEdge::Conflict(ConflictCause::Excluded)));
             if excluding_edges {
                 // Nodes with incoming disabling edges aren't installable
                 continue;
@@ -673,9 +685,12 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     };
 
                     let excluded = graph
-                        .edges_directed(candidate, Direction::Incoming)
+                        .edges_directed(candidate, Direction::Outgoing)
                         .find_map(|e| match e.weight() {
-                            ProblemEdge::Conflict(ConflictCause::Excluded(_, reason)) => {
+                            ProblemEdge::Conflict(ConflictCause::Excluded) => {
+                                let ProblemNode::Excluded(reason) = graph[e.target()] else {
+                                    unreachable!();
+                                };
                                 Some(reason)
                             }
                             _ => None,
@@ -695,7 +710,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         writeln!(
                             f,
                             "{indent}{name} {version} is excluded because {reason}",
-                            reason = self.pool.resolve_string(*excluded_reason)
+                            reason = self.pool.resolve_string(excluded_reason)
                         )?;
                     } else if is_leaf {
                         writeln!(f, "{indent}{name} {version}")?;
@@ -795,7 +810,7 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                                 .display_candidates(self.pool, &[solvable_id])
                         )?;
                     }
-                    ConflictCause::Excluded(_, _) => continue,
+                    ConflictCause::Excluded => continue,
                 };
             }
         }
