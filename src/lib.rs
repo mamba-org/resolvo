@@ -157,7 +157,7 @@ pub trait SolvableDisplay<VS: VersionSet, Name: PackageName = String> {
     /// A method that is used to display multiple solvables in a user friendly way.
     /// For example the conda provider should only display the versions (not build strings etc.)
     /// and merges multiple solvables into one line.
-    fn display_candidates(&self, pool: &Pool<VS, Name>, candidates: &[SolvableId]) -> String;
+    fn display_candidates(&self, pool: &Pool<VS, Name>, candidates: &[Vec<SolvableId>]) -> String;
 }
 
 /// Display merged candidates on single line with `|` as separator.
@@ -170,13 +170,19 @@ where
     fn display_candidates(
         &self,
         pool: &Pool<VS, Name>,
-        merged_candidates: &[SolvableId],
+        merged_candidates: &[Vec<SolvableId>],
     ) -> String {
         merged_candidates
             .iter()
-            .map(|&id| &pool.resolve_solvable(id).inner)
-            .sorted()
-            .map(|s| s.to_string())
+            .map(|ids| {
+                if ids.len() == 1 {
+                    pool.resolve_solvable(ids[0]).inner.to_string()
+                } else {
+                    let highest = &pool.resolve_solvable(ids[0]).inner;
+                    let lowest = &pool.resolve_solvable(*ids.last().unwrap()).inner;
+                    format!(">={lowest}, <={highest}")
+                }
+            })
             .join(" | ")
     }
 }

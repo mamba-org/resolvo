@@ -4,7 +4,7 @@ expression: error
 ---
 The following packages are incompatible
 |-- a * cannot be installed because there are no viable options:
-    |-- a 1 | 2 would require
+    |-- a >=1, <=2 would require
         |-- b *, which cannot be installed because there are no viable options:
             |-- b 2 would require
                 |-- c >=2, <3, which cannot be installed because there are no viable options:

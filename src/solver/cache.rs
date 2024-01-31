@@ -269,4 +269,9 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
             value.unwrap_or(false)
         }
     }
+
+    /// FOO
+    pub fn dependency_provider(&self) -> &D {
+        &self.provider
+    }
 }

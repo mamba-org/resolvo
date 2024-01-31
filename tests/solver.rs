@@ -924,6 +924,16 @@ fn test_merge_installable() {
 }
 
 #[test]
+fn test_merge_installable_non_continuous_range() {
+    let packages: Vec<_> = (1..20).map(|version| ("a", version, Vec::new())).collect();
+    let mut provider = BundleBoxProvider::from_packages(&packages);
+    provider.exclude("a", 8, "no reason");
+    provider.exclude("a", 15, "no reason");
+    provider.exclude("a", 18, "no reason");
+    insta::assert_snapshot!(solve_snapshot(provider, &["a 1", "a 2..20"]));
+}
+
+#[test]
 fn test_root_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![])]);
     provider.exclude("a", 1, "it is externally excluded");

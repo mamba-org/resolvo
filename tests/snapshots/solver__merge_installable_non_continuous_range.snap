@@ -1,0 +1,10 @@
+---
+source: tests/solver.rs
+expression: "solve_snapshot(provider, &[\"a 1\", \"a 2..20\"])"
+---
+The following packages are incompatible
+|-- a >=2, <20 can be installed with any of the following options:
+    |-- a 19 | >=16, <=17 | >=9, <=14 | >=2, <=7
+|-- a >=1, <2 cannot be installed because there are no viable options:
+    |-- a 1, which conflicts with the versions reported above.
+

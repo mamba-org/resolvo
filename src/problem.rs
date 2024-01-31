@@ -17,7 +17,7 @@ use crate::{
     internal::id::{ClauseId, SolvableId, VersionSetId},
     pool::Pool,
     solver::{clause::Clause, Solver},
-    DependencyProvider, PackageName, SolvableDisplay, VersionSet,
+    DependencyProvider, PackageName, SolvableDisplay, SolverCache, VersionSet,
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -100,6 +100,7 @@ impl Problem {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
+                    // TODO: need to take the solvable from `locked` into account...
                     let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden);
                     let conflict = ConflictCause::Locked(locked);
                     graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
@@ -147,6 +148,7 @@ impl Problem {
             graph,
             root_node,
             unresolved_node,
+            solvables: nodes.keys().copied().collect(),
         }
     }
 
@@ -171,9 +173,9 @@ impl Problem {
         &self,
         solver: &'a Solver<VS, N, D>,
         merged_solvable_display: &'a M,
-    ) -> DisplayUnsat<'a, VS, N, M> {
+    ) -> DisplayUnsat<'a, VS, N, M, D> {
         let graph = self.graph(solver);
-        DisplayUnsat::new(graph, solver.pool(), merged_solvable_display)
+        DisplayUnsat::new(graph, solver.cache(), merged_solvable_display)
     }
 }
 
@@ -261,6 +263,7 @@ pub struct ProblemGraph {
     graph: DiGraph<ProblemNode, ProblemEdge>,
     root_node: NodeIndex,
     unresolved_node: Option<NodeIndex>,
+    solvables: Vec<SolvableId>,
 }
 
 impl ProblemGraph {
@@ -509,25 +512,35 @@ impl ProblemGraph {
 
 /// A struct implementing [`fmt::Display`] that generates a user-friendly representation of a
 /// problem graph
-pub struct DisplayUnsat<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
-{
+pub struct DisplayUnsat<
+    'cache,
+    VS: VersionSet,
+    N: PackageName + Display,
+    M: SolvableDisplay<VS, N>,
+    D: DependencyProvider<VS, N>,
+> {
     graph: ProblemGraph,
     merged_candidates: HashMap<SolvableId, Rc<MergedProblemNode>>,
     installable_set: HashSet<NodeIndex>,
     missing_set: HashSet<NodeIndex>,
-    pool: &'pool Pool<VS, N>,
-    merged_solvable_display: &'pool M,
+    solver_cache: &'cache SolverCache<VS, N, D>,
+    merged_solvable_display: &'cache M,
 }
 
-impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
-    DisplayUnsat<'pool, VS, N, M>
+impl<
+        'dp,
+        VS: VersionSet,
+        N: PackageName + Display,
+        M: SolvableDisplay<VS, N>,
+        D: DependencyProvider<VS, N>,
+    > DisplayUnsat<'dp, VS, N, M, D>
 {
     pub(crate) fn new(
         graph: ProblemGraph,
-        pool: &'pool Pool<VS, N>,
-        merged_solvable_display: &'pool M,
+        solver_cache: &'dp SolverCache<VS, N, D>,
+        merged_solvable_display: &'dp M,
     ) -> Self {
-        let merged_candidates = graph.simplify(pool);
+        let merged_candidates = graph.simplify(solver_cache.pool());
         let installable_set = graph.get_installable_set();
         let missing_set = graph.get_missing_set();
 
@@ -536,7 +549,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
             merged_candidates,
             installable_set,
             missing_set,
-            pool,
+            solver_cache,
             merged_solvable_display,
         }
     }
@@ -566,6 +579,29 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
         pub enum DisplayOp {
             Requirement(VersionSetId, Vec<EdgeIndex>),
             Candidate(NodeIndex),
+        }
+
+        let mut solvables_by_name = HashMap::new();
+        for &solvable_id in &self.graph.solvables {
+            if solvable_id.is_root() {
+                continue;
+            }
+
+            let name_id = self
+                .solver_cache
+                .pool()
+                .resolve_solvable(solvable_id)
+                .name_id();
+            solvables_by_name
+                .entry(name_id)
+                .or_insert(Vec::new())
+                .push(solvable_id);
+        }
+
+        for solvables in solvables_by_name.values_mut() {
+            self.solver_cache
+                .provider
+                .sort_candidates(self.solver_cache, solvables.as_mut_slice());
         }
 
         let graph = &self.graph.graph;
@@ -601,9 +637,16 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         installable_nodes.contains(&target)
                     });
 
-                    let req = self.pool.resolve_version_set(version_set_id).to_string();
-                    let name = self.pool.resolve_version_set_package_name(version_set_id);
-                    let name = self.pool.resolve_package_name(name);
+                    let req = self
+                        .solver_cache
+                        .pool()
+                        .resolve_version_set(version_set_id)
+                        .to_string();
+                    let name = self
+                        .solver_cache
+                        .pool()
+                        .resolve_version_set_package_name(version_set_id);
+                    let name = self.solver_cache.pool().resolve_package_name(name);
                     let target_nx = graph.edge_endpoints(edges[0]).unwrap().1;
                     let missing =
                         edges.len() == 1 && graph[target_nx] == ProblemNode::UnresolvedDependency;
@@ -664,15 +707,62 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         continue;
                     }
 
-                    let solvable = self.pool.resolve_solvable(solvable_id);
-                    let name = self.pool.resolve_package_name(solvable.name);
+                    let solvable = self.solver_cache.pool().resolve_solvable(solvable_id);
+                    let name = self.solver_cache.pool().resolve_package_name(solvable.name);
                     let version = if let Some(merged) = self.merged_candidates.get(&solvable_id) {
                         reported.extend(merged.ids.iter().cloned());
+
+                        // Get candidates (sorted desc)
+                        let mut grouped_solvables = merged.ids.clone();
+                        self.solver_cache
+                            .dependency_provider()
+                            .sort_candidates(self.solver_cache, &mut grouped_solvables);
+
+                        // Get all other solvables for the same name (sorted desc)
+                        let name_id = self
+                            .solver_cache
+                            .pool()
+                            .resolve_solvable(grouped_solvables[0])
+                            .name_id();
+                        let solvables = &solvables_by_name[&name_id];
+
+                        // Detect ranges, separated by holes
+                        let mut ranges = Vec::new();
+                        let mut current_range = Vec::new();
+                        let mut grouped_left = grouped_solvables.as_slice();
+                        let mut solvables_left = solvables.as_slice();
+                        while !grouped_left.is_empty() && !solvables_left.is_empty() {
+                            let next_grouped = grouped_left[0];
+                            let next_solvable = solvables_left[0];
+
+                            // Check if the range is interrupted
+                            if next_grouped != next_solvable {
+                                // Finish the current range (if any) and advance
+                                if !current_range.is_empty() {
+                                    ranges.push(current_range);
+                                    current_range = Vec::new();
+                                }
+
+                                solvables_left = &solvables_left[1..];
+                                continue;
+                            }
+
+                            // Both solvables are similar! Extend the range and advance
+                            current_range.push(next_grouped);
+                            grouped_left = &grouped_left[1..];
+                            solvables_left = &solvables_left[1..];
+                        }
+
+                        // Finish the current range (if any) and advance
+                        if !current_range.is_empty() {
+                            ranges.push(current_range);
+                        }
+
                         self.merged_solvable_display
-                            .display_candidates(self.pool, &merged.ids)
+                            .display_candidates(self.solver_cache.pool(), &ranges)
                     } else {
                         self.merged_solvable_display
-                            .display_candidates(self.pool, &[solvable_id])
+                            .display_candidates(self.solver_cache.pool(), &[vec![solvable_id]])
                     };
 
                     let excluded = graph
@@ -701,7 +791,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         writeln!(
                             f,
                             "{indent}{name} {version} is excluded because {reason}",
-                            reason = self.pool.resolve_string(excluded_reason)
+                            reason = self.solver_cache.pool().resolve_string(excluded_reason)
                         )?;
                     } else if is_leaf {
                         writeln!(f, "{indent}{name} {version}")?;
@@ -722,9 +812,13 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
 
                         let indent = Self::get_indent(depth + 1, top_level_indent);
                         for &version_set_id in version_sets {
-                            let version_set = self.pool.resolve_version_set(version_set_id);
-                            let name = self.pool.resolve_version_set_package_name(version_set_id);
-                            let name = self.pool.resolve_package_name(name);
+                            let version_set =
+                                self.solver_cache.pool().resolve_version_set(version_set_id);
+                            let name = self
+                                .solver_cache
+                                .pool()
+                                .resolve_version_set_package_name(version_set_id);
+                            let name = self.solver_cache.pool().resolve_package_name(name);
                             writeln!(
                                 f,
                                 "{indent}{name} {version_set} , which conflicts with any installable versions previously reported",
@@ -760,8 +854,12 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
     }
 }
 
-impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::Display
-    for DisplayUnsat<'_, VS, N, M>
+impl<
+        VS: VersionSet,
+        N: PackageName + Display,
+        M: SolvableDisplay<VS, N>,
+        D: DependencyProvider<VS, N>,
+    > fmt::Display for DisplayUnsat<'_, VS, N, M, D>
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (top_level_missing, top_level_conflicts): (Vec<_>, _) = self
@@ -792,13 +890,13 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                         unreachable!()
                     }
                     &ConflictCause::Locked(solvable_id) => {
-                        let locked = self.pool.resolve_solvable(solvable_id);
+                        let locked = self.solver_cache.pool().resolve_solvable(solvable_id);
                         writeln!(
                             f,
                             "{indent}{} {} is locked, but another version is required as reported above",
-                            locked.name.display(self.pool),
+                            locked.name.display(self.solver_cache.pool()),
                             self.merged_solvable_display
-                                .display_candidates(self.pool, &[solvable_id])
+                                .display_candidates(self.solver_cache.pool(), &[vec![solvable_id]])
                         )?;
                     }
                     ConflictCause::Excluded => continue,

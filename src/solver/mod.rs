@@ -75,6 +75,11 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> Solver<VS, N,
     pub fn pool(&self) -> &Pool<VS, N> {
         self.cache.pool()
     }
+
+    /// Returns a reference to the depdendency provider used by the solver
+    pub fn cache(&self) -> &SolverCache<VS, N, D> {
+        &self.cache
+    }
 }
 
 /// The root cause of a solver error.
