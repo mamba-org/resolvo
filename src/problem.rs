@@ -248,7 +248,6 @@ pub enum ConflictCause {
 /// - They all have the same name
 /// - They all have the same predecessor nodes
 /// - They all have the same successor nodes
-/// - None of them have incoming conflicting edges
 pub(crate) struct MergedProblemNode {
     pub ids: Vec<SolvableId>,
 }
@@ -369,14 +368,6 @@ impl ProblemGraph {
                     }
                 }
             };
-
-            if graph
-                .edges_directed(node_id, Direction::Incoming)
-                .any(|e| matches!(e.weight(), ProblemEdge::Conflict(..)))
-            {
-                // Nodes that are the target of a conflict should never be merged
-                continue;
-            }
 
             let predecessors: Vec<_> = graph
                 .edges_directed(node_id, Direction::Incoming)
