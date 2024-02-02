@@ -3,11 +3,11 @@ source: tests/solver.rs
 expression: "solve_snapshot(provider, &[\"a\"])"
 ---
 The following packages are incompatible
-|-- a * cannot be installed because there are no viable options:
-    |-- a 2 would require
-        |-- b *, which cannot be installed because there are no viable options:
-            |-- b 1 is excluded because it is externally excluded
-    |-- a 1 would require
-        |-- c *, which cannot be installed because there are no viable options:
-            |-- c 1 is excluded because it is externally excluded
+└─ a * cannot be installed because there are no viable options:
+   ├─ a 2 would require
+   │  └─ b *, which cannot be installed because there are no viable options:
+   │     └─ b 1 is excluded because it is externally excluded
+   └─ a 1 would require
+      └─ c *, which cannot be installed because there are no viable options:
+         └─ c 1 is excluded because it is externally excluded
 
