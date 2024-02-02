@@ -1,9 +1,8 @@
 ---
 source: tests/solver.rs
-assertion_line: 565
 expression: error
 ---
 asdf * cannot be installed because there are no viable options:
-|-- asdf 1 would require
-    |-- c >=2, <3, for which no candidates were found.
+└─ asdf 1 would require
+   └─ c >=2, <3, for which no candidates were found.
 
