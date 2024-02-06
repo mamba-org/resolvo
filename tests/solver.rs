@@ -251,7 +251,7 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
         self.pool.clone()
     }
 
-    fn sort_candidates(
+    async fn sort_candidates(
         &self,
         _solver: &SolverCache<Range<Pack>, String, Self>,
         solvables: &mut [SolvableId],

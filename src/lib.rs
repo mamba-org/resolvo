@@ -67,7 +67,17 @@ pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
     /// Sort the specified solvables based on which solvable to try first. The solver will
     /// iteratively try to select the highest version. If a conflict is found with the highest
     /// version the next version is tried. This continues until a solution is found.
-    fn sort_candidates(&self, solver: &SolverCache<VS, N, Self>, solvables: &mut [SolvableId]);
+    ///
+    /// # Async
+    ///
+    /// The returned future will be awaited by a tokio runtime blocking the main thread. You are
+    /// free to use other runtimes in your implementation, as long as the runtime-specific code runs
+    /// in threads controlled by that runtime (and _not_ in the main thread). For instance, you can
+    /// use `async_std::task::spawn` to spawn a new task, use `async_std::io` inside the task to
+    /// retrieve necessary information from the network, and `await` the returned task handle.
+
+    #[allow(async_fn_in_trait)]
+    async fn sort_candidates(&self, solver: &SolverCache<VS, N, Self>, solvables: &mut [SolvableId]);
 
     /// Obtains a list of solvables that should be considered when a package with the given name is
     /// requested.
