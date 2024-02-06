@@ -409,7 +409,7 @@ pub mod tests {
                     segments.push((start_bound, Unbounded));
                 }
 
-                return Range { segments }.check_invariants();
+                Range { segments }.check_invariants()
             })
     }
 

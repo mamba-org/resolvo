@@ -263,7 +263,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             // Add clauses for the requirements
             let add_requirements = requirements.into_iter().map(|version_set_id| async move {
                 let dependency_name = self.pool.resolve_version_set_package_name(version_set_id);
-                self.add_clauses_for_package(&output, dependency_name)
+                self.add_clauses_for_package(output, dependency_name)
                     .await?;
 
                 // Find all the solvables that match for the given version set
@@ -321,7 +321,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
             let add_constrains = constrains.into_iter().map(|version_set_id| async move {
                 let dependency_name = self.pool.resolve_version_set_package_name(version_set_id);
-                self.add_clauses_for_package(&output, dependency_name)
+                self.add_clauses_for_package(output, dependency_name)
                     .await?;
 
                 // Find all the solvables that match for the given version set

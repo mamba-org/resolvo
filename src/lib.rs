@@ -77,7 +77,11 @@ pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
     /// retrieve necessary information from the network, and `await` the returned task handle.
 
     #[allow(async_fn_in_trait)]
-    async fn sort_candidates(&self, solver: &SolverCache<VS, N, Self>, solvables: &mut [SolvableId]);
+    async fn sort_candidates(
+        &self,
+        solver: &SolverCache<VS, N, Self>,
+        solvables: &mut [SolvableId],
+    );
 
     /// Obtains a list of solvables that should be considered when a package with the given name is
     /// requested.

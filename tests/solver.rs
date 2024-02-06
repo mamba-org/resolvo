@@ -62,7 +62,7 @@ impl Pack {
     }
 
     fn offset(&self, version_offset: i32) -> Pack {
-        let mut pack = self.clone();
+        let mut pack = *self;
         pack.version = pack.version.wrapping_add_signed(version_offset);
         pack
     }
@@ -167,7 +167,7 @@ impl BundleBoxProvider {
 
     pub fn requirements(&self, requirements: &[&str]) -> Vec<VersionSetId> {
         requirements
-            .into_iter()
+            .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
             .map(|spec| {
                 let dep_name = self.pool.intern_package_name(&spec.name);
@@ -210,13 +210,13 @@ impl BundleBoxProvider {
         constrains: &[&str],
     ) {
         let dependencies = dependencies
-            .into_iter()
+            .iter()
             .map(|dep| Spec::from_str(dep))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
         let constrains = constrains
-            .into_iter()
+            .iter()
             .map(|dep| Spec::from_str(dep))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -239,7 +239,7 @@ impl BundleBoxProvider {
         if self.sleep_before_return {
             tokio::time::sleep(Duration::from_millis(10)).await;
             self.concurrent_requests.fetch_sub(1, Ordering::SeqCst);
-            return value;
+            value
         } else {
             value
         }
@@ -872,8 +872,8 @@ fn test_unsat_constrains() {
         ("b", 42, vec![]),
     ]);
 
-    provider.add_package("c", 10.into(), &vec![], &vec!["b 0..50"]);
-    provider.add_package("c", 8.into(), &vec![], &vec!["b 0..50"]);
+    provider.add_package("c", 10.into(), &[], &["b 0..50"]);
+    provider.add_package("c", 8.into(), &[], &["b 0..50"]);
     let error = solve_unsat(provider, &["a", "c"]);
     insta::assert_snapshot!(error);
 }
@@ -888,8 +888,8 @@ fn test_unsat_constrains_2() {
         ("b", 2, vec!["c 2"]),
     ]);
 
-    provider.add_package("c", 1.into(), &vec![], &vec!["a 3"]);
-    provider.add_package("c", 2.into(), &vec![], &vec!["a 3"]);
+    provider.add_package("c", 1.into(), &[], &["a 3"]);
+    provider.add_package("c", 2.into(), &[], &["a 3"]);
     let error = solve_unsat(provider, &["a"]);
     insta::assert_snapshot!(error);
 }

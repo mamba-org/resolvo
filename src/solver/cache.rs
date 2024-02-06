@@ -211,7 +211,9 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                 // Sort all the candidates in order in which they should be tried by the solver.
                 let mut sorted_candidates = Vec::new();
                 sorted_candidates.extend_from_slice(matching_candidates);
-                self.provider.sort_candidates(self, &mut sorted_candidates).await;
+                self.provider
+                    .sort_candidates(self, &mut sorted_candidates)
+                    .await;
 
                 // If we have a solvable that we favor, we sort that to the front. This ensures
                 // that the version that is favored is picked first.
