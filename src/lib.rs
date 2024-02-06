@@ -157,6 +157,7 @@ pub struct Candidates {
 }
 
 /// Holds information about the dependencies of a package.
+#[derive(Debug, Clone)]
 pub enum Dependencies {
     /// The dependencies are known.
     Known(KnownDependencies),
