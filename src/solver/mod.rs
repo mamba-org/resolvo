@@ -195,21 +195,21 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
         let mut output = AddClauseOutput::default();
 
         pub enum TaskResult<'i> {
-            DependenciesAvailable {
+            Dependencies {
                 solvable_id: SolvableId,
                 dependencies: Dependencies,
             },
-            SortedCandidatesAvailable {
+            SortedCandidates {
                 solvable_id: SolvableId,
                 version_set_id: VersionSetId,
                 candidates: &'i [SolvableId],
             },
-            NonMatchingCandidatesAvailable {
+            NonMatchingCandidates {
                 solvable_id: SolvableId,
                 version_set_id: VersionSetId,
                 non_matching_candidates: Vec<SolvableId>,
             },
-            PackageCandidatesAvailable {
+            Candidates {
                 name_id: NameId,
                 package_candidates: &'i Candidates,
             },
@@ -238,7 +238,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 );
 
                 let get_dependencies_fut = match solvable.inner {
-                    SolvableInner::Root => ready(Ok(TaskResult::DependenciesAvailable {
+                    SolvableInner::Root => ready(Ok(TaskResult::Dependencies {
                         solvable_id,
                         dependencies: Dependencies::Known(KnownDependencies {
                             requirements: self.root_requirements.clone(),
@@ -248,7 +248,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                     .left_future(),
                     SolvableInner::Package(_) => async move {
                         let deps = self.cache.get_or_cache_dependencies(solvable_id).await?;
-                        Ok(TaskResult::DependenciesAvailable {
+                        Ok(TaskResult::Dependencies {
                             solvable_id,
                             dependencies: deps.clone(),
                         })
@@ -265,10 +265,17 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             };
 
             match result? {
-                TaskResult::DependenciesAvailable {
+                TaskResult::Dependencies {
                     solvable_id,
                     dependencies,
                 } => {
+                    // Get the solvable information and request its requirements and constraints
+                    let solvable = self.pool.resolve_internal_solvable(solvable_id);
+                    tracing::trace!(
+                        "dependencies available for {}",
+                        solvable.display(&self.pool)
+                    );
+
                     let (requirements, constrains) = match dependencies {
                         Dependencies::Known(deps) => (deps.requirements, deps.constrains),
                         Dependencies::Unknown(reason) => {
@@ -305,7 +312,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                 async move {
                                     let package_candidates =
                                         self.cache.get_or_cache_candidates(dependency_name).await?;
-                                    Ok(TaskResult::PackageCandidatesAvailable {
+                                    Ok(TaskResult::Candidates {
                                         name_id: dependency_name,
                                         package_candidates,
                                     })
@@ -323,7 +330,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                     .cache
                                     .get_or_cache_sorted_candidates(version_set_id)
                                     .await?;
-                                Ok(TaskResult::SortedCandidatesAvailable {
+                                Ok(TaskResult::SortedCandidates {
                                     solvable_id,
                                     version_set_id,
                                     candidates,
@@ -342,7 +349,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                     .get_or_cache_non_matching_candidates(version_set_id)
                                     .await?
                                     .to_vec();
-                                Ok(TaskResult::NonMatchingCandidatesAvailable {
+                                Ok(TaskResult::NonMatchingCandidates {
                                     solvable_id,
                                     version_set_id,
                                     non_matching_candidates,
@@ -352,10 +359,14 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                         )
                     }
                 }
-                TaskResult::PackageCandidatesAvailable {
-                    name_id: _,
+                TaskResult::Candidates {
+                    name_id,
                     package_candidates,
                 } => {
+                    // Get the solvable information and request its requirements and constraints
+                    let solvable = self.pool.resolve_package_name(name_id);
+                    tracing::trace!("package candidates available for {}", solvable);
+
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
 
@@ -409,11 +420,21 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                         debug_assert!(self.decision_tracker.assigned_value(solvable) != Some(true));
                     }
                 }
-                TaskResult::SortedCandidatesAvailable {
+                TaskResult::SortedCandidates {
                     solvable_id,
                     version_set_id,
                     candidates,
                 } => {
+                    let version_set_name = self.pool.resolve_package_name(
+                        self.pool.resolve_version_set_package_name(version_set_id),
+                    );
+                    let version_set = self.pool.resolve_version_set(version_set_id);
+                    tracing::trace!(
+                        "sorted candidates available for {} {}",
+                        version_set_name,
+                        version_set
+                    );
+
                     // Queue requesting the dependencies of the candidates as well if they are cheaply
                     // available from the dependency provider.
                     for &candidate in candidates {
@@ -456,11 +477,21 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                         output.negative_assertions.push((solvable_id, clause_id));
                     }
                 }
-                TaskResult::NonMatchingCandidatesAvailable {
+                TaskResult::NonMatchingCandidates {
                     solvable_id,
                     version_set_id,
                     non_matching_candidates,
                 } => {
+                    let version_set_name = self.pool.resolve_package_name(
+                        self.pool.resolve_version_set_package_name(version_set_id),
+                    );
+                    let version_set = self.pool.resolve_version_set(version_set_id);
+                    tracing::trace!(
+                        "non matching candidates available for {} {}",
+                        version_set_name,
+                        version_set
+                    );
+
                     // Add forbidden clauses for the candidates
                     for forbidden_candidate in non_matching_candidates {
                         let (clause, conflict) = ClauseState::constrains(
@@ -483,7 +514,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
         Ok(output)
     }
-    //
+
     // /// Adds all clauses for a specific package name.
     // ///
     // /// These clauses include:

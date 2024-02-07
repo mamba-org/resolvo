@@ -304,6 +304,14 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
     }
 
     async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
+        tracing::info!(
+            "get dependencies for {}",
+            self.pool
+                .resolve_solvable(solvable)
+                .name_id()
+                .display(&self.pool)
+        );
+
         let concurrent_requests = self.concurrent_requests.fetch_add(1, Ordering::SeqCst);
         self.concurrent_requests_max.set(
             self.concurrent_requests_max

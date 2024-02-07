@@ -10,10 +10,8 @@ use crate::{
 };
 use bitvec::vec::BitVec;
 use elsa::FrozenMap;
-use std::any::Any;
-use std::cell::RefCell;
-use std::marker::PhantomData;
-use std::rc::Rc;
+use std::{any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
+use tokio::sync::Notify;
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.
@@ -23,6 +21,7 @@ pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS,
     /// A mapping from package name to a list of candidates.
     candidates: Arena<CandidatesId, Candidates>,
     package_name_to_candidates: FrozenCopyMap<NameId, CandidatesId>,
+    package_name_to_candidates_in_flight: RefCell<HashMap<NameId, Rc<Notify>>>,
 
     /// A mapping of `VersionSetId` to the candidates that match that set.
     version_set_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
@@ -54,6 +53,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
 
             candidates: Default::default(),
             package_name_to_candidates: Default::default(),
+            package_name_to_candidates_in_flight: Default::default(),
             version_set_candidates: Default::default(),
             version_set_inverse_candidates: Default::default(),
             version_set_to_sorted_candidates: Default::default(),
@@ -90,33 +90,63 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     return Err(value);
                 }
 
-                // Otherwise we have to get them from the DependencyProvider
-                let candidates = self
-                    .provider
-                    .get_candidates(package_name)
-                    .await
-                    .unwrap_or_default();
+                // Check if there is an in-flight request
+                let in_flight_request = self
+                    .package_name_to_candidates_in_flight
+                    .borrow()
+                    .get(&package_name)
+                    .cloned();
+                match in_flight_request {
+                    Some(in_flight) => {
+                        // Found an in-flight request, wait for that request to finish and return the computed result.
+                        in_flight.notified().await;
+                        self.package_name_to_candidates
+                            .get_copy(&package_name)
+                            .expect("after waiting for a request the result should be available")
+                    }
+                    None => {
+                        // Prepare an in-flight notifier for other requests coming in.
+                        self.package_name_to_candidates_in_flight
+                            .borrow_mut()
+                            .insert(package_name, Rc::new(Notify::new()));
 
-                // Store information about which solvables dependency information is easy to
-                // retrieve.
-                {
-                    let mut hint_dependencies_available =
-                        self.hint_dependencies_available.borrow_mut();
-                    for hint_candidate in candidates.hint_dependencies_available.iter() {
-                        let idx = hint_candidate.to_usize();
-                        if hint_dependencies_available.len() <= idx {
-                            hint_dependencies_available.resize(idx + 1, false);
+                        // Otherwise we have to get them from the DependencyProvider
+                        let candidates = self
+                            .provider
+                            .get_candidates(package_name)
+                            .await
+                            .unwrap_or_default();
+
+                        // Store information about which solvables dependency information is easy to
+                        // retrieve.
+                        {
+                            let mut hint_dependencies_available =
+                                self.hint_dependencies_available.borrow_mut();
+                            for hint_candidate in candidates.hint_dependencies_available.iter() {
+                                let idx = hint_candidate.to_usize();
+                                if hint_dependencies_available.len() <= idx {
+                                    hint_dependencies_available.resize(idx + 1, false);
+                                }
+                                hint_dependencies_available.set(idx, true)
+                            }
                         }
-                        hint_dependencies_available.set(idx, true)
+
+                        // Allocate an ID so we can refer to the candidates from everywhere
+                        let candidates_id = self.candidates.alloc(candidates);
+                        self.package_name_to_candidates
+                            .insert_copy(package_name, candidates_id);
+
+                        // Remove the in-flight request now that we inserted the result and notify any waiters
+                        let notifier = self
+                            .package_name_to_candidates_in_flight
+                            .borrow_mut()
+                            .remove(&package_name)
+                            .expect("notifier should be there");
+                        notifier.notify_waiters();
+
+                        candidates_id
                     }
                 }
-
-                // Allocate an ID so we can refer to the candidates from everywhere
-                let candidates_id = self.candidates.alloc(candidates);
-                self.package_name_to_candidates
-                    .insert_copy(package_name, candidates_id);
-
-                candidates_id
             }
         };
 
