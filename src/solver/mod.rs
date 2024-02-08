@@ -217,14 +217,15 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
         // Mark the initial seen solvables as seen
         let mut pending_solvables = vec![];
-        let mut clauses_added_for_solvable = self.clauses_added_for_solvable.borrow_mut();
-        for solvable_id in solvable_ids {
-            if clauses_added_for_solvable.insert(solvable_id) {
-                pending_solvables.push(solvable_id);
+        {
+            let mut clauses_added_for_solvable = self.clauses_added_for_solvable.borrow_mut();
+            for solvable_id in solvable_ids {
+                if clauses_added_for_solvable.insert(solvable_id) {
+                    pending_solvables.push(solvable_id);
+                }
             }
         }
 
-        let mut clauses_added_for_package = self.clauses_added_for_package.borrow_mut();
         let mut seen = pending_solvables.iter().copied().collect::<HashSet<_>>();
         let mut pending_futures = FuturesUnordered::new();
         loop {
@@ -263,6 +264,9 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                 // No more pending results
                 break;
             };
+
+            let mut clauses_added_for_solvable = self.clauses_added_for_solvable.borrow_mut();
+            let mut clauses_added_for_package = self.clauses_added_for_package.borrow_mut();
 
             match result? {
                 TaskResult::Dependencies {

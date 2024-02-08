@@ -5,6 +5,8 @@ use resolvo::{
     KnownDependencies, NameId, Pool, SolvableId, Solver, SolverCache, UnsolvableOrCancelled,
     VersionSet, VersionSetId,
 };
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -153,6 +155,10 @@ struct BundleBoxProvider {
     concurrent_requests: Arc<AtomicUsize>,
     concurrent_requests_max: Rc<Cell<usize>>,
     sleep_before_return: bool,
+
+    // A mapping of packages that we have requested candidates for. This way we can keep track of duplicate requests.
+    requested_candidates: RefCell<HashSet<NameId>>,
+    requested_dependencies: RefCell<HashSet<SolvableId>>,
 }
 
 struct BundleBoxPackageDependencies {
@@ -272,6 +278,11 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
                 .max(concurrent_requests + 1),
         );
 
+        assert!(
+            self.requested_candidates.borrow_mut().insert(name),
+            "duplicate get_candidates request"
+        );
+
         let package_name = self.pool.resolve_package_name(name);
         let Some(package) = self.packages.get(package_name) else {
             return self.maybe_delay(None).await;
@@ -317,6 +328,11 @@ impl DependencyProvider<Range<Pack>> for BundleBoxProvider {
             self.concurrent_requests_max
                 .get()
                 .max(concurrent_requests + 1),
+        );
+
+        assert!(
+            self.requested_dependencies.borrow_mut().insert(solvable),
+            "duplicate get_dependencies request"
         );
 
         let candidate = self.pool.resolve_solvable(solvable);
