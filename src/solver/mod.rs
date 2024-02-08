@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use itertools::{chain, Itertools};
 
+use crate::runtime::{AsyncRuntime, NowOrNeverRuntime};
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
@@ -44,10 +45,15 @@ struct AddClauseOutput {
 }
 
 /// Drives the SAT solving process
-pub struct Solver<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> {
+pub struct Solver<
+    VS: VersionSet,
+    N: PackageName,
+    D: DependencyProvider<VS, N>,
+    RT: AsyncRuntime = NowOrNeverRuntime,
+> {
     /// The [Pool] used by the solver
     pub pool: Rc<Pool<VS, N>>,
-    pub(crate) async_runtime: tokio::runtime::Runtime,
+    pub(crate) async_runtime: RT,
     pub(crate) cache: SolverCache<VS, N, D>,
 
     pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
@@ -69,22 +75,16 @@ pub struct Solver<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> 
     root_requirements: Vec<VersionSetId>,
 }
 
-impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> Solver<VS, N, D> {
+impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>>
+    Solver<VS, N, D, NowOrNeverRuntime>
+{
     /// Create a solver, using the provided pool and async runtime.
-    ///
-    /// # Async runtime
-    ///
-    /// The solver uses tokio to await the results of async methods in [DependencyProvider]. It will
-    /// run them concurrently, but blocking the main thread. That means that a single-threaded tokio
-    /// runtime is usually enough. It is also possible to use a different runtime, as long as you
-    /// avoid mixing incompatible futures. For details, check out the documentation for the async
-    /// methods of [DependencyProvider].
-    pub fn new(provider: D, async_runtime: tokio::runtime::Runtime) -> Self {
+    pub fn new(provider: D) -> Self {
         let pool = provider.pool();
         Self {
             cache: SolverCache::new(provider),
             pool,
-            async_runtime,
+            async_runtime: NowOrNeverRuntime,
             clauses: RefCell::new(Arena::new()),
             requires_clauses: Default::default(),
             watches: WatchMap::new(),
@@ -97,19 +97,6 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> Solver<VS, N,
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
         }
-    }
-
-    /// Create a solver, using the provided pool and the default async runtime.
-    ///
-    /// The default is a single-threaded tokio runtime without any features enabled. If you need
-    /// something more advanced, consider providing your own runtime through [Self::new].
-    pub fn new_with_default_runtime(provider: D) -> Self {
-        Self::new(
-            provider,
-            tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap(),
-        )
     }
 }
 
@@ -140,7 +127,29 @@ pub(crate) enum PropagationError {
     Cancelled(Box<dyn Any>),
 }
 
-impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Solver<VS, N, D> {
+impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT: AsyncRuntime>
+    Solver<VS, N, D, RT>
+{
+    /// Set the runtime of the solver to `runtime`.
+    pub fn with_runtime<RT2: AsyncRuntime>(self, runtime: RT2) -> Solver<VS, N, D, RT2> {
+        Solver {
+            pool: self.pool,
+            async_runtime: runtime,
+            cache: self.cache,
+            clauses: self.clauses,
+            requires_clauses: self.requires_clauses,
+            watches: self.watches,
+            negative_assertions: self.negative_assertions,
+            learnt_clauses: self.learnt_clauses,
+            learnt_why: self.learnt_why,
+            learnt_clause_ids: self.learnt_clause_ids,
+            clauses_added_for_package: self.clauses_added_for_package,
+            clauses_added_for_solvable: self.clauses_added_for_solvable,
+            decision_tracker: self.decision_tracker,
+            root_requirements: self.root_requirements,
+        }
+    }
+
     /// Solves the provided `jobs` and returns a transaction from the found solution
     ///
     /// Returns a [`Problem`] if no solution was found, which provides ways to inspect the causes
@@ -207,7 +216,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
             NonMatchingCandidates {
                 solvable_id: SolvableId,
                 version_set_id: VersionSetId,
-                non_matching_candidates: Vec<SolvableId>,
+                non_matching_candidates: &'i [SolvableId],
             },
             Candidates {
                 name_id: NameId,
@@ -351,8 +360,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                                 let non_matching_candidates = self
                                     .cache
                                     .get_or_cache_non_matching_candidates(version_set_id)
-                                    .await?
-                                    .to_vec();
+                                    .await?;
                                 Ok(TaskResult::NonMatchingCandidates {
                                     solvable_id,
                                     version_set_id,
@@ -497,7 +505,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
                     );
 
                     // Add forbidden clauses for the candidates
-                    for forbidden_candidate in non_matching_candidates {
+                    for &forbidden_candidate in non_matching_candidates {
                         let (clause, conflict) = ClauseState::constrains(
                             solvable_id,
                             forbidden_candidate,
@@ -518,107 +526,6 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>> Sol
 
         Ok(output)
     }
-
-    // /// Adds all clauses for a specific package name.
-    // ///
-    // /// These clauses include:
-    // ///
-    // /// 1. making sure that only a single candidate for the package is selected (forbid multiple)
-    // /// 2. if there is a locked candidate then that candidate is the only selectable candidate.
-    // ///
-    // /// If this function is called with the same package name twice, the clauses will only be added
-    // /// once.
-    // ///
-    // /// There is no need to propagate after adding these clauses because none of the clauses are
-    // /// assertions (only a single literal) and we assume that no decision has been made about any
-    // /// of the solvables involved. This assumption is checked when debug_assertions are enabled.
-    // ///
-    // /// If the provider has requested the solving process to be cancelled, the cancellation value
-    // /// will be returned as an `Err(...)`.
-    // async fn add_clauses_for_package(
-    //     &self,
-    //     output: &RefCell<AddClauseOutput>,
-    //     package_name: NameId,
-    // ) -> Result<(), Box<dyn Any>> {
-    //     let mutex = {
-    //         let mut clauses = self.clauses_added_for_package.borrow_mut();
-    //         let mutex = clauses
-    //             .entry(package_name)
-    //             .or_insert_with(|| Rc::new(tokio::sync::Mutex::new(false)));
-    //         mutex.clone()
-    //     };
-    //
-    //     // This prevents concurrent calls to `add_clauses_for_package` from racing. Only the first
-    //     // call for a given package will go through, and others will wait till it completes.
-    //     let mut clauses_added = mutex.lock().await;
-    //     if *clauses_added {
-    //         return Ok(());
-    //     }
-    //
-    //     tracing::trace!(
-    //         "┝━ adding clauses for package '{}'",
-    //         self.pool.resolve_package_name(package_name)
-    //     );
-    //
-    //     let package_candidates = self.cache.get_or_cache_candidates(package_name).await?;
-    //     let locked_solvable_id = package_candidates.locked;
-    //     let candidates = &package_candidates.candidates;
-    //
-    //     // Check the assumption that no decision has been made about any of the solvables.
-    //     for &candidate in candidates {
-    //         debug_assert!(
-    //             self.decision_tracker.assigned_value(candidate).is_none(),
-    //             "a decision has been made about a candidate of a package that was not properly added yet."
-    //         );
-    //     }
-    //
-    //     let mut output = output.borrow_mut();
-    //
-    //     // Each candidate gets a clause to disallow other candidates.
-    //     for (i, &candidate) in candidates.iter().enumerate() {
-    //         for &other_candidate in &candidates[i + 1..] {
-    //             let clause_id = self
-    //                 .clauses
-    //                 .borrow_mut()
-    //                 .alloc(ClauseState::forbid_multiple(candidate, other_candidate));
-    //
-    //             debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
-    //             output.clauses_to_watch.push(clause_id);
-    //         }
-    //     }
-    //
-    //     // If there is a locked solvable, forbid other solvables.
-    //     if let Some(locked_solvable_id) = locked_solvable_id {
-    //         for &other_candidate in candidates {
-    //             if other_candidate != locked_solvable_id {
-    //                 let clause_id = self
-    //                     .clauses
-    //                     .borrow_mut()
-    //                     .alloc(ClauseState::lock(locked_solvable_id, other_candidate));
-    //
-    //                 debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
-    //                 output.clauses_to_watch.push(clause_id);
-    //             }
-    //         }
-    //     }
-    //
-    //     // Add a clause for solvables that are externally excluded.
-    //     for (solvable, reason) in package_candidates.excluded.iter().copied() {
-    //         let clause_id = self
-    //             .clauses
-    //             .borrow_mut()
-    //             .alloc(ClauseState::exclude(solvable, reason));
-    //
-    //         // Exclusions are negative assertions, tracked outside of the watcher system
-    //         output.negative_assertions.push((solvable, clause_id));
-    //
-    //         // Conflicts should be impossible here
-    //         debug_assert!(self.decision_tracker.assigned_value(solvable) != Some(true));
-    //     }
-    //
-    //     *clauses_added = true;
-    //     Ok(())
-    // }
 
     /// Run the CDCL algorithm to solve the SAT problem
     ///

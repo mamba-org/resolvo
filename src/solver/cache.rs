@@ -10,8 +10,8 @@ use crate::{
 };
 use bitvec::vec::BitVec;
 use elsa::FrozenMap;
+use event_listener::Event;
 use std::{any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
-use tokio::sync::Notify;
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.
@@ -21,7 +21,7 @@ pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS,
     /// A mapping from package name to a list of candidates.
     candidates: Arena<CandidatesId, Candidates>,
     package_name_to_candidates: FrozenCopyMap<NameId, CandidatesId>,
-    package_name_to_candidates_in_flight: RefCell<HashMap<NameId, Rc<Notify>>>,
+    package_name_to_candidates_in_flight: RefCell<HashMap<NameId, Rc<Event>>>,
 
     /// A mapping of `VersionSetId` to the candidates that match that set.
     version_set_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
@@ -99,7 +99,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                 match in_flight_request {
                     Some(in_flight) => {
                         // Found an in-flight request, wait for that request to finish and return the computed result.
-                        in_flight.notified().await;
+                        in_flight.listen().await;
                         self.package_name_to_candidates
                             .get_copy(&package_name)
                             .expect("after waiting for a request the result should be available")
@@ -108,7 +108,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                         // Prepare an in-flight notifier for other requests coming in.
                         self.package_name_to_candidates_in_flight
                             .borrow_mut()
-                            .insert(package_name, Rc::new(Notify::new()));
+                            .insert(package_name, Rc::new(Event::new()));
 
                         // Otherwise we have to get them from the DependencyProvider
                         let candidates = self
@@ -142,7 +142,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                             .borrow_mut()
                             .remove(&package_name)
                             .expect("notifier should be there");
-                        notifier.notify_waiters();
+                        notifier.notify(usize::MAX);
 
                         candidates_id
                     }

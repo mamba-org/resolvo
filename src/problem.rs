@@ -11,10 +11,10 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
-use crate::internal::id::StringId;
 use crate::{
-    internal::id::{ClauseId, SolvableId, VersionSetId},
+    internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
     pool::Pool,
+    runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
     DependencyProvider, PackageName, SolvableDisplay, VersionSet,
 };
@@ -40,9 +40,9 @@ impl Problem {
     }
 
     /// Generates a graph representation of the problem (see [`ProblemGraph`] for details)
-    pub fn graph<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>>(
+    pub fn graph<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>, RT: AsyncRuntime>(
         &self,
-        solver: &Solver<VS, N, D>,
+        solver: &Solver<VS, N, D, RT>,
     ) -> ProblemGraph {
         let mut graph = DiGraph::<ProblemNode, ProblemEdge>::default();
         let mut nodes: HashMap<SolvableId, NodeIndex> = HashMap::default();
@@ -158,9 +158,10 @@ impl Problem {
         N: PackageName + Display,
         D: DependencyProvider<VS, N>,
         M: SolvableDisplay<VS, N>,
+        RT: AsyncRuntime,
     >(
         &self,
-        solver: &'a Solver<VS, N, D>,
+        solver: &'a Solver<VS, N, D, RT>,
         pool: Rc<Pool<VS, N>>,
         merged_solvable_display: &'a M,
     ) -> DisplayUnsat<'a, VS, N, M> {

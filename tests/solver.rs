@@ -404,7 +404,7 @@ fn transaction_to_string<VS: VersionSet>(pool: &Pool<VS>, solvables: &Vec<Solvab
 fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     match solver.solve(requirements) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
         Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
@@ -436,7 +436,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     let requirements = provider.requirements(specs);
     let pool = provider.pool();
-    let mut solver = Solver::new(provider, runtime);
+    let mut solver = Solver::new(provider).with_runtime(runtime);
     match solver.solve(requirements) {
         Ok(solvables) => transaction_to_string(&pool, &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
@@ -462,7 +462,7 @@ fn test_unit_propagation_1() {
     let provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
     let root_requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(root_requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -482,7 +482,7 @@ fn test_unit_propagation_nested() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 2);
@@ -509,7 +509,7 @@ fn test_resolve_multiple() {
     ]);
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 2);
@@ -567,7 +567,7 @@ fn test_resolve_with_nonexisting() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -601,7 +601,7 @@ fn test_resolve_with_nested_deps() {
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -628,7 +628,7 @@ fn test_resolve_with_unknown_deps() {
     provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -673,7 +673,7 @@ fn test_resolve_locked_top_level() {
     let requirements = provider.requirements(&["asdf"]);
 
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -694,7 +694,7 @@ fn test_resolve_ignored_locked_top_level() {
 
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     assert_eq!(solved.len(), 1);
@@ -752,7 +752,7 @@ fn test_resolve_cyclic() {
         BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
     let requirements = provider.requirements(&["a 0..100"]);
     let pool = provider.pool();
-    let mut solver = Solver::new_with_default_runtime(provider);
+    let mut solver = Solver::new(provider);
     let solved = solver.solve(requirements).unwrap();
 
     let result = transaction_to_string(&pool, &solved);
