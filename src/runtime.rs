@@ -16,11 +16,6 @@
 //!
 //! ## `tokio`
 //!
-//! The solver uses tokio to await the results of async methods in [`crate::DependencyProvider`]. It
-//! will run them concurrently, but blocking the main thread. That means that a single-threaded
-//! tokio runtime is usually enough. It is also possible to use a different runtime, as long as you
-//! avoid mixing incompatible futures.
-//!
 //! The [`AsyncRuntime`] trait is implemented both for [`tokio::runtime::Handle`] and for
 //! [`tokio::runtime::Runtime`].
 //!
