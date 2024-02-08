@@ -508,6 +508,114 @@ impl ProblemGraph {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ChildOrder {
+    HasRemainingSiblings,
+    Last,
+}
+
+struct Indenter {
+    levels: Vec<ChildOrder>,
+    top_level_indent: bool,
+}
+
+impl Indenter {
+    fn new(top_level_indent: bool) -> Self {
+        Self {
+            levels: Vec::new(),
+            top_level_indent,
+        }
+    }
+
+    fn is_at_top_level(&self) -> bool {
+        self.levels.len() == 1
+    }
+
+    fn push_level(&self) -> Self {
+        self.push_level_with_order(ChildOrder::HasRemainingSiblings)
+    }
+
+    fn push_level_with_order(&self, order: ChildOrder) -> Self {
+        let mut levels = self.levels.clone();
+        levels.push(order);
+        Self {
+            levels,
+            top_level_indent: self.top_level_indent,
+        }
+    }
+
+    fn set_last(&mut self) {
+        *self.levels.last_mut().unwrap() = ChildOrder::Last;
+    }
+
+    fn get_indent(&self) -> String {
+        assert!(!self.levels.is_empty());
+
+        let mut s = String::new();
+
+        let deepest_level = self.levels.len() - 1;
+
+        for (level, &order) in self.levels.iter().enumerate() {
+            if level == 0 && !self.top_level_indent {
+                // Skip
+                continue;
+            }
+
+            let is_at_deepest_level = level == deepest_level;
+
+            let tree_prefix = match (is_at_deepest_level, order) {
+                (true, ChildOrder::HasRemainingSiblings) => "├─",
+                (true, ChildOrder::Last) => "└─",
+                (false, ChildOrder::HasRemainingSiblings) => "│ ",
+                (false, ChildOrder::Last) => "  ",
+            };
+
+            // TODO: are these the right characters? Alternatives: https://en.wikipedia.org/wiki/Box-drawing_character or look at mamba
+
+            s.push_str(tree_prefix);
+            s.push(' ');
+        }
+
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indenter_without_top_level_indent() {
+        let indenter = Indenter::new(false);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+    }
+
+    #[test]
+    fn test_indenter_with_multiple_siblings() {
+        let indenter = Indenter::new(true);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   ├─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │  └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │     └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   │        ├─ ");
+    }
+}
+
 /// A struct implementing [`fmt::Display`] that generates a user-friendly representation of a
 /// problem graph
 pub struct DisplayUnsat<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
@@ -542,19 +650,6 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
         }
     }
 
-    fn get_indent(depth: usize, top_level_indent: bool) -> String {
-        let depth_correction = if depth > 0 && !top_level_indent { 1 } else { 0 };
-
-        let mut indent = " ".repeat((depth - depth_correction) * 4);
-
-        let display_tree_char = depth != 0 || top_level_indent;
-        if display_tree_char {
-            indent.push_str("|-- ");
-        }
-
-        indent
-    }
-
     fn fmt_graph(
         &self,
         f: &mut Formatter<'_>,
@@ -574,6 +669,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
         let mut reported: HashSet<SolvableId> = HashSet::new();
 
         // Note: we are only interested in requires edges here
+        let indenter = Indenter::new(top_level_indent);
         let mut stack = top_level_edges
             .iter()
             .filter(|e| e.weight().try_requires().is_some())
@@ -588,10 +684,22 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     .iter()
                     .any(|&edge| installable_nodes.contains(&graph.edge_endpoints(edge).unwrap().1))
             })
-            .map(|(version_set_id, edges)| (DisplayOp::Requirement(version_set_id, edges), 0))
+            .map(|(version_set_id, edges)| {
+                (
+                    DisplayOp::Requirement(version_set_id, edges),
+                    indenter.push_level(),
+                )
+            })
             .collect::<Vec<_>>();
-        while let Some((node, depth)) = stack.pop() {
-            let indent = Self::get_indent(depth, top_level_indent);
+
+        if !stack.is_empty() {
+            // Mark the first element of the stack as not having any remaining siblings
+            stack[0].1.set_last();
+        }
+
+        while let Some((node, indenter)) = stack.pop() {
+            let top_level = indenter.is_at_top_level();
+            let indent = indenter.get_indent();
 
             match node {
                 DisplayOp::Requirement(version_set_id, edges) => {
@@ -610,7 +718,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         edges.len() == 1 && graph[target_nx] == ProblemNode::UnresolvedDependency;
                     if missing {
                         // No candidates for requirement
-                        if depth == 0 {
+                        if top_level {
                             writeln!(f, "{indent}No candidates were found for {name} {req}.")?;
                         } else {
                             writeln!(
@@ -620,7 +728,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         }
                     } else if installable {
                         // Package can be installed (only mentioned for top-level requirements)
-                        if depth == 0 {
+                        if top_level {
                             writeln!(
                                 f,
                                 "{indent}{name} {req} can be installed with any of the following options:"
@@ -629,33 +737,91 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                             writeln!(f, "{indent}{name} {req}, which can be installed with any of the following options:")?;
                         }
 
-                        stack.extend(
-                            edges
-                                .iter()
-                                .filter(|&&e| {
-                                    installable_nodes.contains(&graph.edge_endpoints(e).unwrap().1)
-                                })
-                                .map(|&e| {
-                                    (
-                                        DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
-                                        depth + 1,
-                                    )
-                                }),
-                        );
+                        let children: Vec<_> = edges
+                            .iter()
+                            .filter(|&&e| {
+                                installable_nodes.contains(&graph.edge_endpoints(e).unwrap().1)
+                            })
+                            .map(|&e| {
+                                (
+                                    DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
+                                    indenter.push_level(),
+                                )
+                            })
+                            .collect();
+
+                        // TODO: this is an utterly ugly hack that should be burnt to ashes
+                        let mut deduplicated_children = Vec::new();
+                        let mut merged_and_seen = HashSet::new();
+                        for child in children {
+                            let (DisplayOp::Candidate(child_node), _) = child else {
+                                unreachable!()
+                            };
+                            let solvable_id = graph[child_node].solvable_id();
+                            let merged = self.merged_candidates.get(&solvable_id);
+
+                            // Skip merged stuff that we have already seen
+                            if merged_and_seen.contains(&solvable_id) {
+                                continue;
+                            }
+
+                            if let Some(merged) = merged {
+                                merged_and_seen.extend(merged.ids.iter().copied())
+                            }
+
+                            deduplicated_children.push(child);
+                        }
+
+                        if !deduplicated_children.is_empty() {
+                            deduplicated_children[0].1.set_last();
+                        }
+
+                        stack.extend(deduplicated_children);
                     } else {
                         // Package cannot be installed (the conflicting requirement is further down the tree)
-                        if depth == 0 {
+                        if top_level {
                             writeln!(f, "{indent}{name} {req} cannot be installed because there are no viable options:")?;
                         } else {
                             writeln!(f, "{indent}{name} {req}, which cannot be installed because there are no viable options:")?;
                         }
 
-                        stack.extend(edges.iter().map(|&e| {
-                            (
-                                DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
-                                depth + 1,
-                            )
-                        }));
+                        let children: Vec<_> = edges
+                            .iter()
+                            .map(|&e| {
+                                (
+                                    DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
+                                    indenter.push_level(),
+                                )
+                            })
+                            .collect();
+
+                        // TODO: this is an utterly ugly hack that should be burnt to ashes
+                        let mut deduplicated_children = Vec::new();
+                        let mut merged_and_seen = HashSet::new();
+                        for child in children {
+                            let (DisplayOp::Candidate(child_node), _) = child else {
+                                unreachable!()
+                            };
+                            let solvable_id = graph[child_node].solvable_id();
+                            let merged = self.merged_candidates.get(&solvable_id);
+
+                            // Skip merged stuff that we have already seen
+                            if merged_and_seen.contains(&solvable_id) {
+                                continue;
+                            }
+
+                            if let Some(merged) = merged {
+                                merged_and_seen.extend(merged.ids.iter().copied())
+                            }
+
+                            deduplicated_children.push(child);
+                        }
+
+                        if !deduplicated_children.is_empty() {
+                            deduplicated_children[0].1.set_last();
+                        }
+
+                        stack.extend(deduplicated_children);
                     }
                 }
                 DisplayOp::Candidate(candidate) => {
@@ -709,7 +875,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     } else if already_installed {
                         writeln!(f, "{indent}{name} {version}, which conflicts with the versions reported above.")?;
                     } else if constrains_conflict {
-                        let version_sets = graph
+                        let mut version_sets = graph
                             .edges(candidate)
                             .flat_map(|e| match e.weight() {
                                 ProblemEdge::Conflict(ConflictCause::Constrains(
@@ -717,15 +883,21 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                                 )) => Some(version_set_id),
                                 _ => None,
                             })
-                            .dedup();
+                            .dedup()
+                            .peekable();
 
                         writeln!(f, "{indent}{name} {version} would constrain",)?;
 
-                        let indent = Self::get_indent(depth + 1, top_level_indent);
-                        for &version_set_id in version_sets {
+                        let mut indenter = indenter.push_level();
+                        while let Some(&version_set_id) = version_sets.next() {
                             let version_set = self.pool.resolve_version_set(version_set_id);
                             let name = self.pool.resolve_version_set_package_name(version_set_id);
                             let name = self.pool.resolve_package_name(name);
+
+                            if version_sets.peek().is_none() {
+                                indenter.set_last();
+                            }
+                            let indent = indenter.get_indent();
                             writeln!(
                                 f,
                                 "{indent}{name} {version_set} , which conflicts with any installable versions previously reported",
@@ -733,7 +905,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         }
                     } else {
                         writeln!(f, "{indent}{name} {version} would require",)?;
-                        let requirements = graph
+                        let mut requirements = graph
                             .edges(candidate)
                             .group_by(|e| e.weight().requires())
                             .into_iter()
@@ -748,8 +920,16 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                                 })
                             })
                             .map(|(version_set_id, edges)| {
-                                (DisplayOp::Requirement(version_set_id, edges), depth + 1)
-                            });
+                                (
+                                    DisplayOp::Requirement(version_set_id, edges),
+                                    indenter.push_level(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        if !requirements.is_empty() {
+                            requirements[0].1.set_last();
+                        }
 
                         stack.extend(requirements);
                     }
@@ -780,8 +960,15 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
             self.fmt_graph(f, &top_level_conflicts, true)?;
 
             // Conflicts caused by locked dependencies
-            let indent = Self::get_indent(0, true);
-            for e in self.graph.graph.edges(self.graph.root_node) {
+            let mut edges = self.graph.graph.edges(self.graph.root_node).peekable();
+            let indenter = Indenter::new(true);
+            while let Some(e) = edges.next() {
+                let indenter = indenter.push_level_with_order(match edges.peek() {
+                    Some(_) => ChildOrder::HasRemainingSiblings,
+                    None => ChildOrder::Last,
+                });
+                let indent = indenter.get_indent();
+
                 let conflict = match e.weight() {
                     ProblemEdge::Requires(_) => continue,
                     ProblemEdge::Conflict(conflict) => conflict,

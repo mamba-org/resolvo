@@ -3,15 +3,15 @@ source: tests/solver.rs
 expression: error
 ---
 The following packages are incompatible
-|-- a * cannot be installed because there are no viable options:
-    |-- a 1 | 2 would require
-        |-- b *, which cannot be installed because there are no viable options:
-            |-- b 2 would require
-                |-- c >=2, <3, which cannot be installed because there are no viable options:
-                    |-- c 2 would constrain
-                        |-- a >=3, <4 , which conflicts with any installable versions previously reported
-            |-- b 1 would require
-                |-- c >=1, <2, which cannot be installed because there are no viable options:
-                    |-- c 1 would constrain
-                        |-- a >=3, <4 , which conflicts with any installable versions previously reported
+└─ a * cannot be installed because there are no viable options:
+   └─ a 1 | 2 would require
+      └─ b *, which cannot be installed because there are no viable options:
+         ├─ b 2 would require
+         │  └─ c >=2, <3, which cannot be installed because there are no viable options:
+         │     └─ c 2 would constrain
+         │        └─ a >=3, <4 , which conflicts with any installable versions previously reported
+         └─ b 1 would require
+            └─ c >=1, <2, which cannot be installed because there are no viable options:
+               └─ c 1 would constrain
+                  └─ a >=3, <4 , which conflicts with any installable versions previously reported
 

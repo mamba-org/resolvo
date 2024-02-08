@@ -3,6 +3,6 @@ source: tests/solver.rs
 expression: "solve_snapshot(provider, &[\"a\"])"
 ---
 The following packages are incompatible
-|-- a * cannot be installed because there are no viable options:
-    |-- a 1 | 2 is excluded because it is externally excluded
+└─ a * cannot be installed because there are no viable options:
+   └─ a 1 | 2 is excluded because it is externally excluded
 
