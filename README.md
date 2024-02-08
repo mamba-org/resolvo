@@ -25,6 +25,16 @@
 [crates-badge]: https://img.shields.io/crates/v/resolvo.svg
 
 Resolvo implements a fast package resolution algorithm based on CDCL SAT solving.
+
+### Projects using `resolvo`
+
+- [`rip`](https://github.com/prefix-dev/rip): An async package resolver and installer for Python PyPI packages
+- [`rattler`](https://github.com/mamba-org/rattler): Conda package resolver and installer (non-async)
+- [`resolvo-rpm`](https://github.com/prefix-dev/resolvo-rpm): Experimental RPM resolver for Fedora / RedHat / OpenSUSE ... RPM packages
+- ... add yours!
+
+## Features
+
 If resolvo is unable to find a solution it outputs a human-readable error message:
 
 ```
