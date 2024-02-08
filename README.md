@@ -29,12 +29,12 @@ If resolvo is unable to find a solution it outputs a human-readable error messag
 
 ```
 The following packages are incompatible
-|-- bluesky-widgets >=0, <100 can be installed with any of the following options:
-    |-- bluesky-widgets 42 would require
-        |-- suitcase-utils >=0, <54, which can be installed with any of the following options:
-            |-- suitcase-utils 53
-|-- suitcase-utils >=54, <100 cannot be installed because there are no viable options:
-    |-- suitcase-utils 54, which conflicts with the versions reported above.
+├─ bluesky-widgets >=0, <100 can be installed with any of the following options:
+│  └─ bluesky-widgets 42 would require
+│     └─ suitcase-utils >=0, <54, which can be installed with any of the following options:
+│        └─ suitcase-utils 53
+└─ suitcase-utils >=54, <100 cannot be installed because there are no viable options:
+   └─ suitcase-utils 54, which conflicts with the versions reported above.
 ```
 
 Resolve provides a generic interface which allows integrating the solver with a variety of package managers. For instance resolvo is used in [rattler](https://github.com/mamba-org/rattler) and [pixi](https://github.com/prefix-dev/pixi) to solve packages from the conda ecosystem.
@@ -46,6 +46,7 @@ Originally resolvo started out as a port/fork of [libsolv](https://github.com/op
 * Resolvo is considerably faster than libsolv in large complex cases.
 * Resolvo can easily be used in multithreaded environments.
 * Resolvo provides human-readable error messages out-of-the-box.
+* Resolvo optionally provides an async interface to allow concurrent metadata fetching.
 * However, Libsolv is more extensive and supports more complex queries.
 
 ## Contributing 😍
