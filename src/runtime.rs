@@ -70,6 +70,8 @@ impl AsyncRuntime for tokio::runtime::Runtime {
     }
 }
 
+/// An implementation of [`AsyncRuntime`] that spawns and awaits any passed future on the current
+/// thread.
 #[cfg(feature = "async-std")]
 pub struct AsyncStdRuntime;
 
