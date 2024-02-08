@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-
 use std::rc::Rc;
 
 use itertools::Itertools;
@@ -12,10 +11,10 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
-use crate::internal::id::StringId;
 use crate::{
-    internal::id::{ClauseId, SolvableId, VersionSetId},
+    internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
     pool::Pool,
+    runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
     DependencyProvider, PackageName, SolvableDisplay, VersionSet,
 };
@@ -41,9 +40,9 @@ impl Problem {
     }
 
     /// Generates a graph representation of the problem (see [`ProblemGraph`] for details)
-    pub fn graph<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>>(
+    pub fn graph<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>, RT: AsyncRuntime>(
         &self,
-        solver: &Solver<VS, N, D>,
+        solver: &Solver<VS, N, D, RT>,
     ) -> ProblemGraph {
         let mut graph = DiGraph::<ProblemNode, ProblemEdge>::default();
         let mut nodes: HashMap<SolvableId, NodeIndex> = HashMap::default();
@@ -53,7 +52,7 @@ impl Problem {
         let unresolved_node = graph.add_node(ProblemNode::UnresolvedDependency);
 
         for clause_id in &self.clauses {
-            let clause = &solver.clauses[*clause_id].kind;
+            let clause = &solver.clauses.borrow()[*clause_id].kind;
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
@@ -73,7 +72,7 @@ impl Problem {
                 &Clause::Requires(package_id, version_set_id) => {
                     let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
 
-                    let candidates = solver.cache.get_or_cache_sorted_candidates(version_set_id).unwrap_or_else(|_| {
+                    let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(version_set_id)).unwrap_or_else(|_| {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
                     });
                     if candidates.is_empty() {
@@ -167,13 +166,15 @@ impl Problem {
         N: PackageName + Display,
         D: DependencyProvider<VS, N>,
         M: SolvableDisplay<VS, N>,
+        RT: AsyncRuntime,
     >(
         &self,
-        solver: &'a Solver<VS, N, D>,
+        solver: &'a Solver<VS, N, D, RT>,
+        pool: Rc<Pool<VS, N>>,
         merged_solvable_display: &'a M,
     ) -> DisplayUnsat<'a, VS, N, M> {
         let graph = self.graph(solver);
-        DisplayUnsat::new(graph, solver.pool(), merged_solvable_display)
+        DisplayUnsat::new(graph, pool, merged_solvable_display)
     }
 }
 
@@ -515,7 +516,7 @@ pub struct DisplayUnsat<'pool, VS: VersionSet, N: PackageName + Display, M: Solv
     merged_candidates: HashMap<SolvableId, Rc<MergedProblemNode>>,
     installable_set: HashSet<NodeIndex>,
     missing_set: HashSet<NodeIndex>,
-    pool: &'pool Pool<VS, N>,
+    pool: Rc<Pool<VS, N>>,
     merged_solvable_display: &'pool M,
 }
 
@@ -524,10 +525,10 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
 {
     pub(crate) fn new(
         graph: ProblemGraph,
-        pool: &'pool Pool<VS, N>,
+        pool: Rc<Pool<VS, N>>,
         merged_solvable_display: &'pool M,
     ) -> Self {
-        let merged_candidates = graph.simplify(pool);
+        let merged_candidates = graph.simplify(&pool);
         let installable_set = graph.get_installable_set();
         let missing_set = graph.get_missing_set();
 
@@ -669,10 +670,10 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                     let version = if let Some(merged) = self.merged_candidates.get(&solvable_id) {
                         reported.extend(merged.ids.iter().cloned());
                         self.merged_solvable_display
-                            .display_candidates(self.pool, &merged.ids)
+                            .display_candidates(&self.pool, &merged.ids)
                     } else {
                         self.merged_solvable_display
-                            .display_candidates(self.pool, &[solvable_id])
+                            .display_candidates(&self.pool, &[solvable_id])
                     };
 
                     let excluded = graph
@@ -796,9 +797,9 @@ impl<VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>> fmt::D
                         writeln!(
                             f,
                             "{indent}{} {} is locked, but another version is required as reported above",
-                            locked.name.display(self.pool),
+                            locked.name.display(&self.pool),
                             self.merged_solvable_display
-                                .display_candidates(self.pool, &[solvable_id])
+                                .display_candidates(&self.pool, &[solvable_id])
                         )?;
                     }
                     ConflictCause::Excluded => continue,

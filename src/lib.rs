@@ -14,6 +14,7 @@ pub(crate) mod internal;
 mod pool;
 pub mod problem;
 pub mod range;
+pub mod runtime;
 mod solvable;
 mod solver;
 
@@ -30,9 +31,10 @@ use std::{
     any::Any,
     fmt::{Debug, Display},
     hash::Hash,
+    rc::Rc,
 };
 
-/// The solver is based around the fact that for for every package name we are trying to find a
+/// The solver is based around the fact that for every package name we are trying to find a
 /// single variant. Variants are grouped by their respective package name. A package name is
 /// anything that we can compare and hash for uniqueness checks.
 ///
@@ -44,7 +46,7 @@ pub trait PackageName: Eq + Hash {}
 
 impl<N: Eq + Hash> PackageName for N {}
 
-/// A [`VersionSet`] is describes a set of "versions". The trait defines whether a given version
+/// A [`VersionSet`] describes a set of "versions". The trait defines whether a given version
 /// is part of the set or not.
 ///
 /// One could implement [`VersionSet`] for [`std::ops::Range<u32>`] where the implementation
@@ -61,21 +63,26 @@ pub trait VersionSet: Debug + Display + Clone + Eq + Hash {
 /// packages that are available in the system.
 pub trait DependencyProvider<VS: VersionSet, N: PackageName = String>: Sized {
     /// Returns the [`Pool`] that is used to allocate the Ids returned from this instance
-    fn pool(&self) -> &Pool<VS, N>;
+    fn pool(&self) -> Rc<Pool<VS, N>>;
 
     /// Sort the specified solvables based on which solvable to try first. The solver will
     /// iteratively try to select the highest version. If a conflict is found with the highest
     /// version the next version is tried. This continues until a solution is found.
-    fn sort_candidates(&self, solver: &SolverCache<VS, N, Self>, solvables: &mut [SolvableId]);
+    #[allow(async_fn_in_trait)]
+    async fn sort_candidates(
+        &self,
+        solver: &SolverCache<VS, N, Self>,
+        solvables: &mut [SolvableId],
+    );
 
-    /// Returns a list of solvables that should be considered when a package with the given name is
+    /// Obtains a list of solvables that should be considered when a package with the given name is
     /// requested.
-    ///
-    /// Returns `None` if no such package exist.
-    fn get_candidates(&self, name: NameId) -> Option<Candidates>;
+    #[allow(async_fn_in_trait)]
+    async fn get_candidates(&self, name: NameId) -> Option<Candidates>;
 
     /// Returns the dependencies for the specified solvable.
-    fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
+    #[allow(async_fn_in_trait)]
+    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies;
 
     /// Whether the solver should stop the dependency resolution algorithm.
     ///
@@ -126,6 +133,7 @@ pub struct Candidates {
 }
 
 /// Holds information about the dependencies of a package.
+#[derive(Debug, Clone)]
 pub enum Dependencies {
     /// The dependencies are known.
     Known(KnownDependencies),

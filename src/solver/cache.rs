@@ -10,9 +10,8 @@ use crate::{
 };
 use bitvec::vec::BitVec;
 use elsa::FrozenMap;
-use std::any::Any;
-use std::cell::RefCell;
-use std::marker::PhantomData;
+use event_listener::Event;
+use std::{any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.
@@ -22,6 +21,7 @@ pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS,
     /// A mapping from package name to a list of candidates.
     candidates: Arena<CandidatesId, Candidates>,
     package_name_to_candidates: FrozenCopyMap<NameId, CandidatesId>,
+    package_name_to_candidates_in_flight: RefCell<HashMap<NameId, Rc<Event>>>,
 
     /// A mapping of `VersionSetId` to the candidates that match that set.
     version_set_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
@@ -53,6 +53,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
 
             candidates: Default::default(),
             package_name_to_candidates: Default::default(),
+            package_name_to_candidates_in_flight: Default::default(),
             version_set_candidates: Default::default(),
             version_set_inverse_candidates: Default::default(),
             version_set_to_sorted_candidates: Default::default(),
@@ -65,7 +66,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     }
 
     /// Returns a reference to the pool used by the solver
-    pub fn pool(&self) -> &Pool<VS, N> {
+    pub fn pool(&self) -> Rc<Pool<VS, N>> {
         self.provider.pool()
     }
 
@@ -74,7 +75,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_candidates(
+    pub async fn get_or_cache_candidates(
         &self,
         package_name: NameId,
     ) -> Result<&Candidates, Box<dyn Any>> {
@@ -89,32 +90,63 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     return Err(value);
                 }
 
-                // Otherwise we have to get them from the DependencyProvider
-                let candidates = self
-                    .provider
-                    .get_candidates(package_name)
-                    .unwrap_or_default();
+                // Check if there is an in-flight request
+                let in_flight_request = self
+                    .package_name_to_candidates_in_flight
+                    .borrow()
+                    .get(&package_name)
+                    .cloned();
+                match in_flight_request {
+                    Some(in_flight) => {
+                        // Found an in-flight request, wait for that request to finish and return the computed result.
+                        in_flight.listen().await;
+                        self.package_name_to_candidates
+                            .get_copy(&package_name)
+                            .expect("after waiting for a request the result should be available")
+                    }
+                    None => {
+                        // Prepare an in-flight notifier for other requests coming in.
+                        self.package_name_to_candidates_in_flight
+                            .borrow_mut()
+                            .insert(package_name, Rc::new(Event::new()));
 
-                // Store information about which solvables dependency information is easy to
-                // retrieve.
-                {
-                    let mut hint_dependencies_available =
-                        self.hint_dependencies_available.borrow_mut();
-                    for hint_candidate in candidates.hint_dependencies_available.iter() {
-                        let idx = hint_candidate.to_usize();
-                        if hint_dependencies_available.len() <= idx {
-                            hint_dependencies_available.resize(idx + 1, false);
+                        // Otherwise we have to get them from the DependencyProvider
+                        let candidates = self
+                            .provider
+                            .get_candidates(package_name)
+                            .await
+                            .unwrap_or_default();
+
+                        // Store information about which solvables dependency information is easy to
+                        // retrieve.
+                        {
+                            let mut hint_dependencies_available =
+                                self.hint_dependencies_available.borrow_mut();
+                            for hint_candidate in candidates.hint_dependencies_available.iter() {
+                                let idx = hint_candidate.to_usize();
+                                if hint_dependencies_available.len() <= idx {
+                                    hint_dependencies_available.resize(idx + 1, false);
+                                }
+                                hint_dependencies_available.set(idx, true)
+                            }
                         }
-                        hint_dependencies_available.set(idx, true)
+
+                        // Allocate an ID so we can refer to the candidates from everywhere
+                        let candidates_id = self.candidates.alloc(candidates);
+                        self.package_name_to_candidates
+                            .insert_copy(package_name, candidates_id);
+
+                        // Remove the in-flight request now that we inserted the result and notify any waiters
+                        let notifier = self
+                            .package_name_to_candidates_in_flight
+                            .borrow_mut()
+                            .remove(&package_name)
+                            .expect("notifier should be there");
+                        notifier.notify(usize::MAX);
+
+                        candidates_id
                     }
                 }
-
-                // Allocate an ID so we can refer to the candidates from everywhere
-                let candidates_id = self.candidates.alloc(candidates);
-                self.package_name_to_candidates
-                    .insert_copy(package_name, candidates_id);
-
-                candidates_id
             }
         };
 
@@ -126,23 +158,24 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_matching_candidates(
+    pub async fn get_or_cache_matching_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let pool = self.pool();
+                let package_name = pool.resolve_version_set_package_name(version_set_id);
+                let version_set = pool.resolve_version_set(version_set_id);
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 let matching_candidates = candidates
                     .candidates
                     .iter()
                     .copied()
                     .filter(|&p| {
-                        let version = self.pool().resolve_internal_solvable(p).solvable().inner();
+                        let version = pool.resolve_internal_solvable(p).solvable().inner();
                         version_set.contains(version)
                     })
                     .collect();
@@ -158,23 +191,24 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_non_matching_candidates(
+    pub async fn get_or_cache_non_matching_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
         match self.version_set_inverse_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let version_set = self.pool().resolve_version_set(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let pool = self.pool();
+                let package_name = pool.resolve_version_set_package_name(version_set_id);
+                let version_set = pool.resolve_version_set(version_set_id);
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 let matching_candidates = candidates
                     .candidates
                     .iter()
                     .copied()
                     .filter(|&p| {
-                        let version = self.pool().resolve_internal_solvable(p).solvable().inner();
+                        let version = pool.resolve_internal_solvable(p).solvable().inner();
                         !version_set.contains(version)
                     })
                     .collect();
@@ -191,7 +225,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_sorted_candidates(
+    pub async fn get_or_cache_sorted_candidates(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
@@ -199,13 +233,17 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
             Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.pool().resolve_version_set_package_name(version_set_id);
-                let matching_candidates = self.get_or_cache_matching_candidates(version_set_id)?;
-                let candidates = self.get_or_cache_candidates(package_name)?;
+                let matching_candidates = self
+                    .get_or_cache_matching_candidates(version_set_id)
+                    .await?;
+                let candidates = self.get_or_cache_candidates(package_name).await?;
 
                 // Sort all the candidates in order in which they should be tried by the solver.
                 let mut sorted_candidates = Vec::new();
                 sorted_candidates.extend_from_slice(matching_candidates);
-                self.provider.sort_candidates(self, &mut sorted_candidates);
+                self.provider
+                    .sort_candidates(self, &mut sorted_candidates)
+                    .await;
 
                 // If we have a solvable that we favor, we sort that to the front. This ensures
                 // that the version that is favored is picked first.
@@ -228,7 +266,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
     ///
     /// If the provider has requested the solving process to be cancelled, the cancellation value
     /// will be returned as an `Err(...)`.
-    pub fn get_or_cache_dependencies(
+    pub async fn get_or_cache_dependencies(
         &self,
         solvable_id: SolvableId,
     ) -> Result<&Dependencies, Box<dyn Any>> {
@@ -242,7 +280,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>> SolverCache<V
                     return Err(value);
                 }
 
-                let dependencies = self.provider.get_dependencies(solvable_id);
+                let dependencies = self.provider.get_dependencies(solvable_id).await;
                 let dependencies_id = self.solvable_dependencies.alloc(dependencies);
                 self.solvable_to_dependencies
                     .insert_copy(solvable_id, dependencies_id);
