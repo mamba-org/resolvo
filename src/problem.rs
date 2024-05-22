@@ -447,7 +447,7 @@ impl ProblemGraph {
                     ProblemEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ProblemEdge::Conflict(_) => unreachable!(),
                 })
-                .group_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(&version_set_id, _)| version_set_id);
 
             for (_, mut deps) in &dependencies {
                 if deps.all(|(_, target)| !installable.contains(&target)) {
@@ -493,7 +493,7 @@ impl ProblemGraph {
                     ProblemEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ProblemEdge::Conflict(_) => unreachable!(),
                 })
-                .group_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(&version_set_id, _)| version_set_id);
 
             // Missing if at least one dependency is missing
             if dependencies
@@ -673,7 +673,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
         let mut stack = top_level_edges
             .iter()
             .filter(|e| e.weight().try_requires().is_some())
-            .group_by(|e| e.weight().requires())
+            .chunk_by(|e| e.weight().requires())
             .into_iter()
             .map(|(version_set_id, group)| {
                 let edges: Vec<_> = group.map(|e| e.id()).collect();
@@ -907,7 +907,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
                         writeln!(f, "{indent}{name} {version} would require",)?;
                         let mut requirements = graph
                             .edges(candidate)
-                            .group_by(|e| e.weight().requires())
+                            .chunk_by(|e| e.weight().requires())
                             .into_iter()
                             .map(|(version_set_id, group)| {
                                 let edges: Vec<_> = group.map(|e| e.id()).collect();
