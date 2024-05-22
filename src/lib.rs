@@ -53,7 +53,7 @@ impl<N: Eq + Hash> PackageName for N {}
 /// returns `true` if a given `u32` is part of the range or not.
 pub trait VersionSet: Debug + Display + Clone + Eq + Hash {
     /// The element type that is included in the set.
-    type V: Display + Ord;
+    type V: Display;
 
     /// Evaluate membership of a version in this set.
     fn contains(&self, v: &Self::V) -> bool;
