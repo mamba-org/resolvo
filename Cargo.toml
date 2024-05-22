@@ -13,22 +13,22 @@ readme = "README.md"
 resolver = "2"
 
 [dependencies]
-itertools = "0.12.1"
-petgraph = "0.6.4"
-tracing = "0.1.37"
-elsa = "1.9.0"
+itertools = "0.13"
+petgraph = "0.6.5"
+tracing = "0.1.40"
+elsa = "1.10.0"
 bitvec = "1.0.1"
 serde = { version = "1.0", features = ["derive"], optional = true }
-futures = { version = "0.3.30", default-features = false, features = ["alloc"] }
-event-listener = "5.0.0"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+event-listener = "5.3"
 
-tokio = { version = "1.35.1", features = ["rt"], optional = true }
-async-std = { version = "1.12.0", default-features = false, features = ["alloc", "default"], optional = true }
+tokio = { version = "1.37", features = ["rt"], optional = true }
+async-std = { version = "1.12", default-features = false, features = ["alloc", "default"], optional = true }
 
 [dev-dependencies]
-insta = "1.31.0"
-indexmap = "2.0.0"
-proptest = "1.2.0"
+insta = "1.39.0"
+indexmap = "2"
+proptest = "1.2"
 tracing-test = { version = "0.2.4", features = ["no-env-filter"] }
 tokio = { version = "1.35.1", features = ["time", "rt"] }
 resolvo = { path = ".", features = ["tokio"] }
