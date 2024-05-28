@@ -25,14 +25,14 @@ pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS,
     package_name_to_candidates_in_flight: RefCell<HashMap<NameId, Rc<Event>>>,
 
     /// A mapping of `VersionSetId` to the candidates that match that set.
-    version_set_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
+    version_set_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping of `VersionSetId` to the candidates that do not match that set (only candidates
     /// of the package indicated by the version set are included).
-    version_set_inverse_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
+    version_set_inverse_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping of `VersionSetId` to a sorted list of candidates that match that set.
-    pub(crate) version_set_to_sorted_candidates: FrozenMap<VersionSetId, Vec<SolvableId>>,
+    pub(crate) version_set_to_sorted_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping from a solvable to a list of dependencies
     solvable_dependencies: Arena<DependenciesId, Dependencies>,

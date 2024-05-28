@@ -207,7 +207,7 @@ impl Clause {
     pub fn visit_literals(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
-        version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>>,
+        version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
         mut visit: impl FnMut(Literal),
     ) {
         match *self {
@@ -487,7 +487,7 @@ impl ClauseState {
     pub fn next_unwatched_variable(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
-        version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>>,
+        version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
         decision_map: &DecisionMap,
     ) -> Option<SolvableId> {
         // The next unwatched variable (if available), is a variable that is:
