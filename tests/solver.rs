@@ -1,3 +1,4 @@
+use ahash::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use resolvo::{
@@ -14,7 +15,6 @@ use std::time::Duration;
 use std::{
     any::Any,
     cell::Cell,
-    collections::HashMap,
     fmt::{Debug, Display, Formatter},
     io::stderr,
     io::Write,

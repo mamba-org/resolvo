@@ -8,10 +8,11 @@ use crate::{
     Candidates, Dependencies, DependencyProvider, NameId, PackageName, Pool, SolvableId,
     VersionSet, VersionSetId,
 };
+use ahash::HashMap;
 use bitvec::vec::BitVec;
 use elsa::FrozenMap;
 use event_listener::Event;
-use std::{any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
+use std::{any::Any, cell::RefCell, marker::PhantomData, rc::Rc};
 
 /// Keeps a cache of previously computed and/or requested information about solvables and version
 /// sets.

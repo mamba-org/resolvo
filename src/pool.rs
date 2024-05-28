@@ -25,19 +25,19 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
     package_names: Arena<NameId, N>,
 
     /// Map from package names to the id of their interned counterpart
-    pub(crate) names_to_ids: FrozenCopyMap<N, NameId>,
+    pub(crate) names_to_ids: FrozenCopyMap<N, NameId, ahash::RandomState>,
 
     /// Interned strings
     strings: Arena<StringId, String>,
 
     /// Map from package names to the id of their interned counterpart
-    pub(crate) string_to_ids: FrozenCopyMap<String, StringId>,
+    pub(crate) string_to_ids: FrozenCopyMap<String, StringId, ahash::RandomState>,
 
     /// Interned match specs
     pub(crate) version_sets: Arena<VersionSetId, (NameId, VS)>,
 
     /// Map from version set to the id of their interned counterpart
-    version_set_to_id: FrozenCopyMap<(NameId, VS), VersionSetId>,
+    version_set_to_id: FrozenCopyMap<(NameId, VS), VersionSetId, ahash::RandomState>,
 }
 
 impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {

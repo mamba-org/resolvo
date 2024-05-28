@@ -135,7 +135,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     }
 
     /// Returns an iterator over all the existing key value pairs.
-    pub fn iter(&self) -> MappingIter<TId, TValue> {
+    pub fn iter(&self) -> MappingIter<'_, TId, TValue> {
         MappingIter {
             mapping: self,
             offset: 0,
