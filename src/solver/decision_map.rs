@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 /// < 0: level of decision when the solvable is set to false
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-struct DecisionAndLevel(i64);
+struct DecisionAndLevel(i32);
 
 impl DecisionAndLevel {
     fn undecided() -> DecisionAndLevel {
@@ -26,11 +26,12 @@ impl DecisionAndLevel {
     }
 
     fn level(self) -> u32 {
-        self.0.unsigned_abs() as u32
+        self.0.unsigned_abs()
     }
 
     fn with_value_and_level(value: bool, level: u32) -> Self {
-        Self(if value { level as i64 } else { -(level as i64) })
+        debug_assert!(level <= (i32::MAX as u32), "level is too large");
+        Self(if value { level as i32 } else { -(level as i32) })
     }
 }
 

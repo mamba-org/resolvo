@@ -993,9 +993,10 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
             let mut predecessor_clause_id: Option<ClauseId> = None;
             let mut clause_id = self.watches.first_clause_watching_solvable(pkg);
             while !clause_id.is_null() {
-                if predecessor_clause_id == Some(clause_id) {
-                    panic!("Linked list is circular!");
-                }
+                debug_assert!(
+                    predecessor_clause_id != Some(clause_id),
+                    "Linked list is circular!"
+                );
 
                 // Get mutable access to both clauses.
                 let mut clauses = self.clauses.borrow_mut();
