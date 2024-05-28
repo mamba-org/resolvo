@@ -1,7 +1,7 @@
 //! Types to examine why a problem was unsatisfiable, and to report the causes to the user.
 
-use std::collections::{HashSet};
 use ahash::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;

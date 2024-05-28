@@ -32,7 +32,8 @@ pub struct SolverCache<VS: VersionSet, N: PackageName, D: DependencyProvider<VS,
     version_set_inverse_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping of `VersionSetId` to a sorted list of candidates that match that set.
-    pub(crate) version_set_to_sorted_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
+    pub(crate) version_set_to_sorted_candidates:
+        FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping from a solvable to a list of dependencies
     solvable_dependencies: Arena<DependenciesId, Dependencies>,
