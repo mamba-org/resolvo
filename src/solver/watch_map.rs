@@ -1,6 +1,6 @@
 use crate::{
-    internal::{id::ClauseId, id::SolvableId, mapping::Mapping},
-    solver::clause::ClauseState,
+    internal::{id::SolvableId, mapping::Mapping},
+    solver::clause::{ClauseId, ClauseState},
 };
 
 /// A map from solvables to the clauses that are watching them

@@ -1,13 +1,14 @@
 use crate::{
     internal::{
         arena::Arena,
-        id::{ClauseId, LearntClauseId, SolvableId, VersionSetId},
+        id::{LearntClauseId, SolvableId, VersionSetId},
     },
     pool::Pool,
     solver::decision_map::DecisionMap,
     PackageName, VersionSet,
 };
 
+use crate::internal::arena::ArenaId;
 use crate::internal::id::StringId;
 use crate::solver::decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
@@ -47,7 +48,7 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬A ∨ B1 ∨ B2 ∨ ... ∨ B99), where B1 to B99 represent the possible candidates
     /// for the provided version set
-    Requires(SolvableId, VersionSetId),
+    Requires(RequiresClause),
     /// Ensures only a single version of a package is installed
     ///
     /// Usage: generate one [`Clause::ForbidMultipleInstances`] clause for each possible combination of
@@ -55,7 +56,7 @@ pub(crate) enum Clause {
     /// the same time.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    ForbidMultipleInstances(SolvableId, SolvableId),
+    ForbidMultipleInstances(ForbidMultipleInstancesClause),
     /// Forbids packages that do not satisfy a solvable's constrains
     ///
     /// Usage: for each constrains relationship in a package, determine all the candidates that do
@@ -64,7 +65,7 @@ pub(crate) enum Clause {
     /// pays off to have a separate variant for user-friendly error messages.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    Constrains(SolvableId, SolvableId, VersionSetId),
+    Constrains(ConstrainsClause),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause, but just context to
@@ -72,7 +73,7 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬root ∨ ¬B). Note that we could encode this as an assertion (¬B), but that
     /// would require additional logic in the solver.
-    Lock(SolvableId, SolvableId),
+    Lock(LockClause),
     /// A clause learnt during solving
     ///
     /// The learnt clause id can be used to retrieve the clause's literals, which are stored
@@ -80,129 +81,148 @@ pub(crate) enum Clause {
     Learnt(LearntClauseId),
 
     /// A clause that forbids a package from being installed for an external reason.
-    Excluded(SolvableId, StringId),
+    Excluded(ExcludeClause),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RequiresClause {
+    pub candidate: SolvableId,
+    pub requirement: VersionSetId,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ForbidMultipleInstancesClause {
+    pub from: SolvableId,
+    pub to: SolvableId,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ConstrainsClause {
+    pub candidate: SolvableId,
+    pub constrained_candidate: SolvableId,
+    pub via: VersionSetId,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct LockClause {
+    pub locked_candidate: SolvableId,
+    pub forbidden_candidate: SolvableId,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ExcludeClause {
+    pub candidate: SolvableId,
+    pub reason: StringId,
+}
+
+impl From<RequiresClause> for Clause {
+    fn from(requires: RequiresClause) -> Self {
+        Clause::Requires(requires)
+    }
+}
+
+impl From<ForbidMultipleInstancesClause> for Clause {
+    fn from(forbid_multiple: ForbidMultipleInstancesClause) -> Self {
+        Clause::ForbidMultipleInstances(forbid_multiple)
+    }
+}
+
+impl From<ConstrainsClause> for Clause {
+    fn from(constrains: ConstrainsClause) -> Self {
+        Clause::Constrains(constrains)
+    }
+}
+
+impl From<LockClause> for Clause {
+    fn from(lock: LockClause) -> Self {
+        Clause::Lock(lock)
+    }
+}
+
+impl From<LearntClauseId> for Clause {
+    fn from(value: LearntClauseId) -> Self {
+        Clause::Learnt(value)
+    }
+}
+
+impl From<ExcludeClause> for Clause {
+    fn from(value: ExcludeClause) -> Self {
+        Clause::Excluded(value)
+    }
+}
+
+impl ExcludeClause {
+    pub fn visit_literal(&self, mut visit: impl FnMut(Literal)) {
+        visit(Literal {
+            solvable_id: self.candidate,
+            negate: true,
+        });
+    }
+}
+
+impl RequiresClause {
+    pub fn visit_literal(
+        &self,
+        version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>>,
+        mut visit: impl FnMut(Literal),
+    ) {
+        visit(Literal {
+            solvable_id: self.candidate,
+            negate: true,
+        });
+
+        for &solvable_id in &version_set_to_sorted_candidates[&self.requirement] {
+            visit(Literal {
+                solvable_id,
+                negate: false,
+            });
+        }
+    }
+}
+
+impl ForbidMultipleInstancesClause {
+    pub fn visit_literal(&self, mut visit: impl FnMut(Literal)) {
+        visit(Literal {
+            solvable_id: self.from,
+            negate: true,
+        });
+
+        visit(Literal {
+            solvable_id: self.to,
+            negate: true,
+        });
+    }
+}
+
+impl ConstrainsClause {
+    pub fn visit_literal(&self, mut visit: impl FnMut(Literal)) {
+        visit(Literal {
+            solvable_id: self.candidate,
+            negate: true,
+        });
+
+        visit(Literal {
+            solvable_id: self.constrained_candidate,
+            negate: true,
+        });
+    }
+}
+
+impl LockClause {
+    pub fn visit_literal(&self, mut visit: impl FnMut(Literal)) {
+        visit(Literal {
+            solvable_id: SolvableId::root(),
+            negate: true,
+        });
+
+        visit(Literal {
+            solvable_id: self.forbidden_candidate,
+            negate: true,
+        });
+    }
 }
 
 impl Clause {
-    /// Returns the building blocks needed for a new [ClauseState] of the [Clause::Requires] kind.
-    ///
-    /// These building blocks are:
-    ///
-    /// - The [Clause] itself;
-    /// - The ids of the solvables that will be watched (unless there are no candidates, i.e. the
-    ///   clause is actually an assertion);
-    /// - A boolean indicating whether the clause conflicts with existing decisions. This should
-    ///   always be false when adding clauses before starting the solving process, but can be true
-    ///   for clauses that are added dynamically.
-    fn requires(
-        parent: SolvableId,
-        requirement: VersionSetId,
-        candidates: &[SolvableId],
-        decision_tracker: &DecisionTracker,
-    ) -> (Self, Option<[SolvableId; 2]>, bool) {
-        // It only makes sense to introduce a requires clause when the parent solvable is undecided
-        // or going to be installed
-        assert_ne!(decision_tracker.assigned_value(parent), Some(false));
-
-        let kind = Clause::Requires(parent, requirement);
-        if candidates.is_empty() {
-            (kind, None, false)
-        } else {
-            match candidates
-                .iter()
-                .find(|&&c| decision_tracker.assigned_value(c) != Some(false))
-            {
-                // Watch any candidate that is not assigned to false
-                Some(watched_candidate) => (kind, Some([parent, *watched_candidate]), false),
-
-                // All candidates are assigned to false! Therefore the clause conflicts with the
-                // current decisions. There are no valid watches for it at the moment, but we will
-                // assign default ones nevertheless, because they will become valid after the solver
-                // restarts.
-                None => (kind, Some([parent, candidates[0]]), true),
-            }
-        }
-    }
-
-    /// Returns the building blocks needed for a new [ClauseState] of the [Clause::Constrains] kind.
-    ///
-    /// These building blocks are:
-    ///
-    /// - The [Clause] itself;
-    /// - The ids of the solvables that will be watched;
-    /// - A boolean indicating whether the clause conflicts with existing decisions. This should
-    ///   always be false when adding clauses before starting the solving process, but can be true
-    ///   for clauses that are added dynamically.
-    fn constrains(
-        parent: SolvableId,
-        forbidden_solvable: SolvableId,
-        via: VersionSetId,
-        decision_tracker: &DecisionTracker,
-    ) -> (Self, Option<[SolvableId; 2]>, bool) {
-        // It only makes sense to introduce a constrains clause when the parent solvable is
-        // undecided or going to be installed
-        assert_ne!(decision_tracker.assigned_value(parent), Some(false));
-
-        // If the forbidden solvable is already assigned to true, that means that there is a
-        // conflict with current decisions, because it implies the parent solvable would be false
-        // (and we just asserted that it is not)
-        let conflict = decision_tracker.assigned_value(forbidden_solvable) == Some(true);
-
-        (
-            Clause::Constrains(parent, forbidden_solvable, via),
-            Some([parent, forbidden_solvable]),
-            conflict,
-        )
-    }
-
-    /// Returns the ids of the solvables that will be watched as well as the clause itself.
-    fn forbid_multiple(
-        candidate: SolvableId,
-        constrained_candidate: SolvableId,
-    ) -> (Self, Option<[SolvableId; 2]>) {
-        (
-            Clause::ForbidMultipleInstances(candidate, constrained_candidate),
-            Some([candidate, constrained_candidate]),
-        )
-    }
-
-    fn root() -> (Self, Option<[SolvableId; 2]>) {
-        (Clause::InstallRoot, None)
-    }
-
-    fn exclude(candidate: SolvableId, reason: StringId) -> (Self, Option<[SolvableId; 2]>) {
-        (Clause::Excluded(candidate, reason), None)
-    }
-
-    fn lock(
-        locked_candidate: SolvableId,
-        other_candidate: SolvableId,
-    ) -> (Self, Option<[SolvableId; 2]>) {
-        (
-            Clause::Lock(locked_candidate, other_candidate),
-            Some([SolvableId::root(), other_candidate]),
-        )
-    }
-
-    fn learnt(
-        learnt_clause_id: LearntClauseId,
-        literals: &[Literal],
-    ) -> (Self, Option<[SolvableId; 2]>) {
-        debug_assert!(!literals.is_empty());
-        (
-            Clause::Learnt(learnt_clause_id),
-            if literals.len() == 1 {
-                // No need for watches, since we learned an assertion
-                None
-            } else {
-                Some([
-                    literals.first().unwrap().solvable_id,
-                    literals.last().unwrap().solvable_id,
-                ])
-            },
-        )
-    }
-
     /// Visits each literal in the clause
     pub fn visit_literals(
         &self,
@@ -212,52 +232,41 @@ impl Clause {
     ) {
         match *self {
             Clause::InstallRoot => unreachable!(),
-            Clause::Excluded(solvable, _) => {
-                visit(Literal {
-                    solvable_id: solvable,
-                    negate: true,
-                });
-            }
+            Clause::Excluded(clause) => clause.visit_literal(visit),
             Clause::Learnt(learnt_id) => {
                 for &literal in &learnt_clauses[learnt_id] {
                     visit(literal);
                 }
             }
-            Clause::Requires(solvable_id, match_spec_id) => {
-                visit(Literal {
-                    solvable_id,
-                    negate: true,
-                });
-
-                for &solvable_id in &version_set_to_sorted_candidates[&match_spec_id] {
-                    visit(Literal {
-                        solvable_id,
-                        negate: false,
-                    });
-                }
+            Clause::Requires(clause) => {
+                clause.visit_literal(version_set_to_sorted_candidates, visit)
             }
-            Clause::Constrains(s1, s2, _) | Clause::ForbidMultipleInstances(s1, s2) => {
-                visit(Literal {
-                    solvable_id: s1,
-                    negate: true,
-                });
+            Clause::Constrains(clause) => clause.visit_literal(visit),
+            Clause::ForbidMultipleInstances(clause) => clause.visit_literal(visit),
+            Clause::Lock(clause) => clause.visit_literal(visit),
+        }
+    }
 
-                visit(Literal {
-                    solvable_id: s2,
-                    negate: true,
-                });
-            }
-            Clause::Lock(_, s) => {
-                visit(Literal {
-                    solvable_id: SolvableId::root(),
-                    negate: true,
-                });
+    fn kind(&self) -> ClauseKind {
+        match self {
+            Clause::InstallRoot => ClauseKind::InstallRoot,
+            Clause::Requires(_) => ClauseKind::Requires,
+            Clause::ForbidMultipleInstances(_) => ClauseKind::ForbidMultipleInstances,
+            Clause::Constrains(_) => ClauseKind::Constrains,
+            Clause::Lock(_) => ClauseKind::Lock,
+            Clause::Learnt(_) => ClauseKind::Learnt,
+            Clause::Excluded(_) => ClauseKind::Excluded,
+        }
+    }
 
-                visit(Literal {
-                    solvable_id: s,
-                    negate: true,
-                });
-            }
+    /// Returns an object that implements `Debug` to debug the clause.
+    pub fn debug<'pool, VS: VersionSet, N: PackageName + Display>(
+        &self,
+        pool: &'pool Pool<VS, N>,
+    ) -> impl Debug + 'pool {
+        ClauseDebug {
+            clause: *self,
+            pool,
         }
     }
 }
@@ -275,109 +284,9 @@ pub(crate) struct ClauseState {
     pub watched_literals: [SolvableId; 2],
     // The ids of the next clause in each linked list that this clause is part of
     next_watches: [ClauseId; 2],
-    // The clause itself
-    pub(crate) kind: Clause,
 }
 
 impl ClauseState {
-    /// Shorthand method to construct a [`Clause::InstallRoot`] without requiring complicated
-    /// arguments.
-    pub fn root() -> Self {
-        let (kind, watched_literals) = Clause::root();
-        Self::from_kind_and_initial_watches(kind, watched_literals)
-    }
-
-    /// Shorthand method to construct a [Clause::Requires] without requiring complicated arguments.
-    ///
-    /// The returned boolean value is true when adding the clause resulted in a conflict.
-    pub fn requires(
-        candidate: SolvableId,
-        requirement: VersionSetId,
-        matching_candidates: &[SolvableId],
-        decision_tracker: &DecisionTracker,
-    ) -> (Self, bool) {
-        let (kind, watched_literals, conflict) = Clause::requires(
-            candidate,
-            requirement,
-            matching_candidates,
-            decision_tracker,
-        );
-
-        (
-            Self::from_kind_and_initial_watches(kind, watched_literals),
-            conflict,
-        )
-    }
-
-    /// Shorthand method to construct a [Clause::Constrains] without requiring complicated arguments.
-    ///
-    /// The returned boolean value is true when adding the clause resulted in a conflict.
-    pub fn constrains(
-        candidate: SolvableId,
-        constrained_package: SolvableId,
-        requirement: VersionSetId,
-        decision_tracker: &DecisionTracker,
-    ) -> (Self, bool) {
-        let (kind, watched_literals, conflict) = Clause::constrains(
-            candidate,
-            constrained_package,
-            requirement,
-            decision_tracker,
-        );
-
-        (
-            Self::from_kind_and_initial_watches(kind, watched_literals),
-            conflict,
-        )
-    }
-
-    pub fn lock(locked_candidate: SolvableId, other_candidate: SolvableId) -> Self {
-        let (kind, watched_literals) = Clause::lock(locked_candidate, other_candidate);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
-    }
-
-    pub fn forbid_multiple(candidate: SolvableId, other_candidate: SolvableId) -> Self {
-        let (kind, watched_literals) = Clause::forbid_multiple(candidate, other_candidate);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
-    }
-
-    pub fn learnt(learnt_clause_id: LearntClauseId, literals: &[Literal]) -> Self {
-        let (kind, watched_literals) = Clause::learnt(learnt_clause_id, literals);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
-    }
-
-    pub fn exclude(candidate: SolvableId, reason: StringId) -> Self {
-        let (kind, watched_literals) = Clause::exclude(candidate, reason);
-        Self::from_kind_and_initial_watches(kind, watched_literals)
-    }
-
-    fn from_kind_and_initial_watches(
-        kind: Clause,
-        watched_literals: Option<[SolvableId; 2]>,
-    ) -> Self {
-        let watched_literals = watched_literals.unwrap_or([SolvableId::null(), SolvableId::null()]);
-
-        let clause = Self {
-            watched_literals,
-            next_watches: [ClauseId::null(), ClauseId::null()],
-            kind,
-        };
-
-        debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
-
-        clause
-    }
-
-    pub fn debug<'a, VS: VersionSet, N: PackageName>(
-        &self,
-        pool: &'a Pool<VS, N>,
-    ) -> ClauseDebug<'a, VS, N> {
-        ClauseDebug {
-            kind: self.kind,
-            pool,
-        }
-    }
-
     pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: ClauseId) {
         self.next_watches[watch_index] = linked_clause;
     }
@@ -414,12 +323,14 @@ impl ClauseState {
     pub fn watch_turned_false(
         &self,
         solvable_id: SolvableId,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         decision_map: &DecisionMap,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
     ) -> Option<([Literal; 2], usize)> {
         debug_assert!(self.watched_literals.contains(&solvable_id));
 
-        let literals @ [w1, w2] = self.watched_literals(learnt_clauses);
+        let literals @ [w1, w2] = self.watched_literals(clause_id, clause_data, learnt_clauses);
 
         if solvable_id == w1.solvable_id && w1.eval(decision_map) == Some(false) {
             Some((literals, 0))
@@ -437,6 +348,8 @@ impl ClauseState {
 
     pub fn watched_literals(
         &self,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
     ) -> [Literal; 2] {
         let literals = |op1: bool, op2: bool| {
@@ -452,10 +365,11 @@ impl ClauseState {
             ]
         };
 
-        match self.kind {
-            Clause::InstallRoot => unreachable!(),
-            Clause::Excluded(_, _) => unreachable!(),
-            Clause::Learnt(learnt_id) => {
+        match clause_id.kind() {
+            ClauseKind::InstallRoot | ClauseKind::Excluded => unreachable!(),
+            ClauseKind::Learnt => {
+                let learnt_id = clause_data.learnt_clause[clause_id.id()];
+
                 // TODO: we might want to do something else for performance, like keeping the whole
                 // literal in `self.watched_literals`, to avoid lookups... But first we should
                 // benchmark!
@@ -469,13 +383,14 @@ impl ClauseState {
                     .unwrap();
                 [w1, w2]
             }
-            Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => {
+            ClauseKind::Constrains | ClauseKind::ForbidMultipleInstances | ClauseKind::Lock => {
                 literals(false, false)
             }
-            Clause::Requires(solvable_id, _) => {
-                if self.watched_literals[0] == solvable_id {
+            ClauseKind::Requires => {
+                let candidate = clause_data.requires_clause[clause_id.id()].candidate;
+                if self.watched_literals[0] == candidate {
                     literals(false, true)
-                } else if self.watched_literals[1] == solvable_id {
+                } else if self.watched_literals[1] == candidate {
                     literals(true, false)
                 } else {
                     literals(true, true)
@@ -486,6 +401,8 @@ impl ClauseState {
 
     pub fn next_unwatched_variable(
         &self,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>>,
         decision_map: &DecisionMap,
@@ -498,27 +415,32 @@ impl ClauseState {
                 && solvable_lit.eval(decision_map).unwrap_or(true)
         };
 
-        match self.kind {
-            Clause::InstallRoot => unreachable!(),
-            Clause::Excluded(_, _) => unreachable!(),
-            Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
-                .iter()
-                .cloned()
-                .find(|&l| can_watch(l))
-                .map(|l| l.solvable_id),
-            Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => None,
-            Clause::Requires(solvable_id, version_set_id) => {
+        match clause_id.kind() {
+            ClauseKind::InstallRoot => unreachable!(),
+            ClauseKind::Excluded => unreachable!(),
+            ClauseKind::Learnt => {
+                let learnt_id = clause_data.learnt_clause[clause_id.id()];
+                learnt_clauses[learnt_id]
+                    .iter()
+                    .cloned()
+                    .find(|&l| can_watch(l))
+                    .map(|l| l.solvable_id)
+            }
+            ClauseKind::Constrains | ClauseKind::ForbidMultipleInstances | ClauseKind::Lock => None,
+            ClauseKind::Requires => {
+                let clause = clause_data.requires_clause[clause_id.id()];
+
                 // The solvable that added this clause
                 let solvable_lit = Literal {
-                    solvable_id,
+                    solvable_id: clause.candidate,
                     negate: true,
                 };
                 if can_watch(solvable_lit) {
-                    return Some(solvable_id);
+                    return Some(clause.candidate);
                 }
 
                 // The available candidates
-                for &candidate in &version_set_to_sorted_candidates[&version_set_id] {
+                for &candidate in &version_set_to_sorted_candidates[&clause.requirement] {
                     let lit = Literal {
                         solvable_id: candidate,
                         negate: false,
@@ -566,55 +488,65 @@ impl Literal {
 
 /// A representation of a clause that implements [`Debug`]
 pub(crate) struct ClauseDebug<'pool, VS: VersionSet, N: PackageName> {
-    kind: Clause,
+    clause: Clause,
     pool: &'pool Pool<VS, N>,
 }
 
 impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
+        match self.clause {
             Clause::InstallRoot => write!(f, "install root"),
-            Clause::Excluded(solvable_id, reason) => {
+            Clause::Excluded(ExcludeClause { candidate, reason }) => {
                 write!(
                     f,
                     "{} excluded because: {}",
-                    solvable_id.display(self.pool),
+                    candidate.display(self.pool),
                     self.pool.resolve_string(reason)
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "learnt clause {learnt_id:?}"),
-            Clause::Requires(solvable_id, match_spec_id) => {
-                let match_spec = self.pool.resolve_version_set(match_spec_id).to_string();
+            Clause::Requires(RequiresClause {
+                candidate,
+                requirement,
+            }) => {
+                let match_spec = self.pool.resolve_version_set(requirement).to_string();
                 write!(
                     f,
                     "{} requires {} {match_spec}",
-                    solvable_id.display(self.pool),
+                    candidate.display(self.pool),
                     self.pool
-                        .resolve_version_set_package_name(match_spec_id)
+                        .resolve_version_set_package_name(requirement)
                         .display(self.pool)
                 )
             }
-            Clause::Constrains(s1, s2, vset_id) => {
+            Clause::Constrains(ConstrainsClause {
+                candidate,
+                constrained_candidate,
+                via,
+            }) => {
                 write!(
                     f,
                     "{} excludes {} by {}",
-                    s1.display(self.pool),
-                    s2.display(self.pool),
-                    self.pool.resolve_version_set(vset_id)
+                    candidate.display(self.pool),
+                    constrained_candidate.display(self.pool),
+                    self.pool.resolve_version_set(via)
                 )
             }
-            Clause::Lock(locked, forbidden) => {
+            Clause::Lock(LockClause {
+                locked_candidate,
+                forbidden_candidate: other_candidate,
+            }) => {
                 write!(
                     f,
                     "{} is locked, so {} is forbidden",
-                    locked.display(self.pool),
-                    forbidden.display(self.pool)
+                    locked_candidate.display(self.pool),
+                    other_candidate.display(self.pool)
                 )
             }
-            Clause::ForbidMultipleInstances(s1, _) => {
+            Clause::ForbidMultipleInstances(ForbidMultipleInstancesClause { from, .. }) => {
                 let name = self
                     .pool
-                    .resolve_internal_solvable(s1)
+                    .resolve_internal_solvable(from)
                     .solvable()
                     .name
                     .display(self.pool);
@@ -624,252 +556,581 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::internal::arena::ArenaId;
-    use crate::solver::decision::Decision;
+#[repr(u32)]
+enum ClauseKind {
+    InstallRoot = 0,
+    Requires = 1,
+    Constrains = 2,
+    ForbidMultipleInstances = 3,
+    Excluded = 4,
+    Learnt = 5,
+    Lock = 6,
+}
 
-    fn clause(next_clauses: [ClauseId; 2], watched_solvables: [SolvableId; 2]) -> ClauseState {
-        ClauseState {
-            watched_literals: watched_solvables,
-            next_watches: next_clauses,
-
-            // The kind is irrelevant here
-            kind: Clause::InstallRoot,
+impl ClauseKind {
+    pub fn from_u32(x: u32) -> Self {
+        match x {
+            0 => ClauseKind::InstallRoot,
+            1 => ClauseKind::Requires,
+            2 => ClauseKind::Constrains,
+            3 => ClauseKind::ForbidMultipleInstances,
+            4 => ClauseKind::Excluded,
+            5 => ClauseKind::Learnt,
+            6 => ClauseKind::Lock,
+            _ => unreachable!(),
         }
-    }
-
-    #[test]
-    #[allow(clippy::bool_assert_comparison)]
-    fn test_literal_satisfying_value() {
-        let lit = Literal {
-            solvable_id: SolvableId::root(),
-            negate: true,
-        };
-        assert_eq!(lit.satisfying_value(), false);
-
-        let lit = Literal {
-            solvable_id: SolvableId::root(),
-            negate: false,
-        };
-        assert_eq!(lit.satisfying_value(), true);
-    }
-
-    #[test]
-    fn test_literal_eval() {
-        let mut decision_map = DecisionMap::new();
-
-        let literal = Literal {
-            solvable_id: SolvableId::root(),
-            negate: false,
-        };
-        let negated_literal = Literal {
-            solvable_id: SolvableId::root(),
-            negate: true,
-        };
-
-        // Undecided
-        assert_eq!(literal.eval(&decision_map), None);
-        assert_eq!(negated_literal.eval(&decision_map), None);
-
-        // Decided
-        decision_map.set(SolvableId::root(), true, 1);
-        assert_eq!(literal.eval(&decision_map), Some(true));
-        assert_eq!(negated_literal.eval(&decision_map), Some(false));
-
-        decision_map.set(SolvableId::root(), false, 1);
-        assert_eq!(literal.eval(&decision_map), Some(false));
-        assert_eq!(negated_literal.eval(&decision_map), Some(true));
-    }
-
-    #[test]
-    fn test_unlink_clause_different() {
-        let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(3)],
-            [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
-        );
-        let clause2 = clause(
-            [ClauseId::null(), ClauseId::from_usize(3)],
-            [SolvableId::from_usize(1596), SolvableId::from_usize(1208)],
-        );
-        let clause3 = clause(
-            [ClauseId::null(), ClauseId::null()],
-            [SolvableId::from_usize(1211), SolvableId::from_usize(42)],
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, SolvableId::from_usize(1596), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(3)]
-            )
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause3, SolvableId::from_usize(1211), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
-        }
-    }
-
-    #[test]
-    fn test_unlink_clause_same() {
-        let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(2)],
-            [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
-        );
-        let clause2 = clause(
-            [ClauseId::null(), ClauseId::null()],
-            [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, SolvableId::from_usize(1596), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(2)]
-            )
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause2, SolvableId::from_usize(1211), 1);
-            assert_eq!(
-                clause1.watched_literals,
-                [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
-        }
-    }
-
-    #[test]
-    fn test_requires_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
-
-        let parent = SolvableId::from_usize(1);
-        let candidate1 = SolvableId::from_usize(2);
-        let candidate2 = SolvableId::from_usize(3);
-
-        // No conflict, all candidates available
-        let (clause, conflict) = ClauseState::requires(
-            parent,
-            VersionSetId::from_usize(0),
-            &[candidate1, candidate2],
-            &decisions,
-        );
-        assert!(!conflict);
-        assert_eq!(clause.watched_literals[0], parent);
-        assert_eq!(clause.watched_literals[1], candidate1);
-
-        // No conflict, still one candidate available
-        decisions
-            .try_add_decision(Decision::new(candidate1, false, ClauseId::null()), 1)
-            .unwrap();
-        let (clause, conflict) = ClauseState::requires(
-            parent,
-            VersionSetId::from_usize(0),
-            &[candidate1, candidate2],
-            &decisions,
-        );
-        assert!(!conflict);
-        assert_eq!(clause.watched_literals[0], parent);
-        assert_eq!(clause.watched_literals[1], candidate2);
-
-        // Conflict, no candidates available
-        decisions
-            .try_add_decision(Decision::new(candidate2, false, ClauseId::null()), 1)
-            .unwrap();
-        let (clause, conflict) = ClauseState::requires(
-            parent,
-            VersionSetId::from_usize(0),
-            &[candidate1, candidate2],
-            &decisions,
-        );
-        assert!(conflict);
-        assert_eq!(clause.watched_literals[0], parent);
-        assert_eq!(clause.watched_literals[1], candidate1);
-
-        // Panic
-        decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
-            .unwrap();
-        let panicked = std::panic::catch_unwind(|| {
-            ClauseState::requires(
-                parent,
-                VersionSetId::from_usize(0),
-                &[candidate1, candidate2],
-                &decisions,
-            )
-        })
-        .is_err();
-        assert!(panicked);
-    }
-
-    #[test]
-    fn test_constrains_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
-
-        let parent = SolvableId::from_usize(1);
-        let forbidden = SolvableId::from_usize(2);
-
-        // No conflict, forbidden package not installed
-        let (clause, conflict) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
-        assert!(!conflict);
-        assert_eq!(clause.watched_literals[0], parent);
-        assert_eq!(clause.watched_literals[1], forbidden);
-
-        // Conflict, forbidden package installed
-        decisions
-            .try_add_decision(Decision::new(forbidden, true, ClauseId::null()), 1)
-            .unwrap();
-        let (clause, conflict) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
-        assert!(conflict);
-        assert_eq!(clause.watched_literals[0], parent);
-        assert_eq!(clause.watched_literals[1], forbidden);
-
-        // Panic
-        decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
-            .unwrap();
-        let panicked = std::panic::catch_unwind(|| {
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
-        })
-        .is_err();
-        assert!(panicked);
-    }
-
-    #[test]
-    fn test_clause_size() {
-        // This test is here to ensure we don't increase the size of `ClauseState` by accident, as
-        // we are creating thousands of instances. Note: libsolv manages to bring down the size to
-        // 24, so there is probably room for improvement.
-        assert_eq!(std::mem::size_of::<ClauseState>(), 32);
     }
 }
+
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
+pub(crate) struct ClauseId(u32);
+
+impl ClauseId {
+    /// There is a guarentee that ClauseId(0) will always be "Clause::InstallRoot". This assumption
+    /// is verified by the solver.
+    pub(crate) fn install_root() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn is_null(self) -> bool {
+        self.0 == u32::MAX
+    }
+
+    pub(crate) fn null() -> ClauseId {
+        ClauseId(u32::MAX)
+    }
+
+    fn from_usize(x: usize) -> Self {
+        assert!(x < u32::MAX as usize, "clause id too big");
+        Self(x as u32)
+    }
+
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    fn kind(self) -> ClauseKind {
+        ClauseKind::from_u32(self.0 & CLAUSE_KIND_MASK)
+    }
+
+    fn id(self) -> u32 {
+        self.0 >> CLAUSE_KIND_OFFSET
+    }
+}
+
+const CLAUSE_KIND_MASK: u32 = 0b111;
+const CLAUSE_KIND_OFFSET: u32 = 3;
+
+#[derive(Default)]
+pub struct Clauses {
+    /// Information about all clauses in the system
+    pub clauses: ClauseData,
+
+    /// States for all the clauses.
+    pub states: ClauseStates,
+}
+
+#[derive(Default)]
+pub struct ClauseData {
+    pub requires_clause: Arena<u32, RequiresClause>,
+    pub constrains_clause: Arena<u32, ConstrainsClause>,
+    pub forbid_multiple_instances_clause: Arena<u32, ForbidMultipleInstancesClause>,
+    pub exclude_clause: Arena<u32, ExcludeClause>,
+    pub learnt_clause: Arena<u32, LearntClauseId>,
+    pub lock_clause: Arena<u32, LockClause>,
+}
+
+#[derive(Default)]
+pub struct ClauseStates {
+    requires_clause_state: Arena<u32, ClauseState>,
+    constrains_clause_state: Arena<u32, ClauseState>,
+    forbid_multiple_instances_clause_state: Arena<u32, ClauseState>,
+    exclude_clause_state: Arena<u32, ClauseState>,
+    learnt_clause_state: Arena<u32, ClauseState>,
+    lock_clause_state: Arena<u32, ClauseState>,
+}
+
+impl Clauses {
+    /// Allocates a new [`Clause::Requires`] clause.
+    pub fn alloc_requires(
+        &mut self,
+        candidate: SolvableId,
+        requirement: VersionSetId,
+        resolved_candidates: &[SolvableId],
+        decision_tracker: &DecisionTracker,
+    ) -> (ClauseId, bool) {
+        // It only makes sense to introduce a requires clause when the parent solvable is undecided
+        // or going to be installed
+        assert_ne!(decision_tracker.assigned_value(candidate), Some(false));
+
+        let clause = RequiresClause {
+            candidate,
+            requirement,
+        };
+        let (watched_literals, conflict) = if resolved_candidates.is_empty() {
+            (None, false)
+        } else {
+            match resolved_candidates
+                .iter()
+                .find(|&&c| decision_tracker.assigned_value(c) != Some(false))
+            {
+                // Watch any candidate that is not assigned to false
+                Some(watched_candidate) => (Some([candidate, *watched_candidate]), false),
+
+                // All candidates are assigned to false! Therefore the clause conflicts with the
+                // current decisions. There are no valid watches for it at the moment, but we will
+                // assign default ones nevertheless, because they will become valid after the solver
+                // restarts.
+                None => (Some([candidate, resolved_candidates[0]]), true),
+            }
+        };
+
+        let clause_id = self.alloc(clause, watched_literals);
+        (clause_id, conflict)
+    }
+
+    /// Allocates a new [`Clause::Constrains`] clause.
+    pub fn alloc_constrains(
+        &mut self,
+        candidate: SolvableId,
+        constrained_candidate: SolvableId,
+        requires_clause: VersionSetId,
+        decision_tracker: &DecisionTracker,
+    ) -> (ClauseId, bool) {
+        // It only makes sense to introduce a constrains clause when the parent solvable is
+        // undecided or going to be installed
+        assert_ne!(decision_tracker.assigned_value(candidate), Some(false));
+
+        // If the forbidden solvable is already assigned to true, that means that there is a
+        // conflict with current decisions, because it implies the parent solvable would be false
+        // (and we just asserted that it is not)
+        let conflict = decision_tracker.assigned_value(constrained_candidate) == Some(true);
+
+        let clause_id = self.alloc(
+            ConstrainsClause {
+                candidate,
+                constrained_candidate,
+                via: requires_clause,
+            },
+            Some([candidate, constrained_candidate]),
+        );
+
+        (clause_id, conflict)
+    }
+
+    /// Allocates a new [`Clause::ForbidMultipleInstances`] clause.
+    pub fn alloc_forbid_multiple(
+        &mut self,
+        candidates: SolvableId,
+        constrained_candidate: SolvableId,
+    ) -> ClauseId {
+        let clause = ForbidMultipleInstancesClause {
+            from: candidates,
+            to: constrained_candidate,
+        };
+
+        self.alloc(clause, Some([candidates, constrained_candidate]))
+    }
+
+    /// Allocates a new [`Clause::InstallRoot`] clause.
+    pub fn alloc_root(&mut self) -> ClauseId {
+        self.alloc(Clause::InstallRoot, None)
+    }
+
+    /// Allocates a new [`Clause::Excluded`] clause.
+    pub fn alloc_exclude(&mut self, candidate: SolvableId, reason: StringId) -> ClauseId {
+        self.alloc(Clause::Excluded(ExcludeClause { candidate, reason }), None)
+    }
+
+    /// Allocates a new [`Clause::Learnt`] clause.
+    pub fn alloc_learnt(
+        &mut self,
+        learnt_clause_id: LearntClauseId,
+        literals: &[Literal],
+    ) -> ClauseId {
+        debug_assert!(!literals.is_empty());
+        let watched_literals = if literals.len() == 1 {
+            // Not need for watches, since we learned an assertion
+            None
+        } else {
+            Some([literals[0].solvable_id, literals[1].solvable_id])
+        };
+
+        self.alloc(Clause::Learnt(learnt_clause_id), watched_literals)
+    }
+
+    /// Allocates a new [`Clause::Lock`] clause.
+    pub fn alloc_lock(
+        &mut self,
+        locked_candidate: SolvableId,
+        other_candidate: SolvableId,
+    ) -> ClauseId {
+        self.alloc(
+            Clause::Lock(LockClause {
+                locked_candidate,
+                forbidden_candidate: other_candidate,
+            }),
+            Some([SolvableId::root(), other_candidate]),
+        )
+    }
+
+    fn alloc(
+        &mut self,
+        clause: impl Into<Clause>,
+        watched_literals: Option<[SolvableId; 2]>,
+    ) -> ClauseId {
+        let watched_literals = watched_literals.unwrap_or([SolvableId::null(), SolvableId::null()]);
+
+        let state = ClauseState {
+            watched_literals,
+            next_watches: [ClauseId::null(), ClauseId::null()],
+        };
+
+        debug_assert!(!state.has_watches() || watched_literals[0] != watched_literals[1]);
+
+        match clause.into() {
+            Clause::InstallRoot => ClauseId::install_root(),
+            Clause::Requires(clause) => {
+                let id = self.clauses.requires_clause.alloc(clause);
+                let state_id = self.states.requires_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Requires as u32)
+            }
+            Clause::ForbidMultipleInstances(clause) => {
+                let id = self.clauses.forbid_multiple_instances_clause.alloc(clause);
+                let state_id = self
+                    .states
+                    .forbid_multiple_instances_clause_state
+                    .alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::ForbidMultipleInstances as u32)
+            }
+            Clause::Constrains(clause) => {
+                let id = self.clauses.constrains_clause.alloc(clause);
+                let state_id = self.states.constrains_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Constrains as u32)
+            }
+            Clause::Lock(clause) => {
+                let id = self.clauses.lock_clause.alloc(clause);
+                let state_id = self.states.lock_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Lock as u32)
+            }
+            Clause::Learnt(clause) => {
+                let id = self.clauses.learnt_clause.alloc(clause);
+                let state_id = self.states.learnt_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Learnt as u32)
+            }
+            Clause::Excluded(clause) => {
+                let id = self.clauses.exclude_clause.alloc(clause);
+                let state_id = self.states.exclude_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Excluded as u32)
+            }
+        }
+    }
+}
+
+impl ClauseData {
+    /// Returns clause information for the clause with the given id.
+    pub fn get(&self, id: ClauseId) -> Clause {
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        match kind {
+            ClauseKind::InstallRoot => Clause::InstallRoot,
+            ClauseKind::Requires => Clause::Requires(self.requires_clause[id]),
+            ClauseKind::Constrains => Clause::Constrains(self.constrains_clause[id]),
+            ClauseKind::ForbidMultipleInstances => {
+                Clause::ForbidMultipleInstances(self.forbid_multiple_instances_clause[id])
+            }
+            ClauseKind::Excluded => Clause::Excluded(self.exclude_clause[id]),
+            ClauseKind::Learnt => Clause::Learnt(self.learnt_clause[id]),
+            ClauseKind::Lock => Clause::Lock(self.lock_clause[id]),
+        }
+    }
+}
+
+impl ClauseStates {
+    /// Returns the clause with the given id.
+    pub fn clause_state_mut(&mut self, id: ClauseId) -> &mut ClauseState {
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        let table = match kind {
+            ClauseKind::InstallRoot => panic!("install root has no state"),
+            ClauseKind::Requires => &mut self.requires_clause_state,
+            ClauseKind::Constrains => &mut self.constrains_clause_state,
+            ClauseKind::ForbidMultipleInstances => &mut self.forbid_multiple_instances_clause_state,
+            ClauseKind::Excluded => &mut self.exclude_clause_state,
+            ClauseKind::Learnt => &mut self.learnt_clause_state,
+            ClauseKind::Lock => &mut self.lock_clause_state,
+        };
+        &mut table[id]
+    }
+
+    pub fn has_watches(&self, id: ClauseId) -> bool {
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        let state = match kind {
+            ClauseKind::Excluded | ClauseKind::InstallRoot => return false,
+            ClauseKind::Requires => &self.requires_clause_state[id],
+            ClauseKind::Constrains => &self.constrains_clause_state[id],
+            ClauseKind::ForbidMultipleInstances => &self.forbid_multiple_instances_clause_state[id],
+            ClauseKind::Learnt => &self.learnt_clause_state[id],
+            ClauseKind::Lock => &self.lock_clause_state[id],
+        };
+        state.has_watches()
+    }
+}
+
+// #[cfg(test)]
+// mod test {
+//     use super::*;
+//     use crate::internal::arena::ArenaId;
+//     use crate::solver::decision::Decision;
+//
+//     fn clause(next_clauses: [ClauseId; 2], watched_solvables: [SolvableId; 2]) -> ClauseState {
+//         ClauseState {
+//             watched_literals: watched_solvables,
+//             next_watches: next_clauses,
+//
+//             // The kind is irrelevant here
+//             clause: Clause::InstallRoot,
+//         }
+//     }
+//
+//     #[test]
+//     #[allow(clippy::bool_assert_comparison)]
+//     fn test_literal_satisfying_value() {
+//         let lit = Literal {
+//             solvable_id: SolvableId::root(),
+//             negate: true,
+//         };
+//         assert_eq!(lit.satisfying_value(), false);
+//
+//         let lit = Literal {
+//             solvable_id: SolvableId::root(),
+//             negate: false,
+//         };
+//         assert_eq!(lit.satisfying_value(), true);
+//     }
+//
+//     #[test]
+//     fn test_literal_eval() {
+//         let mut decision_map = DecisionMap::new();
+//
+//         let literal = Literal {
+//             solvable_id: SolvableId::root(),
+//             negate: false,
+//         };
+//         let negated_literal = Literal {
+//             solvable_id: SolvableId::root(),
+//             negate: true,
+//         };
+//
+//         // Undecided
+//         assert_eq!(literal.eval(&decision_map), None);
+//         assert_eq!(negated_literal.eval(&decision_map), None);
+//
+//         // Decided
+//         decision_map.set(SolvableId::root(), true, 1);
+//         assert_eq!(literal.eval(&decision_map), Some(true));
+//         assert_eq!(negated_literal.eval(&decision_map), Some(false));
+//
+//         decision_map.set(SolvableId::root(), false, 1);
+//         assert_eq!(literal.eval(&decision_map), Some(false));
+//         assert_eq!(negated_literal.eval(&decision_map), Some(true));
+//     }
+//
+//     #[test]
+//     fn test_unlink_clause_different() {
+//         let clause1 = clause(
+//             [ClauseId::from_usize(2), ClauseId::from_usize(3)],
+//             [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
+//         );
+//         let clause2 = clause(
+//             [ClauseId::null(), ClauseId::from_usize(3)],
+//             [SolvableId::from_usize(1596), SolvableId::from_usize(1208)],
+//         );
+//         let clause3 = clause(
+//             [ClauseId::null(), ClauseId::null()],
+//             [SolvableId::from_usize(1211), SolvableId::from_usize(42)],
+//         );
+//
+//         // Unlink 0
+//         {
+//             let mut clause1 = clause1.clone();
+//             clause1.unlink_clause(&clause2, SolvableId::from_usize(1596), 0);
+//             assert_eq!(
+//                 clause1.watched_literals,
+//                 [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
+//             );
+//             assert_eq!(
+//                 clause1.next_watches,
+//                 [ClauseId::null(), ClauseId::from_usize(3)]
+//             )
+//         }
+//
+//         // Unlink 1
+//         {
+//             let mut clause1 = clause1;
+//             clause1.unlink_clause(&clause3, SolvableId::from_usize(1211), 0);
+//             assert_eq!(
+//                 clause1.watched_literals,
+//                 [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
+//             );
+//             assert_eq!(
+//                 clause1.next_watches,
+//                 [ClauseId::from_usize(2), ClauseId::null()]
+//             )
+//         }
+//     }
+//
+//     #[test]
+//     fn test_unlink_clause_same() {
+//         let clause1 = clause(
+//             [ClauseId::from_usize(2), ClauseId::from_usize(2)],
+//             [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
+//         );
+//         let clause2 = clause(
+//             [ClauseId::null(), ClauseId::null()],
+//             [SolvableId::from_usize(1596), SolvableId::from_usize(1211)],
+//         );
+//
+//         // Unlink 0
+//         {
+//             let mut clause1 = clause1.clone();
+//             clause1.unlink_clause(&clause2, SolvableId::from_usize(1596), 0);
+//             assert_eq!(
+//                 clause1.watched_literals,
+//                 [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
+//             );
+//             assert_eq!(
+//                 clause1.next_watches,
+//                 [ClauseId::null(), ClauseId::from_usize(2)]
+//             )
+//         }
+//
+//         // Unlink 1
+//         {
+//             let mut clause1 = clause1;
+//             clause1.unlink_clause(&clause2, SolvableId::from_usize(1211), 1);
+//             assert_eq!(
+//                 clause1.watched_literals,
+//                 [SolvableId::from_usize(1596), SolvableId::from_usize(1211)]
+//             );
+//             assert_eq!(
+//                 clause1.next_watches,
+//                 [ClauseId::from_usize(2), ClauseId::null()]
+//             )
+//         }
+//     }
+//
+//     #[test]
+//     fn test_requires_with_and_without_conflict() {
+//         let mut decisions = DecisionTracker::new();
+//
+//         let parent = SolvableId::from_usize(1);
+//         let candidate1 = SolvableId::from_usize(2);
+//         let candidate2 = SolvableId::from_usize(3);
+//
+//         // No conflict, all candidates available
+//         let (clause, conflict) = ClauseState::requires(
+//             parent,
+//             VersionSetId::from_usize(0),
+//             &[candidate1, candidate2],
+//             &decisions,
+//         );
+//         assert!(!conflict);
+//         assert_eq!(clause.watched_literals[0], parent);
+//         assert_eq!(clause.watched_literals[1], candidate1);
+//
+//         // No conflict, still one candidate available
+//         decisions
+//             .try_add_decision(Decision::new(candidate1, false, ClauseId::null()), 1)
+//             .unwrap();
+//         let (clause, conflict) = ClauseState::requires(
+//             parent,
+//             VersionSetId::from_usize(0),
+//             &[candidate1, candidate2],
+//             &decisions,
+//         );
+//         assert!(!conflict);
+//         assert_eq!(clause.watched_literals[0], parent);
+//         assert_eq!(clause.watched_literals[1], candidate2);
+//
+//         // Conflict, no candidates available
+//         decisions
+//             .try_add_decision(Decision::new(candidate2, false, ClauseId::null()), 1)
+//             .unwrap();
+//         let (clause, conflict) = ClauseState::requires(
+//             parent,
+//             VersionSetId::from_usize(0),
+//             &[candidate1, candidate2],
+//             &decisions,
+//         );
+//         assert!(conflict);
+//         assert_eq!(clause.watched_literals[0], parent);
+//         assert_eq!(clause.watched_literals[1], candidate1);
+//
+//         // Panic
+//         decisions
+//             .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+//             .unwrap();
+//         let panicked = std::panic::catch_unwind(|| {
+//             ClauseState::requires(
+//                 parent,
+//                 VersionSetId::from_usize(0),
+//                 &[candidate1, candidate2],
+//                 &decisions,
+//             )
+//         })
+//         .is_err();
+//         assert!(panicked);
+//     }
+//
+//     #[test]
+//     fn test_constrains_with_and_without_conflict() {
+//         let mut decisions = DecisionTracker::new();
+//
+//         let parent = SolvableId::from_usize(1);
+//         let forbidden = SolvableId::from_usize(2);
+//
+//         // No conflict, forbidden package not installed
+//         let (clause, conflict) =
+//             ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+//         assert!(!conflict);
+//         assert_eq!(clause.watched_literals[0], parent);
+//         assert_eq!(clause.watched_literals[1], forbidden);
+//
+//         // Conflict, forbidden package installed
+//         decisions
+//             .try_add_decision(Decision::new(forbidden, true, ClauseId::null()), 1)
+//             .unwrap();
+//         let (clause, conflict) =
+//             ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+//         assert!(conflict);
+//         assert_eq!(clause.watched_literals[0], parent);
+//         assert_eq!(clause.watched_literals[1], forbidden);
+//
+//         // Panic
+//         decisions
+//             .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+//             .unwrap();
+//         let panicked = std::panic::catch_unwind(|| {
+//             ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
+//         })
+//         .is_err();
+//         assert!(panicked);
+//     }
+//
+//     #[test]
+//     fn test_clause_size() {
+//         // This test is here to ensure we don't increase the size of `ClauseState` by accident, as
+//         // we are creating thousands of instances. Note: libsolv manages to bring down the size to
+//         // 24, so there is probably room for improvement.
+//         assert_eq!(std::mem::size_of::<ClauseState>(), 32);
+//     }
+// }
