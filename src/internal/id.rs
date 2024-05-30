@@ -187,7 +187,7 @@ impl VarId {
 
     /// Returns the solvable id if this variable references a solvable.
     pub fn solvable_id(self) -> Option<SolvableId> {
-        self.is_solvable().then(|| SolvableId(self.0))
+        self.is_solvable().then_some(SolvableId(self.0))
     }
 
     /// Construct a new variable id from a variable id.

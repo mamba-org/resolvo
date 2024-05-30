@@ -439,10 +439,10 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                         for (i, &p) in candidates.iter().enumerate() {
                             for (j, bit) in (start_var_idx..end_var_idx).enumerate() {
                                 let clause_id = clauses.alloc(ClauseState::forbid_multiple(
-                                    p.into(),
+                                    p,
                                     Literal {
                                         var_id: VarId::var(bit),
-                                        negate: ((1 << j) & i) <= 0,
+                                        negate: ((1 << j) & i) == 0,
                                     },
                                 ));
 
