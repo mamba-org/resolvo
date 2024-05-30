@@ -1,13 +1,14 @@
 use crate::{
     internal::{
         arena::Arena,
-        id::{ClauseId, LearntClauseId, SolvableId, VersionSetId},
+        id::{LearntClauseId, SolvableId, VersionSetId},
     },
     pool::Pool,
     solver::decision_map::DecisionMap,
     PackageName, VersionSet,
 };
 
+use crate::internal::arena::ArenaId;
 use crate::internal::id::StringId;
 use crate::solver::decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
@@ -246,6 +247,18 @@ impl Clause {
         }
     }
 
+    fn kind(&self) -> ClauseKind {
+        match self {
+            Clause::InstallRoot => ClauseKind::InstallRoot,
+            Clause::Requires(_) => ClauseKind::Requires,
+            Clause::ForbidMultipleInstances(_) => ClauseKind::ForbidMultipleInstances,
+            Clause::Constrains(_) => ClauseKind::Constrains,
+            Clause::Lock(_) => ClauseKind::Lock,
+            Clause::Learnt(_) => ClauseKind::Learnt,
+            Clause::Excluded(_) => ClauseKind::Excluded,
+        }
+    }
+
     /// Returns an object that implements `Debug` to debug the clause.
     pub fn debug<'pool, VS: VersionSet, N: PackageName + Display>(
         &self,
@@ -271,21 +284,9 @@ pub(crate) struct ClauseState {
     pub watched_literals: [SolvableId; 2],
     // The ids of the next clause in each linked list that this clause is part of
     next_watches: [ClauseId; 2],
-    // The clause itself
-    pub(crate) clause: Clause,
 }
 
 impl ClauseState {
-    pub fn debug<'a, VS: VersionSet, N: PackageName>(
-        &self,
-        pool: &'a Pool<VS, N>,
-    ) -> ClauseDebug<'a, VS, N> {
-        ClauseDebug {
-            clause: self.clause,
-            pool,
-        }
-    }
-
     pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: ClauseId) {
         self.next_watches[watch_index] = linked_clause;
     }
@@ -322,12 +323,14 @@ impl ClauseState {
     pub fn watch_turned_false(
         &self,
         solvable_id: SolvableId,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         decision_map: &DecisionMap,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
     ) -> Option<([Literal; 2], usize)> {
         debug_assert!(self.watched_literals.contains(&solvable_id));
 
-        let literals @ [w1, w2] = self.watched_literals(learnt_clauses);
+        let literals @ [w1, w2] = self.watched_literals(clause_id, clause_data, learnt_clauses);
 
         if solvable_id == w1.solvable_id && w1.eval(decision_map) == Some(false) {
             Some((literals, 0))
@@ -345,6 +348,8 @@ impl ClauseState {
 
     pub fn watched_literals(
         &self,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
     ) -> [Literal; 2] {
         let literals = |op1: bool, op2: bool| {
@@ -360,9 +365,11 @@ impl ClauseState {
             ]
         };
 
-        match self.clause {
-            Clause::InstallRoot | Clause::Excluded(..) => unreachable!(),
-            Clause::Learnt(learnt_id) => {
+        match clause_id.kind() {
+            ClauseKind::InstallRoot | ClauseKind::Excluded => unreachable!(),
+            ClauseKind::Learnt => {
+                let learnt_id = clause_data.learnt_clause[clause_id.id()];
+
                 // TODO: we might want to do something else for performance, like keeping the whole
                 // literal in `self.watched_literals`, to avoid lookups... But first we should
                 // benchmark!
@@ -376,10 +383,11 @@ impl ClauseState {
                     .unwrap();
                 [w1, w2]
             }
-            Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => {
+            ClauseKind::Constrains | ClauseKind::ForbidMultipleInstances | ClauseKind::Lock => {
                 literals(false, false)
             }
-            Clause::Requires(RequiresClause { candidate, .. }) => {
+            ClauseKind::Requires => {
+                let candidate = clause_data.requires_clause[clause_id.id()].candidate;
                 if self.watched_literals[0] == candidate {
                     literals(false, true)
                 } else if self.watched_literals[1] == candidate {
@@ -393,6 +401,8 @@ impl ClauseState {
 
     pub fn next_unwatched_variable(
         &self,
+        clause_id: ClauseId,
+        clause_data: &ClauseData,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         version_set_to_sorted_candidates: &FrozenMap<VersionSetId, Vec<SolvableId>>,
         decision_map: &DecisionMap,
@@ -405,16 +415,21 @@ impl ClauseState {
                 && solvable_lit.eval(decision_map).unwrap_or(true)
         };
 
-        match self.clause {
-            Clause::InstallRoot => unreachable!(),
-            Clause::Excluded(_) => unreachable!(),
-            Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
-                .iter()
-                .cloned()
-                .find(|&l| can_watch(l))
-                .map(|l| l.solvable_id),
-            Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => None,
-            Clause::Requires(clause) => {
+        match clause_id.kind() {
+            ClauseKind::InstallRoot => unreachable!(),
+            ClauseKind::Excluded => unreachable!(),
+            ClauseKind::Learnt => {
+                let learnt_id = clause_data.learnt_clause[clause_id.id()];
+                learnt_clauses[learnt_id]
+                    .iter()
+                    .cloned()
+                    .find(|&l| can_watch(l))
+                    .map(|l| l.solvable_id)
+            }
+            ClauseKind::Constrains | ClauseKind::ForbidMultipleInstances | ClauseKind::Lock => None,
+            ClauseKind::Requires => {
+                let clause = clause_data.requires_clause[clause_id.id()];
+
                 // The solvable that added this clause
                 let solvable_lit = Literal {
                     solvable_id: clause.candidate,
@@ -541,9 +556,98 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     }
 }
 
+enum ClauseKind {
+    InstallRoot = 0,
+    Requires = 1,
+    Constrains = 2,
+    ForbidMultipleInstances = 3,
+    Excluded = 4,
+    Learnt = 5,
+    Lock = 6,
+}
+
+impl ClauseKind {
+    pub fn from_u32(x: u32) -> Self {
+        match x {
+            0 => ClauseKind::InstallRoot,
+            1 => ClauseKind::Requires,
+            2 => ClauseKind::Constrains,
+            3 => ClauseKind::ForbidMultipleInstances,
+            4 => ClauseKind::Excluded,
+            5 => ClauseKind::Learnt,
+            6 => ClauseKind::Lock,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
+pub(crate) struct ClauseId(u32);
+
+impl ClauseId {
+    /// There is a guarentee that ClauseId(0) will always be "Clause::InstallRoot". This assumption
+    /// is verified by the solver.
+    pub(crate) fn install_root() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn is_null(self) -> bool {
+        self.0 == u32::MAX
+    }
+
+    pub(crate) fn null() -> ClauseId {
+        ClauseId(u32::MAX)
+    }
+
+    fn from_usize(x: usize) -> Self {
+        assert!(x < u32::MAX as usize, "clause id too big");
+        Self(x as u32)
+    }
+
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    fn kind(self) -> ClauseKind {
+        ClauseKind::from_u32(self.0 & CLAUSE_KIND_MASK)
+    }
+
+    fn id(self) -> u32 {
+        self.0 >> CLAUSE_KIND_OFFSET
+    }
+}
+
+const CLAUSE_KIND_MASK: u32 = 0b111;
+const CLAUSE_KIND_OFFSET: u32 = 3;
+
 #[derive(Default)]
 pub struct Clauses {
-    clauses: Arena<ClauseId, ClauseState>,
+    /// Information about all clauses in the system
+    pub clauses: ClauseData,
+
+    /// States for all the clauses.
+    pub states: ClauseStates,
+}
+
+#[derive(Default)]
+pub struct ClauseData {
+    requires_clause: Arena<u32, RequiresClause>,
+    constrains_clause: Arena<u32, ConstrainsClause>,
+    forbid_multiple_instances_clause: Arena<u32, ForbidMultipleInstancesClause>,
+    exclude_clause: Arena<u32, ExcludeClause>,
+    learnt_clause: Arena<u32, LearntClauseId>,
+    lock_clause: Arena<u32, LockClause>,
+}
+
+#[derive(Default)]
+pub struct ClauseStates {
+    requires_clause_state: Arena<u32, ClauseState>,
+    constrains_clause_state: Arena<u32, ClauseState>,
+    forbid_multiple_instances_clause_state: Arena<u32, ClauseState>,
+    exclude_clause_state: Arena<u32, ClauseState>,
+    learnt_clause_state: Arena<u32, ClauseState>,
+    lock_clause_state: Arena<u32, ClauseState>,
 }
 
 impl Clauses {
@@ -677,34 +781,122 @@ impl Clauses {
     ) -> ClauseId {
         let watched_literals = watched_literals.unwrap_or([SolvableId::null(), SolvableId::null()]);
 
-        let clause = ClauseState {
+        let state = ClauseState {
             watched_literals,
             next_watches: [ClauseId::null(), ClauseId::null()],
-            clause: clause.into(),
         };
 
-        debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
+        debug_assert!(!state.has_watches() || watched_literals[0] != watched_literals[1]);
 
-        self.clauses.alloc(clause)
+        match clause.into() {
+            Clause::InstallRoot => ClauseId::install_root(),
+            Clause::Requires(clause) => {
+                let id = self.clauses.requires_clause.alloc(clause);
+                let state_id = self.states.requires_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Requires as u32)
+            }
+            Clause::ForbidMultipleInstances(clause) => {
+                let id = self.clauses.forbid_multiple_instances_clause.alloc(clause);
+                let state_id = self
+                    .states
+                    .forbid_multiple_instances_clause_state
+                    .alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::ForbidMultipleInstances as u32)
+            }
+            Clause::Constrains(clause) => {
+                let id = self.clauses.constrains_clause.alloc(clause);
+                let state_id = self.states.constrains_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Constrains as u32)
+            }
+            Clause::Lock(clause) => {
+                let id = self.clauses.lock_clause.alloc(clause);
+                let state_id = self.states.lock_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Lock as u32)
+            }
+            Clause::Learnt(clause) => {
+                let id = self.clauses.learnt_clause.alloc(clause);
+                let state_id = self.states.learnt_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Learnt as u32)
+            }
+            Clause::Excluded(clause) => {
+                let id = self.clauses.exclude_clause.alloc(clause);
+                let state_id = self.states.exclude_clause_state.alloc(state);
+                debug_assert_eq!(id, state_id);
+                ClauseId(id << CLAUSE_KIND_OFFSET | ClauseKind::Excluded as u32)
+            }
+        }
     }
+}
 
-    /// Returns the clause with the given id.
-    pub fn clause(&self, id: ClauseId) -> Clause {
-        self.clauses[id].clause
+impl ClauseData {
+    /// Returns clause information for the clause with the given id.
+    pub fn get(&self, id: ClauseId) -> Clause {
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        match kind {
+            ClauseKind::InstallRoot => Clause::InstallRoot,
+            ClauseKind::Requires => Clause::Requires(self.requires_clause[id]),
+            ClauseKind::Constrains => Clause::Constrains(self.constrains_clause[id]),
+            ClauseKind::ForbidMultipleInstances => {
+                Clause::ForbidMultipleInstances(self.forbid_multiple_instances_clause[id])
+            }
+            ClauseKind::Excluded => Clause::Excluded(self.exclude_clause[id]),
+            ClauseKind::Learnt => Clause::Learnt(self.learnt_clause[id]),
+            ClauseKind::Lock => Clause::Lock(self.lock_clause[id]),
+        }
     }
+}
 
+impl ClauseStates {
     /// Returns the clause with the given id.
     pub fn clause_state_mut(&mut self, id: ClauseId) -> &mut ClauseState {
-        &mut self.clauses[id]
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        match kind {
+            ClauseKind::InstallRoot => panic!("install root has no state"),
+            ClauseKind::Requires => &mut self.requires_clause_state[id],
+            ClauseKind::Constrains => &mut self.constrains_clause_state[id],
+            ClauseKind::ForbidMultipleInstances => {
+                &mut self.forbid_multiple_instances_clause_state[id]
+            }
+            ClauseKind::Excluded => &mut self.exclude_clause_state[id],
+            ClauseKind::Learnt => &mut self.learnt_clause_state[id],
+            ClauseKind::Lock => &mut self.lock_clause_state[id],
+        }
     }
 
     /// Returns two clause states with the given ids.
-    pub fn two_clause_state_mut(&mut self, a: ClauseId, b: ClauseId) -> (&mut ClauseState, &mut ClauseState) {
-        self.clauses.get_two_mut(a, b)
+    pub fn two_clause_state_mut(
+        &mut self,
+        a: ClauseId,
+        b: ClauseId,
+    ) -> (&mut ClauseState, &mut ClauseState) {
+        debug_assert_ne!(a, b);
+
+        unsafe {
+            let a = (*(self as *mut Self)).clause_state_mut(a);
+            let b = (*(self as *mut Self)).clause_state_mut(b);
+            (a, b)
+        }
     }
 
     pub fn has_watches(&self, id: ClauseId) -> bool {
-        self.clauses[id].has_watches()
+        let kind = id.kind();
+        let id = id.0 >> CLAUSE_KIND_OFFSET;
+        let state = match kind {
+            ClauseKind::Excluded | ClauseKind::InstallRoot => return false,
+            ClauseKind::Requires => &self.requires_clause_state[id],
+            ClauseKind::Constrains => &self.constrains_clause_state[id],
+            ClauseKind::ForbidMultipleInstances => &self.forbid_multiple_instances_clause_state[id],
+            ClauseKind::Learnt => &self.learnt_clause_state[id],
+            ClauseKind::Lock => &self.lock_clause_state[id],
+        };
+        state.has_watches()
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     internal::{
         arena::Arena,
-        id::{ClauseId, LearntClauseId, NameId, SolvableId},
+        id::{LearntClauseId, NameId, SolvableId},
         mapping::Mapping,
     },
     pool::Pool,
@@ -10,20 +10,16 @@ use crate::{
     Candidates, Dependencies, DependencyProvider, KnownDependencies, PackageName, VersionSet,
     VersionSetId,
 };
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
-use std::any::Any;
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::fmt::Display;
-use std::future::ready;
-use std::ops::ControlFlow;
-use std::rc::Rc;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use std::{
+    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
+    rc::Rc,
+};
 
 use itertools::{chain, Itertools};
 
 use crate::runtime::{AsyncRuntime, NowOrNeverRuntime};
-use crate::solver::clause::Clauses;
+use crate::solver::clause::{ClauseData, ClauseId, ClauseStates, Clauses};
 pub use cache::SolverCache;
 use clause::{Clause, Literal};
 use decision::Decision;
@@ -397,7 +393,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                                 .borrow_mut()
                                 .alloc_forbid_multiple(candidate, other_candidate);
 
-                            debug_assert!(self.clauses.borrow().has_watches(clause_id));
+                            debug_assert!(self.clauses.borrow().states.has_watches(clause_id));
                             output.clauses_to_watch.push(clause_id);
                         }
                     }
@@ -411,7 +407,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                                     .borrow_mut()
                                     .alloc_lock(locked_solvable_id, other_candidate);
 
-                                debug_assert!(self.clauses.borrow().has_watches(clause_id));
+                                debug_assert!(self.clauses.borrow().states.has_watches(clause_id));
                                 output.clauses_to_watch.push(clause_id);
                             }
                         }
@@ -464,7 +460,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                         &self.decision_tracker,
                     );
 
-                    if clauses.has_watches(clause_id) {
+                    if clauses.states.has_watches(clause_id) {
                         output.clauses_to_watch.push(clause_id);
                     }
 
@@ -588,7 +584,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
                         tracing::debug!("├─ added clause {clause:?} introduces a conflict which invalidates the partial solution",
-                                clause=self.clauses.borrow().clause(clause_id).debug(&self.pool));
+                                clause=self.clauses.borrow().clauses.get(clause_id).debug(&self.pool));
                         level = 0;
                         self.decision_tracker.clear();
                         continue;
@@ -637,7 +633,11 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                     .format_with("\n- ", |(id, derived_from), f| f(&format_args!(
                         "{} (derived from {:?})",
                         id.display(&self.pool),
-                        self.clauses.borrow().clause(derived_from).debug(&self.pool),
+                        self.clauses
+                            .borrow()
+                            .clauses
+                            .get(derived_from)
+                            .debug(&self.pool),
                     )))
             );
 
@@ -649,7 +649,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
             // Serially process the outputs, to reduce the need for synchronization
             for &clause_id in &output.conflicting_clauses {
                 tracing::debug!("├─ added clause {clause:?} introduces a conflict which invalidates the partial solution",
-                                        clause=self.clauses.borrow().clause(clause_id).debug(&self.pool));
+                                        clause=self.clauses.borrow().clauses.get(clause_id).debug(&self.pool));
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
@@ -663,11 +663,11 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         let mut clauses = self.clauses.borrow_mut();
         for clause_id in output.clauses_to_watch {
             debug_assert!(
-                clauses.has_watches(clause_id),
+                clauses.states.has_watches(clause_id),
                 "attempting to watch a clause without watches!"
             );
             self.watches
-                .start_watching(clauses.clause_state_mut(clause_id), clause_id);
+                .start_watching(clauses.states.clause_state_mut(clause_id), clause_id);
         }
 
         self.requires_clauses
@@ -761,7 +761,11 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
             tracing::info!(
                 "deciding to assign {}, ({:?}, {} possible candidates)",
                 candidate.display(&self.pool),
-                self.clauses.borrow().clause(clause_id).debug(&self.pool),
+                self.clauses
+                    .borrow()
+                    .clauses
+                    .get(clause_id)
+                    .debug(&self.pool),
                 count,
             );
         }
@@ -849,7 +853,8 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 "│  During unit propagation for clause: {:?}",
                 self.clauses
                     .borrow()
-                    .clause(conflicting_clause)
+                    .clauses
+                    .get(conflicting_clause)
                     .debug(&self.pool)
             );
 
@@ -858,7 +863,8 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 !attempted_value,
                 self.clauses
                     .borrow()
-                    .clause(
+                    .clauses
+                    .get(
                         self.decision_tracker
                             .find_clause_for_assignment(conflicting_solvable)
                             .unwrap()
@@ -870,7 +876,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         if level == 1 {
             tracing::info!("╘══ UNSOLVABLE");
             for decision in self.decision_tracker.stack() {
-                let clause = self.clauses.borrow().clause(decision.derived_from);
+                let clause = self.clauses.borrow().clauses.get(decision.derived_from);
                 let level = self.decision_tracker.level(decision.solvable_id);
                 let action = if decision.value { "install" } else { "forbid" };
 
@@ -944,7 +950,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
-            let clause = self.clauses.borrow().clause(clause_id);
+            let clause = self.clauses.borrow().clauses.get(clause_id);
             let Clause::Learnt(learnt_index) = clause else {
                 unreachable!();
             };
@@ -987,20 +993,33 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
             let mut predecessor_clause_id: Option<ClauseId> = None;
             let mut clause_id = self.watches.first_clause_watching_solvable(pkg);
             while !clause_id.is_null() {
-                if predecessor_clause_id == Some(clause_id) {
-                    panic!("Linked list is circular!");
-                }
+                debug_assert_ne!(
+                    predecessor_clause_id,
+                    Some(clause_id),
+                    "Linked list is circular!"
+                );
 
                 // Get mutable access to both clauses.
                 let mut clauses = self.clauses.borrow_mut();
-                let (predecessor_clause, clause) =
-                    if let Some(prev_clause_id) = predecessor_clause_id {
-                        let (predecessor_clause, clause) =
-                            clauses.two_clause_state_mut(prev_clause_id, clause_id);
-                        (Some(predecessor_clause), clause)
-                    } else {
-                        (None, clauses.clause_state_mut(clause_id))
-                    };
+
+                let (clause_states, clause_data) = unsafe {
+                    let clause_states = &mut *(&mut clauses.states as *mut ClauseStates);
+                    let clause_data = &*(&mut clauses.clauses as *const ClauseData);
+                    (clause_states, clause_data)
+                };
+
+                // let (predecessor_clause, clause) =
+                //     if let Some(prev_clause_id) = predecessor_clause_id {
+                //         let (predecessor_clause, clause) = clause_states
+                //             .two_clause_state_mut(prev_clause_id, clause_id);
+                //         (Some(predecessor_clause), clause)
+                //     } else {
+                //         (None, clause_states.clause_state_mut(clause_id))
+                //     };
+
+                let clause = unsafe {
+                    (*(clause_states as *mut ClauseStates)).clause_state_mut(clause_id)
+                };
 
                 // Update the prev_clause_id for the next run
                 old_predecessor_clause_id = predecessor_clause_id;
@@ -1012,16 +1031,24 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
 
                 if let Some((watched_literals, watch_index)) = clause.watch_turned_false(
                     pkg,
+                    this_clause_id,
+                    &clause_data,
                     self.decision_tracker.map(),
                     &self.learnt_clauses,
                 ) {
                     // One of the watched literals is now false
                     if let Some(variable) = clause.next_unwatched_variable(
+                        this_clause_id,
+                        &clause_data,
                         &self.learnt_clauses,
                         &self.cache.version_set_to_sorted_candidates,
                         self.decision_tracker.map(),
                     ) {
                         debug_assert!(!clause.watched_literals.contains(&variable));
+
+                        let predecessor_clause = old_predecessor_clause_id.map(|id| unsafe {
+                            (*(clause_states as *mut ClauseStates)).clause_state_mut(id)
+                        });
 
                         self.watches.update_watched(
                             predecessor_clause,
@@ -1065,7 +1092,8 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                             })?;
 
                         if decided {
-                            match clause.clause {
+                            let clause = clause_data.get(this_clause_id);
+                            match clause {
                                 // Skip logging for ForbidMultipleInstances, which is so noisy
                                 Clause::ForbidMultipleInstances(..) => {}
                                 _ => {
@@ -1097,7 +1125,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         problem: &mut Problem,
         seen: &mut HashSet<ClauseId>,
     ) {
-        let clause = clauses.clause(clause_id);
+        let clause = clauses.clauses.get(clause_id);
         match clause {
             Clause::Learnt(learnt_clause_id) => {
                 if !seen.insert(clause_id) {
@@ -1126,7 +1154,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
         let mut involved = HashSet::new();
-        self.clauses.borrow().clause(clause_id).visit_literals(
+        self.clauses.borrow().clauses.get(clause_id).visit_literals(
             &self.learnt_clauses,
             &self.cache.version_set_to_sorted_candidates,
             |literal| {
@@ -1164,7 +1192,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 &mut seen,
             );
 
-            self.clauses.borrow().clause(why).visit_literals(
+            self.clauses.borrow().clauses.get(why).visit_literals(
                 &self.learnt_clauses,
                 &self.cache.version_set_to_sorted_candidates,
                 |literal| {
@@ -1208,7 +1236,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         loop {
             learnt_why.push(clause_id);
 
-            self.clauses.borrow().clause(clause_id).visit_literals(
+            self.clauses.borrow().clauses.get(clause_id).visit_literals(
                 &self.learnt_clauses,
                 &self.cache.version_set_to_sorted_candidates,
                 |literal| {
@@ -1281,7 +1309,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
         let clause_id = clauses.alloc_learnt(learnt_id, &learnt);
         self.learnt_clause_ids.push(clause_id);
 
-        let clause = clauses.clause_state_mut(clause_id);
+        let clause = clauses.states.clause_state_mut(clause_id);
         if clause.has_watches() {
             self.watches.start_watching(clause, clause_id);
         }

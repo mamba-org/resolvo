@@ -107,9 +107,9 @@ impl<TId: ArenaId, TValue> Arena<TId, TValue> {
     pub fn get_two_mut(&mut self, a: TId, b: TId) -> (&mut TValue, &mut TValue) {
         let a_index = a.to_usize();
         let b_index = b.to_usize();
-        assert!(a_index < self.len());
-        assert!(b_index < self.len());
-        assert_ne!(a_index, b_index);
+        debug_assert!(a_index < self.len());
+        debug_assert!(b_index < self.len());
+        debug_assert_ne!(a_index, b_index);
         let (a_chunk, a_offset) = Self::chunk_and_offset(a_index);
         let (b_chunk, b_offset) = Self::chunk_and_offset(b_index);
         // SAFE: because we check that the indices are less than the length and that both indices do
@@ -133,7 +133,7 @@ impl<TId: ArenaId, TValue> Index<TId> for Arena<TId, TValue> {
 
     fn index(&self, index: TId) -> &Self::Output {
         let index = index.to_usize();
-        assert!(index < self.len());
+        debug_assert!(index < self.len());
         let (chunk, offset) = Self::chunk_and_offset(index);
         unsafe {
             let vec = self.chunks.get();
@@ -145,7 +145,7 @@ impl<TId: ArenaId, TValue> Index<TId> for Arena<TId, TValue> {
 impl<TId: ArenaId, TValue> IndexMut<TId> for Arena<TId, TValue> {
     fn index_mut(&mut self, index: TId) -> &mut Self::Output {
         let index = index.to_usize();
-        assert!(index < self.len());
+        debug_assert!(index < self.len());
         let (chunk, offset) = Self::chunk_and_offset(index);
         // SAFE: because we check that the index is less than the length
         unsafe {
@@ -161,6 +161,16 @@ impl<TId: ArenaId, TValue> IndexMut<TId> for Arena<TId, TValue> {
 pub trait ArenaId {
     fn from_usize(x: usize) -> Self;
     fn to_usize(self) -> usize;
+}
+
+impl ArenaId for u32 {
+    fn from_usize(x: usize) -> Self {
+        x as u32
+    }
+
+    fn to_usize(self) -> usize {
+        self as _
+    }
 }
 
 /// An iterator over the elements of an [`Arena`].

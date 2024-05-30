@@ -11,15 +11,19 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
-use crate::solver::clause::{
-    ConstrainsClause, ExcludeClause, ForbidMultipleInstancesClause, LockClause, RequiresClause,
-};
 use crate::{
-    internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
+    solver::clause::{
+        ClauseId, ConstrainsClause, ExcludeClause, ForbidMultipleInstancesClause, LockClause,
+        RequiresClause,
+    },
+    internal::id::{SolvableId, StringId, VersionSetId},
     pool::Pool,
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
-    DependencyProvider, PackageName, SolvableDisplay, VersionSet,
+    DependencyProvider,
+    PackageName,
+    SolvableDisplay,
+    VersionSet
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -55,7 +59,7 @@ impl Problem {
         let unresolved_node = graph.add_node(ProblemNode::UnresolvedDependency);
 
         for &clause_id in &self.clauses {
-            let clause = solver.clauses.borrow().clause(clause_id);
+            let clause = solver.clauses.borrow().clauses.get(clause_id);
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(ExcludeClause { candidate, reason }) => {

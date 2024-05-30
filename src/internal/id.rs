@@ -95,37 +95,6 @@ impl From<SolvableId> for u32 {
     }
 }
 
-#[repr(transparent)]
-#[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
-pub(crate) struct ClauseId(u32);
-
-impl ClauseId {
-    /// There is a guarentee that ClauseId(0) will always be "Clause::InstallRoot". This assumption
-    /// is verified by the solver.
-    pub(crate) fn install_root() -> Self {
-        Self(0)
-    }
-
-    pub(crate) fn is_null(self) -> bool {
-        self.0 == u32::MAX
-    }
-
-    pub(crate) fn null() -> ClauseId {
-        ClauseId(u32::MAX)
-    }
-}
-
-impl ArenaId for ClauseId {
-    fn from_usize(x: usize) -> Self {
-        assert!(x < u32::MAX as usize, "clause id too big");
-        Self(x as u32)
-    }
-
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct LearntClauseId(u32);
 
