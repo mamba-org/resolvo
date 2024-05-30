@@ -1,4 +1,5 @@
-use crate::internal::{arena::ArenaId, id::SolvableId};
+use crate::internal::id::{ExpandedVar, VarId};
+use crate::internal::{arena::ArenaId};
 use crate::{PackageName, Pool, VersionSet};
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
@@ -36,46 +37,62 @@ impl DecisionAndLevel {
 
 /// A map of the assignments to solvables.
 pub(crate) struct DecisionMap {
-    map: Vec<DecisionAndLevel>,
+    solvables: Vec<DecisionAndLevel>,
+    variables: Vec<DecisionAndLevel>,
 }
 
 impl DecisionMap {
     pub fn new() -> Self {
         Self {
-            map: Default::default(),
+            solvables: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
-    pub fn reset(&mut self, solvable_id: SolvableId) {
-        let solvable_id = solvable_id.to_usize();
-        if solvable_id < self.map.len() {
+    pub fn reset(&mut self, variable: VarId) {
+        let (map, idx) = match variable.expand() {
+            ExpandedVar::Solvable(s) => (&mut self.solvables, s.to_usize()),
+            ExpandedVar::Variable(v) => (&mut self.variables, v as usize),
+        };
+
+        if idx < map.len() {
             // SAFE: because we check that the solvable id is within bounds
-            unsafe { *self.map.get_unchecked_mut(solvable_id) = DecisionAndLevel::undecided() };
+            unsafe { *map.get_unchecked_mut(idx) = DecisionAndLevel::undecided() };
         }
     }
 
-    pub fn set(&mut self, solvable_id: SolvableId, value: bool, level: u32) {
-        let solvable_id = solvable_id.to_usize();
-        if solvable_id >= self.map.len() {
-            self.map
-                .resize_with(solvable_id + 1, DecisionAndLevel::undecided);
+    pub fn set(&mut self, variable: VarId, value: bool, level: u32) {
+        let (map, idx) = match variable.expand() {
+            ExpandedVar::Solvable(s) => (&mut self.solvables, s.to_usize()),
+            ExpandedVar::Variable(v) => (&mut self.variables, v as usize),
+        };
+
+        if idx >= map.len() {
+            map.resize_with(idx + 1, DecisionAndLevel::undecided);
         }
 
         // SAFE: because we ensured that vec contains at least the correct number of elements.
         unsafe {
-            *self.map.get_unchecked_mut(solvable_id) =
-                DecisionAndLevel::with_value_and_level(value, level)
+            *map.get_unchecked_mut(idx) = DecisionAndLevel::with_value_and_level(value, level)
         };
     }
 
-    pub fn level(&self, solvable_id: SolvableId) -> u32 {
-        self.map
-            .get(solvable_id.to_usize())
-            .map_or(0, |d| d.level())
+    pub fn level(&self, variable: VarId) -> u32 {
+        let (map, idx) = match variable.expand() {
+            ExpandedVar::Solvable(s) => (&self.solvables, s.to_usize()),
+            ExpandedVar::Variable(v) => (&self.variables, v as usize),
+        };
+
+        map.get(idx).map_or(0, |d| d.level())
     }
 
-    pub fn value(&self, solvable_id: SolvableId) -> Option<bool> {
-        self.map.get(solvable_id.to_usize()).and_then(|d| d.value())
+    pub fn value(&self, variable: VarId) -> Option<bool> {
+        let (map, idx) = match variable.expand() {
+            ExpandedVar::Solvable(s) => (&self.solvables, s.to_usize()),
+            ExpandedVar::Variable(v) => (&self.variables, v as usize),
+        };
+
+        map.get(idx).and_then(|d| d.value())
     }
 
     /// Returns an object that can be used to display the contents of the decision map in a human readable fashion.
@@ -97,12 +114,12 @@ impl<'a, VS: VersionSet, N: PackageName + Display> Display for DecisionMapDispla
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for (id, solvable) in self.pool.solvables.iter() {
             write!(f, "{} := ", solvable.display(self.pool))?;
-            if let Some(value) = self.map.value(id) {
+            if let Some(value) = self.map.value(id.into()) {
                 writeln!(
                     f,
                     "{} (level: {})",
                     if value { "true " } else { "false" },
-                    self.map.level(id)
+                    self.map.level(id.into())
                 )?;
             } else {
                 writeln!(f, "<undecided>")?;

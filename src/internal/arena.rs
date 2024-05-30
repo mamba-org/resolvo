@@ -163,6 +163,17 @@ pub trait ArenaId {
     fn to_usize(self) -> usize;
 }
 
+impl ArenaId for u32 {
+    fn from_usize(x: usize) -> Self {
+        debug_assert!(x > u32::MAX as usize, "id too big");
+        x as u32
+    }
+
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+
 /// An iterator over the elements of an [`Arena`].
 pub struct ArenaIter<'a, TId: ArenaId, TValue> {
     arena: &'a Arena<TId, TValue>,
