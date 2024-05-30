@@ -569,6 +569,18 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 }
             }
 
+            {
+                let borrow = self.clauses.borrow();
+                dbg!(
+                    borrow.clauses.requires_clause.len(),
+                    borrow.clauses.constrains_clause.len(),
+                    borrow.clauses.forbid_multiple_instances_clause.len(),
+                    borrow.clauses.exclude_clause.len(),
+                    borrow.clauses.learnt_clause.len(),
+                    borrow.clauses.lock_clause.len()
+                );
+            }
+
             // Propagate decisions from assignments above
             let propagate_result = self.propagate(level);
 
@@ -1002,23 +1014,12 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 // Get mutable access to both clauses.
                 let mut clauses = self.clauses.borrow_mut();
 
-                let (clause_states, clause_data) = unsafe {
-                    let clause_states = &mut *(&mut clauses.states as *mut ClauseStates);
-                    let clause_data = &*(&mut clauses.clauses as *const ClauseData);
-                    (clause_states, clause_data)
-                };
-
-                // let (predecessor_clause, clause) =
-                //     if let Some(prev_clause_id) = predecessor_clause_id {
-                //         let (predecessor_clause, clause) = clause_states
-                //             .two_clause_state_mut(prev_clause_id, clause_id);
-                //         (Some(predecessor_clause), clause)
-                //     } else {
-                //         (None, clause_states.clause_state_mut(clause_id))
-                //     };
-
+                // This is a hacky way to circumvent the borrow checker. We need to get mutable
+                // access to this clauses state and down below we also acquire mutable access to the
+                // predecessor clause. This is not possible with the borrow checker because both
+                // mutable borrows will have the lifetime of `clauses`, so we need to do this trick.
                 let clause = unsafe {
-                    (*(clause_states as *mut ClauseStates)).clause_state_mut(clause_id)
+                    (*(&mut clauses.states as *mut ClauseStates)).clause_state_mut(clause_id)
                 };
 
                 // Update the prev_clause_id for the next run
@@ -1032,22 +1033,26 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                 if let Some((watched_literals, watch_index)) = clause.watch_turned_false(
                     pkg,
                     this_clause_id,
-                    &clause_data,
+                    &clauses.clauses,
                     self.decision_tracker.map(),
                     &self.learnt_clauses,
                 ) {
                     // One of the watched literals is now false
                     if let Some(variable) = clause.next_unwatched_variable(
                         this_clause_id,
-                        &clause_data,
+                        &clauses.clauses,
                         &self.learnt_clauses,
                         &self.cache.version_set_to_sorted_candidates,
                         self.decision_tracker.map(),
                     ) {
                         debug_assert!(!clause.watched_literals.contains(&variable));
 
+                        // Here we acquire another mutable borrow to the clauses. This is safe
+                        // because we validated above that the two clauses are not the same.
                         let predecessor_clause = old_predecessor_clause_id.map(|id| unsafe {
-                            (*(clause_states as *mut ClauseStates)).clause_state_mut(id)
+                            unsafe {
+                                (*(&mut clauses.states as *mut ClauseStates)).clause_state_mut(id)
+                            }
                         });
 
                         self.watches.update_watched(
@@ -1092,7 +1097,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                             })?;
 
                         if decided {
-                            let clause = clause_data.get(this_clause_id);
+                            let clause = clauses.clauses.get(this_clause_id);
                             match clause {
                                 // Skip logging for ForbidMultipleInstances, which is so noisy
                                 Clause::ForbidMultipleInstances(..) => {}

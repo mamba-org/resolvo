@@ -556,6 +556,7 @@ impl<VS: VersionSet, N: PackageName + Display> Debug for ClauseDebug<'_, VS, N> 
     }
 }
 
+#[repr(u32)]
 enum ClauseKind {
     InstallRoot = 0,
     Requires = 1,
@@ -632,12 +633,12 @@ pub struct Clauses {
 
 #[derive(Default)]
 pub struct ClauseData {
-    requires_clause: Arena<u32, RequiresClause>,
-    constrains_clause: Arena<u32, ConstrainsClause>,
-    forbid_multiple_instances_clause: Arena<u32, ForbidMultipleInstancesClause>,
-    exclude_clause: Arena<u32, ExcludeClause>,
-    learnt_clause: Arena<u32, LearntClauseId>,
-    lock_clause: Arena<u32, LockClause>,
+    pub requires_clause: Arena<u32, RequiresClause>,
+    pub constrains_clause: Arena<u32, ConstrainsClause>,
+    pub forbid_multiple_instances_clause: Arena<u32, ForbidMultipleInstancesClause>,
+    pub exclude_clause: Arena<u32, ExcludeClause>,
+    pub learnt_clause: Arena<u32, LearntClauseId>,
+    pub lock_clause: Arena<u32, LockClause>,
 }
 
 #[derive(Default)]
@@ -857,32 +858,16 @@ impl ClauseStates {
     pub fn clause_state_mut(&mut self, id: ClauseId) -> &mut ClauseState {
         let kind = id.kind();
         let id = id.0 >> CLAUSE_KIND_OFFSET;
-        match kind {
+        let table = match kind {
             ClauseKind::InstallRoot => panic!("install root has no state"),
-            ClauseKind::Requires => &mut self.requires_clause_state[id],
-            ClauseKind::Constrains => &mut self.constrains_clause_state[id],
-            ClauseKind::ForbidMultipleInstances => {
-                &mut self.forbid_multiple_instances_clause_state[id]
-            }
-            ClauseKind::Excluded => &mut self.exclude_clause_state[id],
-            ClauseKind::Learnt => &mut self.learnt_clause_state[id],
-            ClauseKind::Lock => &mut self.lock_clause_state[id],
-        }
-    }
-
-    /// Returns two clause states with the given ids.
-    pub fn two_clause_state_mut(
-        &mut self,
-        a: ClauseId,
-        b: ClauseId,
-    ) -> (&mut ClauseState, &mut ClauseState) {
-        debug_assert_ne!(a, b);
-
-        unsafe {
-            let a = (*(self as *mut Self)).clause_state_mut(a);
-            let b = (*(self as *mut Self)).clause_state_mut(b);
-            (a, b)
-        }
+            ClauseKind::Requires => &mut self.requires_clause_state,
+            ClauseKind::Constrains => &mut self.constrains_clause_state,
+            ClauseKind::ForbidMultipleInstances => &mut self.forbid_multiple_instances_clause_state,
+            ClauseKind::Excluded => &mut self.exclude_clause_state,
+            ClauseKind::Learnt => &mut self.learnt_clause_state,
+            ClauseKind::Lock => &mut self.lock_clause_state,
+        };
+        &mut table[id]
     }
 
     pub fn has_watches(&self, id: ClauseId) -> bool {
