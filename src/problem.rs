@@ -11,6 +11,7 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
+use crate::internal::id::{ExpandedVar, VarId};
 use crate::{
     internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
     pool::Pool,
@@ -45,10 +46,10 @@ impl Problem {
         solver: &Solver<VS, N, D, RT>,
     ) -> ProblemGraph {
         let mut graph = DiGraph::<ProblemNode, ProblemEdge>::default();
-        let mut nodes: HashMap<SolvableId, NodeIndex> = HashMap::default();
+        let mut nodes: HashMap<VarId, NodeIndex> = HashMap::default();
         let mut excluded_nodes: HashMap<StringId, NodeIndex> = HashMap::default();
 
-        let root_node = Self::add_node(&mut graph, &mut nodes, SolvableId::root());
+        let root_node = Self::add_node(&mut graph, &mut nodes, SolvableId::root().into());
         let unresolved_node = graph.add_node(ProblemNode::UnresolvedDependency);
 
         for clause_id in &self.clauses {
@@ -57,7 +58,7 @@ impl Problem {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
                     tracing::info!("{solvable:?} is excluded");
-                    let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, (*solvable).into());
                     let excluded_node = excluded_nodes
                         .entry(*reason)
                         .or_insert_with(|| graph.add_node(ProblemNode::Excluded(*reason)));
@@ -70,7 +71,7 @@ impl Problem {
                 }
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id.into());
 
                     let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(version_set_id)).unwrap_or_else(|_| {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
@@ -89,7 +90,7 @@ impl Problem {
                             tracing::info!("{package_id:?} requires {candidate_id:?}");
 
                             let candidate_node =
-                                Self::add_node(&mut graph, &mut nodes, candidate_id);
+                                Self::add_node(&mut graph, &mut nodes, candidate_id.into());
                             graph.add_edge(
                                 package_node,
                                 candidate_node,
@@ -99,20 +100,20 @@ impl Problem {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden);
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
                     let conflict = ConflictCause::Locked(locked);
                     graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id) => {
-                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id);
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id);
+                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id.into());
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id.var_id.into());
 
                     let conflict = ConflictCause::ForbidMultipleInstances;
                     graph.add_edge(node1_id, node2_id, ProblemEdge::Conflict(conflict));
                 }
                 &Clause::Constrains(package_id, dep_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
-                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id.into());
+                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id.into());
 
                     graph.add_edge(
                         package_node,
@@ -151,12 +152,15 @@ impl Problem {
 
     fn add_node(
         graph: &mut DiGraph<ProblemNode, ProblemEdge>,
-        nodes: &mut HashMap<SolvableId, NodeIndex>,
-        solvable_id: SolvableId,
+        nodes: &mut HashMap<VarId, NodeIndex>,
+        var_id: VarId,
     ) -> NodeIndex {
-        *nodes
-            .entry(solvable_id)
-            .or_insert_with(|| graph.add_node(ProblemNode::Solvable(solvable_id)))
+        *nodes.entry(var_id).or_insert_with(|| {
+            graph.add_node(match var_id.expand() {
+                ExpandedVar::Solvable(s) => ProblemNode::Solvable(s),
+                ExpandedVar::Variable(v) => ProblemNode::Variable(v),
+            })
+        })
     }
 
     /// Display a user-friendly error explaining the problem
@@ -183,6 +187,8 @@ impl Problem {
 pub enum ProblemNode {
     /// Node corresponding to a solvable
     Solvable(SolvableId),
+    /// Node corresponding to a solvable
+    Variable(u32),
     /// Node representing a dependency without candidates
     UnresolvedDependency,
     /// Node representing an exclude reason
@@ -193,6 +199,9 @@ impl ProblemNode {
     fn solvable_id(self) -> SolvableId {
         match self {
             ProblemNode::Solvable(solvable_id) => solvable_id,
+            ProblemNode::Variable(_) => {
+                panic!("expected solvable node, found variable node")
+            }
             ProblemNode::UnresolvedDependency => {
                 panic!("expected solvable node, found unresolved dependency")
             }
@@ -336,6 +345,7 @@ impl ProblemGraph {
                     ProblemNode::Excluded(reason) => {
                         format!("reason: {}", pool.resolve_string(reason))
                     }
+                    ProblemNode::Variable(_) => todo!(),
                 };
 
                 write!(
@@ -368,6 +378,7 @@ impl ProblemGraph {
                         solvable_id
                     }
                 }
+                ProblemNode::Variable(_) => todo!(),
             };
 
             let predecessors: Vec<_> = graph
@@ -653,7 +664,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
     fn fmt_graph(
         &self,
         f: &mut Formatter<'_>,
-        top_level_edges: &[EdgeReference<ProblemEdge>],
+        top_level_edges: &[EdgeReference<'_, ProblemEdge>],
         top_level_indent: bool,
     ) -> fmt::Result
     where

@@ -55,7 +55,7 @@ pub(crate) enum Clause {
     /// the same time.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    ForbidMultipleInstances(SolvableId, SolvableId),
+    ForbidMultipleInstances(SolvableId, Literal),
     /// Forbids packages that do not satisfy a solvable's constrains
     ///
     /// Usage: for each constrains relationship in a package, determine all the candidates that do
@@ -113,7 +113,11 @@ impl Clause {
                 .find(|&&c| decision_tracker.assigned_value(c.into()) != Some(false))
             {
                 // Watch any candidate that is not assigned to false
-                Some(watched_candidate) => (kind, Some([parent.into(), (*watched_candidate).into()]), false),
+                Some(watched_candidate) => (
+                    kind,
+                    Some([parent.into(), (*watched_candidate).into()]),
+                    false,
+                ),
 
                 // All candidates are assigned to false! Therefore the clause conflicts with the
                 // current decisions. There are no valid watches for it at the moment, but we will
@@ -158,11 +162,11 @@ impl Clause {
     /// Returns the ids of the solvables that will be watched as well as the clause itself.
     fn forbid_multiple(
         candidate: SolvableId,
-        constrained_candidate: SolvableId,
+        constrained_candidate: Literal,
     ) -> (Self, Option<[VarId; 2]>) {
         (
             Clause::ForbidMultipleInstances(candidate, constrained_candidate),
-            Some([candidate.into(), constrained_candidate.into()]),
+            Some([candidate.into(), constrained_candidate.var_id]),
         )
     }
 
@@ -236,7 +240,7 @@ impl Clause {
                     });
                 }
             }
-            Clause::Constrains(s1, s2, _) | Clause::ForbidMultipleInstances(s1, s2) => {
+            Clause::Constrains(s1, s2, _) => {
                 visit(Literal {
                     var_id: s1.into(),
                     negate: true,
@@ -246,6 +250,14 @@ impl Clause {
                     var_id: s2.into(),
                     negate: true,
                 });
+            }
+            Clause::ForbidMultipleInstances(s1, s2) => {
+                visit(Literal {
+                    var_id: s1.into(),
+                    negate: true,
+                });
+
+                visit(s2);
             }
             Clause::Lock(_, s) => {
                 visit(Literal {
@@ -336,7 +348,7 @@ impl ClauseState {
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
-    pub fn forbid_multiple(candidate: SolvableId, other_candidate: SolvableId) -> Self {
+    pub fn forbid_multiple(candidate: SolvableId, other_candidate: Literal) -> Self {
         let (kind, watched_literals) = Clause::forbid_multiple(candidate, other_candidate);
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
@@ -351,10 +363,7 @@ impl ClauseState {
         Self::from_kind_and_initial_watches(kind, watched_literals)
     }
 
-    fn from_kind_and_initial_watches(
-        kind: Clause,
-        watched_literals: Option<[VarId; 2]>,
-    ) -> Self {
+    fn from_kind_and_initial_watches(kind: Clause, watched_literals: Option<[VarId; 2]>) -> Self {
         let watched_literals = watched_literals.unwrap_or([VarId::null(), VarId::null()]);
 
         let clause = Self {
@@ -469,7 +478,8 @@ impl ClauseState {
                     .unwrap();
                 [w1, w2]
             }
-            Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => {
+            Clause::ForbidMultipleInstances(_a, lit) => literals(false, !lit.negate),
+            Clause::Constrains(..) | Clause::Lock(..) => {
                 literals(false, false)
             }
             Clause::Requires(solvable_id, _) => {
@@ -536,7 +546,7 @@ impl ClauseState {
 }
 
 /// Represents a literal in a SAT clause (i.e. either A or ¬A)
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct Literal {
     pub(crate) var_id: VarId,
     pub(crate) negate: bool,
@@ -687,15 +697,24 @@ mod test {
     fn test_unlink_clause_different() {
         let clause1 = clause(
             [ClauseId::from_usize(2), ClauseId::from_usize(3)],
-            [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()],
+            [
+                SolvableId::from_usize(1596).into(),
+                SolvableId::from_usize(1211).into(),
+            ],
         );
         let clause2 = clause(
             [ClauseId::null(), ClauseId::from_usize(3)],
-            [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1208).into()],
+            [
+                SolvableId::from_usize(1596).into(),
+                SolvableId::from_usize(1208).into(),
+            ],
         );
         let clause3 = clause(
             [ClauseId::null(), ClauseId::null()],
-            [SolvableId::from_usize(1211).into(), SolvableId::from_usize(42).into()],
+            [
+                SolvableId::from_usize(1211).into(),
+                SolvableId::from_usize(42).into(),
+            ],
         );
 
         // Unlink 0
@@ -704,7 +723,10 @@ mod test {
             clause1.unlink_clause(&clause2, SolvableId::from_usize(1596).into(), 0);
             assert_eq!(
                 clause1.watched_literals,
-                [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()]
+                [
+                    SolvableId::from_usize(1596).into(),
+                    SolvableId::from_usize(1211).into()
+                ]
             );
             assert_eq!(
                 clause1.next_watches,
@@ -718,7 +740,10 @@ mod test {
             clause1.unlink_clause(&clause3, SolvableId::from_usize(1211).into(), 0);
             assert_eq!(
                 clause1.watched_literals,
-                [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()]
+                [
+                    SolvableId::from_usize(1596).into(),
+                    SolvableId::from_usize(1211).into()
+                ]
             );
             assert_eq!(
                 clause1.next_watches,
@@ -731,11 +756,17 @@ mod test {
     fn test_unlink_clause_same() {
         let clause1 = clause(
             [ClauseId::from_usize(2), ClauseId::from_usize(2)],
-            [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()],
+            [
+                SolvableId::from_usize(1596).into(),
+                SolvableId::from_usize(1211).into(),
+            ],
         );
         let clause2 = clause(
             [ClauseId::null(), ClauseId::null()],
-            [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()],
+            [
+                SolvableId::from_usize(1596).into(),
+                SolvableId::from_usize(1211).into(),
+            ],
         );
 
         // Unlink 0
@@ -744,7 +775,10 @@ mod test {
             clause1.unlink_clause(&clause2, SolvableId::from_usize(1596).into(), 0);
             assert_eq!(
                 clause1.watched_literals,
-                [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()]
+                [
+                    SolvableId::from_usize(1596).into(),
+                    SolvableId::from_usize(1211).into()
+                ]
             );
             assert_eq!(
                 clause1.next_watches,
@@ -758,7 +792,10 @@ mod test {
             clause1.unlink_clause(&clause2, SolvableId::from_usize(1211).into(), 1);
             assert_eq!(
                 clause1.watched_literals,
-                [SolvableId::from_usize(1596).into(), SolvableId::from_usize(1211).into()]
+                [
+                    SolvableId::from_usize(1596).into(),
+                    SolvableId::from_usize(1211).into()
+                ]
             );
             assert_eq!(
                 clause1.next_watches,

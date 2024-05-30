@@ -80,7 +80,7 @@ impl<TId: ArenaId, TValue> Arena<TId, TValue> {
     }
 
     /// Returns an iterator over the elements of the arena.
-    pub fn iter(&self) -> ArenaIter<TId, TValue> {
+    pub fn iter(&self) -> ArenaIter<'_, TId, TValue> {
         ArenaIter {
             arena: self,
             index: 0,
@@ -88,7 +88,7 @@ impl<TId: ArenaId, TValue> Arena<TId, TValue> {
     }
 
     /// Returns an mutable iterator over the elements of the arena.
-    pub fn iter_mut(&mut self) -> ArenaIterMut<TId, TValue> {
+    pub fn iter_mut(&mut self) -> ArenaIterMut<'_, TId, TValue> {
         ArenaIterMut {
             arena: self,
             index: 0,

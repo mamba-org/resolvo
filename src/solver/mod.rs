@@ -19,6 +19,7 @@ use std::fmt::Display;
 use std::future::ready;
 use std::ops::ControlFlow;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use itertools::{chain, Itertools};
 
@@ -75,7 +76,7 @@ pub struct Solver<
     /// The version sets that must be installed as part of the solution.
     root_requirements: Vec<VersionSetId>,
 
-    total_variable_count: u32,
+    total_variable_count: AtomicU32,
 }
 
 impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>>
@@ -99,7 +100,7 @@ impl<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>>
             root_requirements: Default::default(),
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
-            total_variable_count: 0,
+            total_variable_count: AtomicU32::new(0),
         }
     }
 }
@@ -151,7 +152,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
             clauses_added_for_solvable: self.clauses_added_for_solvable,
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
-            total_variable_count: 0,
+            total_variable_count: AtomicU32::new(0),
         }
     }
 
@@ -401,15 +402,53 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                     }
 
                     // Each candidate gets a clause to disallow other candidates.
-                    for (i, &candidate) in candidates.iter().enumerate() {
-                        for &other_candidate in &candidates[i + 1..] {
-                            let clause_id = self
-                                .clauses
-                                .borrow_mut()
-                                .alloc(ClauseState::forbid_multiple(candidate, other_candidate));
+                    let clauses = self.clauses.borrow_mut();
+                    if candidates.len() == 2 {
+                        let clause_id = clauses.alloc(ClauseState::forbid_multiple(
+                            candidates[0],
+                            Literal {
+                                var_id: candidates[1].into(),
+                                negate: true,
+                            },
+                        ));
 
-                            debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
+                        debug_assert!(clauses[clause_id].has_watches());
+                        output.clauses_to_watch.push(clause_id);
+                    } else if candidates.len() == 3 {
+                        for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+                            let clause_id = clauses.alloc(ClauseState::forbid_multiple(
+                                candidates[a],
+                                Literal {
+                                    var_id: candidates[b].into(),
+                                    negate: true,
+                                },
+                            ));
+
+                            debug_assert!(clauses[clause_id].has_watches());
                             output.clauses_to_watch.push(clause_id);
+                        }
+                    } else if candidates.len() > 3 {
+                        // use the "Binary Encoding" from
+                        // https://www.it.uu.se/research/group/astra/ModRef10/papers/Alan%20M.%20Frisch%20and%20Paul%20A.%20Giannoros.%20SAT%20Encodings%20of%20the%20At-Most-k%20Constraint%20-%20ModRef%202010.pdf
+                        let num_candidates = candidates.len();
+                        let len_bits = num_candidates.ilog2() + 1;
+                        let start_var_idx = self
+                            .total_variable_count
+                            .fetch_add(len_bits, Ordering::Relaxed);
+                        let end_var_idx = start_var_idx + len_bits;
+                        for (i, &p) in candidates.iter().enumerate() {
+                            for (j, bit) in (start_var_idx..end_var_idx).enumerate() {
+                                let clause_id = clauses.alloc(ClauseState::forbid_multiple(
+                                    p.into(),
+                                    Literal {
+                                        var_id: VarId::var(bit),
+                                        negate: ((1 << j) & i) <= 0,
+                                    },
+                                ));
+
+                                debug_assert!(clauses[clause_id].has_watches());
+                                output.clauses_to_watch.push(clause_id);
+                            }
                         }
                     }
 
@@ -417,12 +456,10 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
                     if let Some(locked_solvable_id) = locked_solvable_id {
                         for &other_candidate in candidates {
                             if other_candidate != locked_solvable_id {
-                                let clause_id = self
-                                    .clauses
-                                    .borrow_mut()
+                                let clause_id = clauses
                                     .alloc(ClauseState::lock(locked_solvable_id, other_candidate));
 
-                                debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
+                                debug_assert!(clauses[clause_id].has_watches());
                                 output.clauses_to_watch.push(clause_id);
                             }
                         }
@@ -430,10 +467,7 @@ impl<VS: VersionSet, N: PackageName + Display, D: DependencyProvider<VS, N>, RT:
 
                     // Add a clause for solvables that are externally excluded.
                     for (solvable, reason) in package_candidates.excluded.iter().copied() {
-                        let clause_id = self
-                            .clauses
-                            .borrow_mut()
-                            .alloc(ClauseState::exclude(solvable, reason));
+                        let clause_id = clauses.alloc(ClauseState::exclude(solvable, reason));
 
                         // Exclusions are negative assertions, tracked outside of the watcher system
                         output

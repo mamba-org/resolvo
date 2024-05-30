@@ -1,8 +1,5 @@
-use crate::internal::arena::ArenaId;
-use crate::solvable::DisplaySolvable;
-use crate::{PackageName, Pool, VersionSet};
+use crate::{internal::arena::ArenaId, solvable::DisplaySolvable, PackageName, Pool, VersionSet};
 use std::fmt::{Display, Formatter};
-use std::ops::Not;
 
 /// The id associated to a package name
 #[repr(transparent)]
@@ -67,7 +64,7 @@ impl SolvableId {
     pub fn display<VS: VersionSet, N: PackageName + Display>(
         self,
         pool: &Pool<VS, N>,
-    ) -> DisplaySolvable<VS, N> {
+    ) -> DisplaySolvable<'_, VS, N> {
         pool.resolve_internal_solvable(self).display(pool)
     }
 }
@@ -162,6 +159,8 @@ impl ArenaId for DependenciesId {
     }
 }
 
+/// A variable in the SAT problem. A variable either references a solvable, or
+/// an intermediate variable.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct VarId(u32);
 
@@ -175,29 +174,36 @@ impl From<SolvableId> for VarId {
 }
 
 impl VarId {
+    /// Returns the null variable id. This is used to represent the absence
+    /// of a variable.
     pub fn null() -> VarId {
         VarId(u32::MAX)
     }
 
+    /// Returns true if this variable id is null.
     pub fn is_null(self) -> bool {
         self.0 == u32::MAX
     }
 
+    /// Returns the solvable id if this variable references a solvable.
     pub fn solvable_id(self) -> Option<SolvableId> {
         self.is_solvable().then(|| SolvableId(self.0))
     }
 
-    pub fn variable_id(self) -> Option<u32> {
-        self.is_solvable()
-            .not()
-            .then_some(self.0 | VARIABLE_VAR_MASK)
+    /// Construct a new variable id from a variable id.
+    pub fn var(var: u32) -> Self {
+        debug_assert!(var < VARIABLE_VAR_MASK);
+        VarId(var | VARIABLE_VAR_MASK)
     }
 
+    /// Returns true if this variable id references a solvable.
     #[inline]
     pub fn is_solvable(self) -> bool {
         self.0 & VARIABLE_VAR_MASK == 0
     }
 
+    /// Returns an [`ExpandedVar`] that represents the variable. This makes it
+    /// easier to match on the content of this instance.
     pub fn expand(self) -> ExpandedVar {
         if self.is_solvable() {
             ExpandedVar::Solvable(SolvableId(self.0))
@@ -210,7 +216,7 @@ impl VarId {
     pub fn display<VS: VersionSet, N: PackageName + Display>(
         self,
         pool: &Pool<VS, N>,
-    ) -> DisplayVarId<VS, N> {
+    ) -> DisplayVarId<'_, VS, N> {
         DisplayVarId { pool, var_id: self }
     }
 }
