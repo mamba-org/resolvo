@@ -479,9 +479,7 @@ impl ClauseState {
                 [w1, w2]
             }
             Clause::ForbidMultipleInstances(_a, lit) => literals(false, !lit.negate),
-            Clause::Constrains(..) | Clause::Lock(..) => {
-                literals(false, false)
-            }
+            Clause::Constrains(..) | Clause::Lock(..) => literals(false, false),
             Clause::Requires(solvable_id, _) => {
                 if self.watched_literals[0] == solvable_id.into() {
                     literals(false, true)

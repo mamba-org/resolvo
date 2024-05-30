@@ -1,7 +1,5 @@
 use crate::internal::id::{ClauseId, VarId};
-use crate::{
-    solver::{decision::Decision, decision_map::DecisionMap},
-};
+use crate::solver::{decision::Decision, decision_map::DecisionMap};
 
 /// Tracks the assignments to solvables, keeping a log that can be used to backtrack, and a map that
 /// can be used to query the current value assigned

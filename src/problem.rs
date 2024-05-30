@@ -106,7 +106,8 @@ impl Problem {
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id) => {
                     let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id.into());
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id.var_id.into());
+                    let node2_id =
+                        Self::add_node(&mut graph, &mut nodes, instance2_id.var_id.into());
 
                     let conflict = ConflictCause::ForbidMultipleInstances;
                     graph.add_edge(node1_id, node2_id, ProblemEdge::Conflict(conflict));

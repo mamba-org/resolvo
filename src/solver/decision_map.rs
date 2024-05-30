@@ -1,5 +1,5 @@
+use crate::internal::arena::ArenaId;
 use crate::internal::id::{ExpandedVar, VarId};
-use crate::internal::{arena::ArenaId};
 use crate::{PackageName, Pool, VersionSet};
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
