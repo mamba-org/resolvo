@@ -11,6 +11,9 @@ use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
 use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
 use petgraph::Direction;
 
+use crate::solver::clause::{
+    ConstrainsClause, ExcludeClause, ForbidMultipleInstancesClause, LockClause, RequiresClause,
+};
 use crate::{
     internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
     pool::Pool,
@@ -51,16 +54,16 @@ impl Problem {
         let root_node = Self::add_node(&mut graph, &mut nodes, SolvableId::root());
         let unresolved_node = graph.add_node(ProblemNode::UnresolvedDependency);
 
-        for clause_id in &self.clauses {
-            let clause = &solver.clauses.borrow()[*clause_id].kind;
+        for &clause_id in &self.clauses {
+            let clause = solver.clauses.borrow().clause(clause_id);
             match clause {
                 Clause::InstallRoot => (),
-                Clause::Excluded(solvable, reason) => {
-                    tracing::info!("{solvable:?} is excluded");
-                    let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
+                Clause::Excluded(ExcludeClause { candidate, reason }) => {
+                    tracing::info!("{candidate:?} is excluded");
+                    let package_node = Self::add_node(&mut graph, &mut nodes, candidate);
                     let excluded_node = excluded_nodes
-                        .entry(*reason)
-                        .or_insert_with(|| graph.add_node(ProblemNode::Excluded(*reason)));
+                        .entry(reason)
+                        .or_insert_with(|| graph.add_node(ProblemNode::Excluded(reason)));
 
                     graph.add_edge(
                         package_node,
@@ -69,55 +72,65 @@ impl Problem {
                     );
                 }
                 Clause::Learnt(..) => unreachable!(),
-                &Clause::Requires(package_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
+                Clause::Requires(RequiresClause {
+                    candidate,
+                    requirement,
+                }) => {
+                    let package_node = Self::add_node(&mut graph, &mut nodes, candidate);
 
-                    let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(version_set_id)).unwrap_or_else(|_| {
+                    let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(requirement)).unwrap_or_else(|_| {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
                     });
                     if candidates.is_empty() {
                         tracing::info!(
-                            "{package_id:?} requires {version_set_id:?}, which has no candidates"
+                            "{candidate:?} requires {requirement:?}, which has no candidates"
                         );
                         graph.add_edge(
                             package_node,
                             unresolved_node,
-                            ProblemEdge::Requires(version_set_id),
+                            ProblemEdge::Requires(requirement),
                         );
                     } else {
                         for &candidate_id in candidates {
-                            tracing::info!("{package_id:?} requires {candidate_id:?}");
+                            tracing::info!("{candidate:?} requires {candidate_id:?}");
 
                             let candidate_node =
                                 Self::add_node(&mut graph, &mut nodes, candidate_id);
                             graph.add_edge(
                                 package_node,
                                 candidate_node,
-                                ProblemEdge::Requires(version_set_id),
+                                ProblemEdge::Requires(requirement),
                             );
                         }
                     }
                 }
-                &Clause::Lock(locked, forbidden) => {
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden);
-                    let conflict = ConflictCause::Locked(locked);
+                Clause::Lock(LockClause {
+                    locked_candidate,
+                    forbidden_candidate,
+                }) => {
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden_candidate);
+                    let conflict = ConflictCause::Locked(locked_candidate);
                     graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
                 }
-                &Clause::ForbidMultipleInstances(instance1_id, instance2_id) => {
-                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id);
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id);
+                Clause::ForbidMultipleInstances(ForbidMultipleInstancesClause { from, to }) => {
+                    let node1_id = Self::add_node(&mut graph, &mut nodes, from);
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, to);
 
                     let conflict = ConflictCause::ForbidMultipleInstances;
                     graph.add_edge(node1_id, node2_id, ProblemEdge::Conflict(conflict));
                 }
-                &Clause::Constrains(package_id, dep_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
-                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id);
+                Clause::Constrains(ConstrainsClause {
+                    candidate,
+                    constrained_candidate,
+                    via,
+                }) => {
+                    let package_node = Self::add_node(&mut graph, &mut nodes, candidate);
+                    let dep_node = Self::add_node(&mut graph, &mut nodes, constrained_candidate);
 
                     graph.add_edge(
                         package_node,
                         dep_node,
-                        ProblemEdge::Conflict(ConflictCause::Constrains(version_set_id)),
+                        ProblemEdge::Conflict(ConflictCause::Constrains(via)),
                     );
                 }
             }
