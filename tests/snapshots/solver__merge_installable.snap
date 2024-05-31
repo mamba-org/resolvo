@@ -1,10 +1,10 @@
 ---
 source: tests/solver.rs
+assertion_line: 996
 expression: "solve_snapshot(provider, &[\"a 0..3\", \"a 3..5\"])"
 ---
 The following packages are incompatible
-├─ a >=3, <5 can be installed with any of the following options:
-│  └─ a 3 | 4
-└─ a >=0, <3 cannot be installed because there are no viable options:
-   └─ a 1 | 2, which conflicts with the versions reported above.
-
+├─ a >=0, <3 can be installed with any of the following options:
+│  └─ a 1 | 2
+└─ a >=3, <5 cannot be installed because there are no viable options:
+   └─ a 3 | 4, which conflicts with the versions reported above.

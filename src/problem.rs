@@ -187,58 +187,53 @@ impl Problem {
 fn collapse_variable_nodes(graph: &mut DiGraph<ProblemNode, ProblemEdge>) {
     // Merge variable nodes
     for node_id in graph.node_indices() {
-        let ProblemNode::Solvable(solvable_id) = graph[node_id] else {
+        let ProblemNode::Variable(..) = graph[node_id] else {
             continue;
         };
-        if solvable_id.is_root() {
-            continue;
-        }
 
-        // Determine the number of already installed edges
-        let num_installed_edges = graph
-            .edges_directed(node_id, Direction::Outgoing)
-            // Find all the ForbidMultipleInstances edges
-            .filter(|e| e.weight().is_forbid_multiple())
-            // Only take the ones that point to variable nodes
-            .filter(|e| matches!(graph[e.target()], ProblemNode::Variable(..)))
-            .map(|e| (e.id(), e.target()))
-            .collect::<Vec<_>>();
+        // Incoming nodes
+        let nodes = graph
+            .edges_directed(node_id, Direction::Incoming)
+            .filter(|edge| edge.weight().is_forbid_multiple())
+            .map(|edge| edge.source())
+            .collect_vec();
 
-        if num_installed_edges.len() > 1 {
-            // Connect the node directly to the incoming edges of the variable node
-            for (edge_id, variable_node) in num_installed_edges {
-                let incoming_edges = graph
-                    .edges_directed(variable_node, Direction::Incoming)
-                    .filter(|e| e.weight().is_forbid_multiple())
-                    .filter(|e| {
-                        graph
-                            .edges_directed(e.source(), Direction::Outgoing)
-                            .filter(|e| e.weight().is_forbid_multiple())
-                            .count()
-                            == 1
-                    })
-                    .map(|e| (e.id(), e.source()))
-                    .collect_vec();
-
-                for (incoming_edge_id, solvable_node) in incoming_edges {
-                    // Add the edge to the solvable node
-                    graph.add_edge(
-                        node_id,
-                        solvable_node,
-                        ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances),
-                    );
-                }
-
-                // Disconnect from variable node
-                graph.remove_edge(edge_id);
+        // Create edge to connect them all together
+        for (i, &node) in nodes.iter().enumerate() {
+            for (j, &other_node) in nodes.iter().enumerate().skip(i+1) {
+                graph.add_edge(
+                    node,
+                    other_node,
+                    ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances),
+                );
             }
         }
     }
 
     // Remove all variable nodes
-    // graph.retain_nodes(|graph, node| {
-    //     !matches!(graph[node], ProblemNode::Variable(..))
-    // });
+    graph.retain_nodes(|graph, node| {
+        !matches!(graph[node], ProblemNode::Variable(..))
+    });
+
+    // Iterate over all already installed edge and remove those where the nodes share the same predecessor edges.
+    graph.retain_edges(|graph, edge| {
+        if !graph.edge_weight(edge).unwrap().is_forbid_multiple() {
+            return true;
+        }
+
+        let (source, target) = graph.edge_endpoints(edge).unwrap();
+
+        let source_predecessors: HashSet<_> = graph
+            .edges_directed(source, Direction::Incoming)
+            .filter_map(|edge| edge.weight().try_requires())
+            .collect::<HashSet<_>>();
+        let target_predecessors: HashSet<_> = graph
+            .edges_directed(target, Direction::Incoming)
+            .filter_map(|edge| edge.weight().try_requires())
+            .collect::<HashSet<_>>();
+
+        source_predecessors != target_predecessors
+    })
 }
 
 /// A node in the graph representation of a [`Problem`]
@@ -349,7 +344,7 @@ impl ProblemGraph {
     ) -> Result<(), std::io::Error> {
         let graph = &self.graph;
 
-        let merged_nodes = if false {
+        let merged_nodes = if simplify {
             self.simplify(pool)
         } else {
             HashMap::new()
