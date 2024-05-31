@@ -997,6 +997,22 @@ fn test_merge_installable() {
 }
 
 #[test]
+fn test_merge_installable2() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec![]),
+        ("a", 2, vec![]),
+        ("a", 3, vec![]),
+        ("a", 4, vec![]),
+        ("a", 5, vec![]),
+        ("a", 6, vec![]),
+        ("a", 7, vec![]),
+        ("a", 8, vec![]),
+        ("a", 9, vec![]),
+    ]);
+    insta::assert_snapshot!(solve_snapshot(provider, &["a 0..3", "a 3..10", "a 2..4"]));
+}
+
+#[test]
 fn test_root_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![])]);
     provider.exclude("a", 1, "it is externally excluded");

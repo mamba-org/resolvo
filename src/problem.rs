@@ -1,19 +1,23 @@
-//! Types to examine why a problem was unsatisfiable, and to report the causes to the user.
+//! Types to examine why a problem was unsatisfiable, and to report the causes
+//! to the user.
 
-use std::collections::{HashMap, HashSet};
-use std::fmt;
-use std::fmt::{Display, Formatter};
-use std::hash::Hash;
-use std::rc::Rc;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    fmt::{Display, Formatter},
+    hash::Hash,
+    rc::Rc,
+};
 
 use itertools::Itertools;
-use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
-use petgraph::visit::{Bfs, DfsPostOrder, EdgeRef};
-use petgraph::Direction;
+use petgraph::{
+    graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex},
+    visit::{Bfs, DfsPostOrder, EdgeRef},
+    Direction,
+};
 
-use crate::internal::id::{ExpandedVar, VarId};
 use crate::{
-    internal::id::{ClauseId, SolvableId, StringId, VersionSetId},
+    internal::id::{ClauseId, ExpandedVar, SolvableId, StringId, VarId, VersionSetId},
     pool::Pool,
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
@@ -40,7 +44,8 @@ impl Problem {
         }
     }
 
-    /// Generates a graph representation of the problem (see [`ProblemGraph`] for details)
+    /// Generates a graph representation of the problem (see [`ProblemGraph`]
+    /// for details)
     pub fn graph<VS: VersionSet, N: PackageName, D: DependencyProvider<VS, N>, RT: AsyncRuntime>(
         &self,
         solver: &Solver<VS, N, D, RT>,
@@ -184,23 +189,30 @@ impl Problem {
     }
 }
 
+/// [`ConflictCause::ForbidMultipleInstances`] might reference variable nodes.
+/// These nodes are nonsensical to the user. This function removes these nodes
+/// by rewriting the problem.
 fn collapse_variable_nodes(graph: &mut DiGraph<ProblemNode, ProblemEdge>) {
-    // Merge variable nodes
+    // Find all variables that are involved in a forbid multiple instances clause
+    // and interconnect all incoming edges together. If we have two nodes `a` and
+    // `b` that are connected through a variable node (e.g. `a -> v <- b`) we create
+    // new edges between `a` and `b` (e.g. `a -> b` and `b -> a`).
     for node_id in graph.node_indices() {
         let ProblemNode::Variable(..) = graph[node_id] else {
             continue;
         };
 
-        // Incoming nodes
+        // Find all solvable nodes that are connected to this variable node.
         let nodes = graph
             .edges_directed(node_id, Direction::Incoming)
+            .filter(|edge| graph[edge.source()].is_solvable())
             .filter(|edge| edge.weight().is_forbid_multiple())
             .map(|edge| edge.source())
             .collect_vec();
 
         // Create edge to connect them all together
         for (i, &node) in nodes.iter().enumerate() {
-            for (j, &other_node) in nodes.iter().enumerate().skip(i+1) {
+            for &other_node in nodes.iter().skip(i + 1) {
                 graph.add_edge(
                     node,
                     other_node,
@@ -210,12 +222,12 @@ fn collapse_variable_nodes(graph: &mut DiGraph<ProblemNode, ProblemEdge>) {
         }
     }
 
-    // Remove all variable nodes
-    graph.retain_nodes(|graph, node| {
-        !matches!(graph[node], ProblemNode::Variable(..))
-    });
+    // Remove all variable nodes. This will also remove all edges to the variable
+    // nodes.
+    graph.retain_nodes(|graph, node| !matches!(graph[node], ProblemNode::Variable(..)));
 
-    // Iterate over all already installed edge and remove those where the nodes share the same predecessor edges.
+    // Iterate over all already installed edge and remove those where the nodes
+    // share the same predecessor edges.
     graph.retain_edges(|graph, edge| {
         if !graph.edge_weight(edge).unwrap().is_forbid_multiple() {
             return true;
@@ -232,7 +244,9 @@ fn collapse_variable_nodes(graph: &mut DiGraph<ProblemNode, ProblemEdge>) {
             .filter_map(|edge| edge.weight().try_requires())
             .collect::<HashSet<_>>();
 
-        source_predecessors != target_predecessors
+        !source_predecessors
+            .iter()
+            .any(|p| target_predecessors.contains(p))
     })
 }
 
@@ -264,12 +278,17 @@ impl ProblemNode {
             }
         }
     }
+
+    fn is_solvable(self) -> bool {
+        matches!(self, ProblemNode::Solvable(_))
+    }
 }
 
 /// An edge in the graph representation of a [`Problem`]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ProblemEdge {
-    /// The target node is a candidate for the dependency specified by the version set
+    /// The target node is a candidate for the dependency specified by the
+    /// version set
     Requires(VersionSetId),
     /// The target node is involved in a conflict, caused by `ConflictCause`
     Conflict(ConflictCause),
@@ -313,8 +332,8 @@ pub enum ConflictCause {
 
 /// Represents a node that has been merged with others
 ///
-/// Merging is done to simplify error messages, and happens when a group of nodes satisfies the
-/// following criteria:
+/// Merging is done to simplify error messages, and happens when a group of
+/// nodes satisfies the following criteria:
 ///
 /// - They all have the same name
 /// - They all have the same predecessor nodes
@@ -325,9 +344,10 @@ pub(crate) struct MergedProblemNode {
 
 /// Graph representation of [`Problem`]
 ///
-/// The root of the graph is the "root solvable". Note that not all the solvable's requirements are
-/// included in the graph, only those that are directly or indirectly involved in the conflict. See
-/// [`ProblemNode`] and [`ProblemEdge`] for the kinds of nodes and edges that make up the graph.
+/// The root of the graph is the "root solvable". Note that not all the
+/// solvable's requirements are included in the graph, only those that are
+/// directly or indirectly involved in the conflict. See [`ProblemNode`] and
+/// [`ProblemEdge`] for the kinds of nodes and edges that make up the graph.
 pub struct ProblemGraph {
     graph: DiGraph<ProblemNode, ProblemEdge>,
     root_node: NodeIndex,
@@ -335,7 +355,8 @@ pub struct ProblemGraph {
 }
 
 impl ProblemGraph {
-    /// Writes a graphviz graph that represents this instance to the specified output.
+    /// Writes a graphviz graph that represents this instance to the specified
+    /// output.
     pub fn graphviz<VS: VersionSet>(
         &self,
         f: &mut impl std::io::Write,
@@ -390,7 +411,8 @@ impl ProblemGraph {
 
                 let target = match target {
                     ProblemNode::Solvable(mut solvable_2) => {
-                        // If the target node has been merged, replace it by the first id in the group
+                        // If the target node has been merged, replace it by the first id in the
+                        // group
                         if let Some(merged) = merged_nodes.get(&solvable_2) {
                             solvable_2 = merged.ids[0];
 
@@ -420,7 +442,8 @@ impl ProblemGraph {
         write!(f, "}}")
     }
 
-    /// Simplifies and collapses nodes so that these can be considered the same candidate
+    /// Simplifies and collapses nodes so that these can be considered the same
+    /// candidate
     fn simplify<VS: VersionSet, N: PackageName>(
         &self,
         pool: &Pool<VS, N>,
@@ -480,8 +503,9 @@ impl ProblemGraph {
     fn get_installable_set(&self) -> HashSet<NodeIndex> {
         let mut installable = HashSet::new();
 
-        // Definition: a package is installable if it does not have any outgoing conflicting edges
-        // and if each of its dependencies has at least one installable option.
+        // Definition: a package is installable if it does not have any outgoing
+        // conflicting edges and if each of its dependencies has at least one
+        // installable option.
 
         // Algorithm: propagate installability bottom-up
         let mut dfs = DfsPostOrder::new(&self.graph, self.root_node);
@@ -491,8 +515,8 @@ impl ProblemGraph {
                 continue;
             }
 
-            // Determine any incoming "exclude" edges to the node. This would indicate that the
-            // node is disabled for external reasons.
+            // Determine any incoming "exclude" edges to the node. This would indicate that
+            // the node is disabled for external reasons.
             let excluding_edges = self
                 .graph
                 .edges_directed(nx, Direction::Incoming)
@@ -536,8 +560,8 @@ impl ProblemGraph {
     }
 
     fn get_missing_set(&self) -> HashSet<NodeIndex> {
-        // Definition: a package is missing if it is not involved in any conflicts, yet it is not
-        // installable
+        // Definition: a package is missing if it is not involved in any conflicts, yet
+        // it is not installable
 
         let mut missing = HashSet::new();
         match self.unresolved_node {
@@ -688,8 +712,8 @@ mod tests {
     }
 }
 
-/// A struct implementing [`fmt::Display`] that generates a user-friendly representation of a
-/// problem graph
+/// A struct implementing [`fmt::Display`] that generates a user-friendly
+/// representation of a problem graph
 pub struct DisplayUnsat<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
 {
     graph: ProblemGraph,
@@ -850,7 +874,8 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
 
                         stack.extend(deduplicated_children);
                     } else {
-                        // Package cannot be installed (the conflicting requirement is further down the tree)
+                        // Package cannot be installed (the conflicting requirement is further down
+                        // the tree)
                         if top_level {
                             writeln!(f, "{indent}{name} {req} cannot be installed because there are no viable options:")?;
                         } else {
