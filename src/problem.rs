@@ -143,6 +143,8 @@ impl Problem {
         }
         assert_eq!(graph.node_count(), visited_nodes.len());
 
+        collapse_variable_nodes(&mut graph);
+
         ProblemGraph {
             graph,
             root_node,
@@ -180,6 +182,63 @@ impl Problem {
         let graph = self.graph(solver);
         DisplayUnsat::new(graph, pool, merged_solvable_display)
     }
+}
+
+fn collapse_variable_nodes(graph: &mut DiGraph<ProblemNode, ProblemEdge>) {
+    // Merge variable nodes
+    for node_id in graph.node_indices() {
+        let ProblemNode::Solvable(solvable_id) = graph[node_id] else {
+            continue;
+        };
+        if solvable_id.is_root() {
+            continue;
+        }
+
+        // Determine the number of already installed edges
+        let num_installed_edges = graph
+            .edges_directed(node_id, Direction::Outgoing)
+            // Find all the ForbidMultipleInstances edges
+            .filter(|e| e.weight().is_forbid_multiple())
+            // Only take the ones that point to variable nodes
+            .filter(|e| matches!(graph[e.target()], ProblemNode::Variable(..)))
+            .map(|e| (e.id(), e.target()))
+            .collect::<Vec<_>>();
+
+        if num_installed_edges.len() > 1 {
+            // Connect the node directly to the incoming edges of the variable node
+            for (edge_id, variable_node) in num_installed_edges {
+                let incoming_edges = graph
+                    .edges_directed(variable_node, Direction::Incoming)
+                    .filter(|e| e.weight().is_forbid_multiple())
+                    .filter(|e| {
+                        graph
+                            .edges_directed(e.source(), Direction::Outgoing)
+                            .filter(|e| e.weight().is_forbid_multiple())
+                            .count()
+                            == 1
+                    })
+                    .map(|e| (e.id(), e.source()))
+                    .collect_vec();
+
+                for (incoming_edge_id, solvable_node) in incoming_edges {
+                    // Add the edge to the solvable node
+                    graph.add_edge(
+                        node_id,
+                        solvable_node,
+                        ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances),
+                    );
+                }
+
+                // Disconnect from variable node
+                graph.remove_edge(edge_id);
+            }
+        }
+    }
+
+    // Remove all variable nodes
+    // graph.retain_nodes(|graph, node| {
+    //     !matches!(graph[node], ProblemNode::Variable(..))
+    // });
 }
 
 /// A node in the graph representation of a [`Problem`]
@@ -235,6 +294,13 @@ impl ProblemEdge {
             ProblemEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
         }
     }
+
+    fn is_forbid_multiple(self) -> bool {
+        matches!(
+            self,
+            ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances)
+        )
+    }
 }
 
 /// Conflict causes
@@ -283,7 +349,7 @@ impl ProblemGraph {
     ) -> Result<(), std::io::Error> {
         let graph = &self.graph;
 
-        let merged_nodes = if simplify {
+        let merged_nodes = if false {
             self.simplify(pool)
         } else {
             HashMap::new()
@@ -345,7 +411,7 @@ impl ProblemGraph {
                     ProblemNode::Excluded(reason) => {
                         format!("reason: {}", pool.resolve_string(reason))
                     }
-                    ProblemNode::Variable(_) => todo!(),
+                    ProblemNode::Variable(var) => format!("var#{var}"),
                 };
 
                 write!(
@@ -378,7 +444,7 @@ impl ProblemGraph {
                         solvable_id
                     }
                 }
-                ProblemNode::Variable(_) => todo!(),
+                ProblemNode::Variable(_) => continue,
             };
 
             let predecessors: Vec<_> = graph
