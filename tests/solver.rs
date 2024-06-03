@@ -1,4 +1,20 @@
 use ahash::HashMap;
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    fmt::{Debug, Display, Formatter},
+    io::{stderr, Write},
+    num::ParseIntError,
+    rc::Rc,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
 use indexmap::IndexMap;
 use itertools::Itertools;
 use resolvo::{
@@ -6,37 +22,27 @@ use resolvo::{
     KnownDependencies, NameId, Pool, SolvableId, Solver, SolverCache, UnsolvableOrCancelled,
     VersionSet, VersionSetId,
 };
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use std::{
-    any::Any,
-    cell::Cell,
-    fmt::{Debug, Display, Formatter},
-    io::stderr,
-    io::Write,
-    num::ParseIntError,
-    str::FromStr,
-};
 use tracing_test::traced_test;
 
 // Let's define our own packaging version system and dependency specification.
-// This is a very simple version system, where a package is identified by a name and a version
-// in which the version is just an integer. The version is a range so can be noted as 0..2
-// or something of the sorts, we also support constrains which means it should not use that
-// package version this is also represented with a range.
+// This is a very simple version system, where a package is identified by a name
+// and a version in which the version is just an integer. The version is a range
+// so can be noted as 0..2 or something of the sorts, we also support constrains
+// which means it should not use that package version this is also represented
+// with a range.
 //
-// You can also use just a single number for a range like `package 0` which means the range from 0..1 (excluding the end)
+// You can also use just a single number for a range like `package 0` which
+// means the range from 0..1 (excluding the end)
 //
-// Lets call the tuples of (Name, Version) a `Pack` and the tuples of (Name, Range<u32>) a `Spec`
+// Lets call the tuples of (Name, Version) a `Pack` and the tuples of (Name,
+// Range<u32>) a `Spec`
 //
-// We also need to create a custom provider that tells us how to sort the candidates. This is unique to each
-// packaging ecosystem. Let's call our ecosystem 'BundleBox' so that how we call the provider as well.
+// We also need to create a custom provider that tells us how to sort the
+// candidates. This is unique to each packaging ecosystem. Let's call our
+// ecosystem 'BundleBox' so that how we call the provider as well.
 
-/// This is `Pack` which is a unique version and name in our bespoke packaging system
+/// This is `Pack` which is a unique version and name in our bespoke packaging
+/// system
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Hash)]
 struct Pack {
     version: u32,
@@ -96,7 +102,8 @@ impl FromStr for Pack {
     }
 }
 
-/// We can use this to see if a `Pack` is contained in a range of package versions or a `Spec`
+/// We can use this to see if a `Pack` is contained in a range of package
+/// versions or a `Spec`
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Spec {
     name: String,
@@ -156,7 +163,8 @@ struct BundleBoxProvider {
     concurrent_requests_max: Rc<Cell<usize>>,
     sleep_before_return: bool,
 
-    // A mapping of packages that we have requested candidates for. This way we can keep track of duplicate requests.
+    // A mapping of packages that we have requested candidates for. This way we can keep track of
+    // duplicate requests.
     requested_candidates: RefCell<HashSet<NameId>>,
     requested_dependencies: RefCell<HashSet<SolvableId>>,
 }
@@ -239,8 +247,9 @@ impl BundleBoxProvider {
             );
     }
 
-    // Sends a value from the dependency provider to the solver, introducing a minimal delay to force
-    // concurrency to be used (unless there is no async runtime available)
+    // Sends a value from the dependency provider to the solver, introducing a
+    // minimal delay to force concurrency to be used (unless there is no async
+    // runtime available)
     async fn maybe_delay<T: Send + 'static>(&self, value: T) -> T {
         if self.sleep_before_return {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -405,7 +414,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    match solver.solve(requirements) {
+    match solver.solve(requirements, Vec::new()) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
         Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
             // Write the problem graphviz to stderr
@@ -424,7 +433,8 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     }
 }
 
-/// Solve the problem and returns either a solution represented as a string or an error string.
+/// Solve the problem and returns either a solution represented as a string or
+/// an error string.
 fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
     // The test dependency provider requires time support for sleeping
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -437,7 +447,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let pool = provider.pool();
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    match solver.solve(requirements) {
+    match solver.solve(requirements, Vec::new()) {
         Ok(solvables) => transaction_to_string(&pool, &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
             // Write the problem graphviz to stderr
@@ -463,7 +473,7 @@ fn test_unit_propagation_1() {
     let root_requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(root_requirements).unwrap();
+    let solved = solver.solve(root_requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
     let solvable = pool.resolve_solvable(solved[0]);
@@ -483,7 +493,7 @@ fn test_unit_propagation_nested() {
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 2);
 
@@ -510,7 +520,7 @@ fn test_resolve_multiple() {
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 2);
 
@@ -568,7 +578,7 @@ fn test_resolve_with_nonexisting() {
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
 
@@ -602,7 +612,7 @@ fn test_resolve_with_nested_deps() {
     let requirements = provider.requirements(&["apache-airflow"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
 
@@ -629,7 +639,7 @@ fn test_resolve_with_unknown_deps() {
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
 
@@ -662,8 +672,8 @@ fn test_resolve_and_cancel() {
     insta::assert_snapshot!(error);
 }
 
-/// Locking a specific package version in this case a lower version namely `3` should result
-/// in the higher package not being considered
+/// Locking a specific package version in this case a lower version namely `3`
+/// should result in the higher package not being considered
 #[test]
 fn test_resolve_locked_top_level() {
     let mut provider =
@@ -674,14 +684,15 @@ fn test_resolve_locked_top_level() {
 
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
     let solvable_id = solved[0];
     assert_eq!(pool.resolve_solvable(solvable_id).inner().version, 3);
 }
 
-/// Should ignore lock when it is not a top level package and a newer version exists without it
+/// Should ignore lock when it is not a top level package and a newer version
+/// exists without it
 #[test]
 fn test_resolve_ignored_locked_top_level() {
     let mut provider = BundleBoxProvider::from_packages(&[
@@ -695,7 +706,7 @@ fn test_resolve_ignored_locked_top_level() {
     let requirements = provider.requirements(&["asdf"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     assert_eq!(solved.len(), 1);
     let solvable = pool.resolve_solvable(solved[0]);
@@ -753,7 +764,7 @@ fn test_resolve_cyclic() {
     let requirements = provider.requirements(&["a 0..100"]);
     let pool = provider.pool();
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements).unwrap();
+    let solved = solver.solve(requirements, Vec::new()).unwrap();
 
     let result = transaction_to_string(&pool, &solved);
     insta::assert_snapshot!(result, @r###"
@@ -1001,4 +1012,25 @@ fn test_root_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[("a", 1, vec![])]);
     provider.exclude("a", 1, "it is externally excluded");
     insta::assert_snapshot!(solve_snapshot(provider, &["a"]));
+}
+
+#[test]
+fn test_constraints() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("c", 1, vec![]),
+    ]);
+    let requirements = provider.requirements(&["a 0..10"]);
+    let constraints = provider.requirements(&["b 1..2", "c"]);
+    let pool = provider.pool();
+    let mut solver = Solver::new(provider);
+    let solved = solver.solve(requirements, constraints).unwrap();
+
+    let result = transaction_to_string(&pool, &solved);
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        "###);
 }
