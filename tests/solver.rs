@@ -1,8 +1,7 @@
-use ahash::HashMap;
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt::{Debug, Display, Formatter},
     io::{stderr, Write},
     num::ParseIntError,
@@ -15,6 +14,7 @@ use std::{
     time::Duration,
 };
 
+use ahash::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use resolvo::{
