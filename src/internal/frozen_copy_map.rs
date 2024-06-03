@@ -1,12 +1,11 @@
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
 
 /// An insert only map where items can only be returned by cloning the values. This ensures that the
 /// map can safely be used in an immutable context.
-pub struct FrozenCopyMap<K, V, S = RandomState> {
+pub struct FrozenCopyMap<K, V, S = ahash::RandomState> {
     map: UnsafeCell<HashMap<K, V, S>>,
 }
 

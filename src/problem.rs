@@ -1,6 +1,7 @@
 //! Types to examine why a problem was unsatisfiable, and to report the causes to the user.
 
-use std::collections::{HashMap, HashSet};
+use ahash::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -277,7 +278,7 @@ impl ProblemGraph {
         let merged_nodes = if simplify {
             self.simplify(pool)
         } else {
-            HashMap::new()
+            HashMap::default()
         };
 
         write!(f, "digraph {{")?;
@@ -357,7 +358,7 @@ impl ProblemGraph {
         let graph = &self.graph;
 
         // Gather information about nodes that can be merged
-        let mut maybe_merge = HashMap::new();
+        let mut maybe_merge = HashMap::default();
         for node_id in graph.node_indices() {
             let candidate = match graph[node_id] {
                 ProblemNode::UnresolvedDependency | ProblemNode::Excluded(_) => continue,
@@ -653,7 +654,7 @@ impl<'pool, VS: VersionSet, N: PackageName + Display, M: SolvableDisplay<VS, N>>
     fn fmt_graph(
         &self,
         f: &mut Formatter<'_>,
-        top_level_edges: &[EdgeReference<ProblemEdge>],
+        top_level_edges: &[EdgeReference<'_, ProblemEdge>],
         top_level_indent: bool,
     ) -> fmt::Result
     where

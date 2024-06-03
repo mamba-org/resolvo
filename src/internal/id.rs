@@ -74,7 +74,7 @@ impl SolvableId {
     pub fn display<VS: VersionSet, N: PackageName + Display>(
         self,
         pool: &Pool<VS, N>,
-    ) -> DisplaySolvable<VS, N> {
+    ) -> DisplaySolvable<'_, VS, N> {
         pool.resolve_internal_solvable(self).display(pool)
     }
 }
