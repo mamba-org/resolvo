@@ -1,13 +1,16 @@
 use crate::{
-    internal::{id::ClauseId, id::SolvableId, mapping::Mapping},
+    internal::{
+        id::{ClauseId, InternalSolvableId},
+        mapping::Mapping,
+    },
     solver::clause::ClauseState,
 };
 
 /// A map from solvables to the clauses that are watching them
 pub(crate) struct WatchMap {
-    /// Note: the map is to a single clause, but clauses form a linked list, so it is possible to go
-    /// from one to the next
-    map: Mapping<SolvableId, ClauseId>,
+    /// Note: the map is to a single clause, but clauses form a linked list, so
+    /// it is possible to go from one to the next
+    map: Mapping<InternalSolvableId, ClauseId>,
 }
 
 impl WatchMap {
@@ -31,8 +34,8 @@ impl WatchMap {
         clause: &mut ClauseState,
         clause_id: ClauseId,
         watch_index: usize,
-        previous_watch: SolvableId,
-        new_watch: SolvableId,
+        previous_watch: InternalSolvableId,
+        new_watch: InternalSolvableId,
     ) {
         // Remove this clause from its current place in the linked list, because we
         // are no longer watching what brought us here
@@ -59,7 +62,7 @@ impl WatchMap {
 
     pub(crate) fn first_clause_watching_solvable(
         &mut self,
-        watched_solvable: SolvableId,
+        watched_solvable: InternalSolvableId,
     ) -> ClauseId {
         self.map
             .get(watched_solvable)
@@ -67,7 +70,7 @@ impl WatchMap {
             .unwrap_or(ClauseId::null())
     }
 
-    pub(crate) fn watch_solvable(&mut self, watched_solvable: SolvableId, id: ClauseId) {
+    pub(crate) fn watch_solvable(&mut self, watched_solvable: InternalSolvableId, id: ClauseId) {
         self.map.insert(watched_solvable, id);
     }
 }

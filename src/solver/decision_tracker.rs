@@ -1,6 +1,6 @@
 use crate::internal::id::ClauseId;
 use crate::{
-    internal::id::SolvableId,
+    internal::id::InternalSolvableId,
     solver::{decision::Decision, decision_map::DecisionMap},
 };
 
@@ -31,7 +31,7 @@ impl DecisionTracker {
         self.stack.is_empty()
     }
 
-    pub(crate) fn assigned_value(&self, solvable_id: SolvableId) -> Option<bool> {
+    pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
         self.map.value(solvable_id)
     }
 
@@ -43,13 +43,16 @@ impl DecisionTracker {
         self.stack.iter().copied()
     }
 
-    pub(crate) fn level(&self, solvable_id: SolvableId) -> u32 {
+    pub(crate) fn level(&self, solvable_id: InternalSolvableId) -> u32 {
         self.map.level(solvable_id)
     }
 
     // Find the clause that caused the assignment of the specified solvable. If no assignment has
     // been made to the solvable than `None` is returned.
-    pub(crate) fn find_clause_for_assignment(&self, solvable_id: SolvableId) -> Option<ClauseId> {
+    pub(crate) fn find_clause_for_assignment(
+        &self,
+        solvable_id: InternalSolvableId,
+    ) -> Option<ClauseId> {
         self.stack
             .iter()
             .find(|d| d.solvable_id == solvable_id)

@@ -1,25 +1,34 @@
-use std::fmt::{Display, Formatter};
-
-use crate::internal::id::StringId;
-use crate::{
-    internal::{
-        arena::Arena,
-        frozen_copy_map::FrozenCopyMap,
-        id::{NameId, SolvableId, VersionSetId},
-    },
-    solvable::{InternalSolvable, Solvable},
-    PackageName, VersionSet,
+use std::{
+    fmt::{Display, Formatter},
+    hash::Hash,
 };
 
-/// A pool that stores data related to the available packages.
+use crate::internal::{
+    arena::Arena,
+    frozen_copy_map::FrozenCopyMap,
+    id::{NameId, SolvableId, StringId, VersionSetId},
+};
+
+/// A solvable represents a single candidate of a package.
+/// This is type is generic on `V` which can be supplied by the user. In most
+/// cases this is going to be something like a record that contains the version
+/// of the package and other metadata. A solvable is always associated with a
+/// [`NameId`], which is an interned name in the [`Pool`].
+pub struct Solvable<V> {
+    pub name: NameId,
+    pub record: V,
+}
+
+/// A pool stores and internalizes data related to the available packages.
 ///
-/// A pool never releases its memory until it is dropped. References returned by the pool will
-/// remain valid for the lifetime of the pool. This allows inserting into the pool without requiring
-/// a mutable reference to the pool.
-/// This is what we refer to as `Frozen` data can be added but old data can never be removed or mutated.
+/// A pool never releases its memory until it is dropped. References returned by
+/// the pool will remain valid for the lifetime of the pool. This allows
+/// inserting into the pool without requiring a mutable reference to the pool.
+/// This is what we refer to as `Frozen` data can be added but old data can
+/// never be removed or mutated.
 pub struct Pool<VS: VersionSet, N: PackageName = String> {
     /// All the solvables that have been registered
-    pub(crate) solvables: Arena<SolvableId, InternalSolvable<VS::V>>,
+    pub(crate) solvables: Arena<SolvableId, Solvable<VS::V>>,
 
     /// Interned package names
     package_names: Arena<NameId, N>,
@@ -43,7 +52,6 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
 impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
     fn default() -> Self {
         let solvables = Arena::new();
-        solvables.alloc(InternalSolvable::new_root());
 
         Self {
             solvables,
@@ -63,8 +71,8 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         Self::default()
     }
 
-    /// Interns a generic string into the `Pool` and returns its `StringId`. Strings are
-    /// deduplicated.
+    /// Interns a generic string into the `Pool` and returns its `StringId`.
+    /// Strings are deduplicated.
     pub fn intern_string(&self, name: impl Into<String> + AsRef<str>) -> StringId {
         if let Some(id) = self.string_to_ids.get_copy(name.as_ref()) {
             return id;
@@ -83,10 +91,12 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         &self.strings[string_id]
     }
 
-    /// Interns a package name into the `Pool`, returning its `NameId`. Names are deduplicated. If
-    /// the same name is inserted twice the same `NameId` will be returned.
+    /// Interns a package name into the `Pool`, returning its `NameId`. Names
+    /// are deduplicated. If the same name is inserted twice the same
+    /// `NameId` will be returned.
     ///
-    /// The original name can be resolved using the [`Self::resolve_package_name`] function.
+    /// The original name can be resolved using the
+    /// [`Self::resolve_package_name`] function.
     pub fn intern_package_name<NValue>(&self, name: NValue) -> NameId
     where
         NValue: Into<N>,
@@ -109,44 +119,42 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         &self.package_names[name_id]
     }
 
-    /// Returns the [`NameId`] associated with the specified name or `None` if the name has not
-    /// previously been interned using [`Self::intern_package_name`].
+    /// Returns the [`NameId`] associated with the specified name or `None` if
+    /// the name has not previously been interned using
+    /// [`Self::intern_package_name`].
     pub fn lookup_package_name(&self, name: &N) -> Option<NameId> {
         self.names_to_ids.get_copy(name)
     }
 
     /// Adds a solvable to a repo and returns it's [`SolvableId`].
     ///
-    /// Unlike some of the other interning functions this function does *not* deduplicate any of the
-    /// inserted elements. A unique Id will be returned everytime this function is called.
+    /// Unlike some of the other interning functions this function does *not*
+    /// deduplicate any of the inserted elements. A unique Id will be
+    /// returned everytime this function is called.
     pub fn intern_solvable(&self, name_id: NameId, record: VS::V) -> SolvableId {
-        self.solvables
-            .alloc(InternalSolvable::new_solvable(name_id, record))
+        self.solvables.alloc(Solvable {
+            name: name_id,
+            record,
+        })
     }
 
     /// Returns the solvable associated to the provided id
     ///
     /// Panics if the solvable is not found in the pool
     pub fn resolve_solvable(&self, id: SolvableId) -> &Solvable<VS::V> {
-        self.resolve_internal_solvable(id).solvable()
-    }
-
-    /// Returns the solvable associated to the provided id
-    ///
-    /// Panics if the solvable is not found in the pool
-    pub(crate) fn resolve_internal_solvable(&self, id: SolvableId) -> &InternalSolvable<VS::V> {
         &self.solvables[id]
     }
 
-    /// Interns a version set into the [`Pool`], returning its [`VersionSetId`]. The returned
-    /// [`VersionSetId`] can be used to retrieve a reference to the original version set using
-    /// [`Self::resolve_version-set`].
+    /// Interns a version set into the [`Pool`], returning its [`VersionSetId`].
+    /// The returned [`VersionSetId`] can be used to retrieve a reference to
+    /// the original version set using [`Self::resolve_version-set`].
     ///
-    /// A version set is always associated with a specific package name to which it applies. The
-    /// passed in package name can be retrieved using [`Self::resolve_version_set_package_name`].
+    /// A version set is always associated with a specific package name to which
+    /// it applies. The passed in package name can be retrieved using
+    /// [`Self::resolve_version_set_package_name`].
     ///
-    /// Version sets are deduplicated. This means that if the same version set is inserted twice
-    /// they will share the same [`VersionSetId`].
+    /// Version sets are deduplicated. This means that if the same version set
+    /// is inserted twice they will share the same [`VersionSetId`].
     pub fn intern_version_set(&self, package_name: NameId, version_set: VS) -> VersionSetId {
         if let Some(entry) = self
             .version_set_to_id
@@ -197,4 +205,29 @@ impl NameId {
     ) -> NameDisplay<'_, VS, N> {
         NameDisplay { id: self, pool }
     }
+}
+
+/// The solver is based around the fact that for every package name we are
+/// trying to find a single variant. Variants are grouped by their respective
+/// package name. A package name is anything that we can compare and hash for
+/// uniquenes checks.
+///
+/// For most implementations a package name can simply be a String. But in some
+/// more advanced cases like when a single package can have additive features it
+/// can make sense to create a custom type.
+///
+/// A blanket trait implementation is provided for any type that implements
+/// [`Eq`] and [`Hash`].
+pub trait PackageName: Eq + Hash {}
+
+impl<N: Eq + Hash> PackageName for N {}
+
+/// A [`VersionSet`] describes a set of "versions". The trait defines whether a
+/// given version is part of the set or not.
+///
+/// One could implement [`VersionSet`] for [`std::ops::Range<u32>`] where the
+/// implementation returns `true` if a given `u32` is part of the range or not.
+pub trait VersionSet: Clone + Eq + Hash {
+    /// The element type that is included in the set.
+    type V: Display;
 }
