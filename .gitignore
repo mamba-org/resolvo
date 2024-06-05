@@ -18,3 +18,9 @@ Cargo.lock
 *.pdb
 
 **/.DS_Store
+
+build/
+# pixi environments
+.pixi
+*.egg-info
+

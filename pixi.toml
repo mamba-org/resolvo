@@ -1,0 +1,59 @@
+[project]
+name = "resolvo"
+authors = ["Bas Zalmstra <bas@prefix.dev>"]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
+
+[tasks]
+format = {depends_on = ["format-rust", "format-cpp"] }
+test = {depends_on = ["test-rust", "test-cpp"] }
+
+# ---- Build Rust using Cargo ----
+[feature.build-rust.dependencies]
+rust = "~=1.75.0"
+
+[feature.test-rust.tasks.test-rust]
+cmd = "cargo test"
+
+[feature.test-rust.tasks.format-rust]
+cmd = "cargo fmt"
+
+[environments.test-rust]
+features = ["build-rust", "test-rust"]
+solve-group = "default"
+
+# ---- Build C++ using CMake ----
+[feature.build-cpp.dependencies]
+cmake = ">=3.29.4,<3.30"
+cxx-compiler = ">=1.7.0,<1.8"
+ninja = ">=1.12.1,<1.13"
+
+[feature.build-cpp.tasks.configure]
+cmd = "cmake -GNinja -S . -B build -DRESOLVO_BUILD_TESTING=ON"
+inputs = ["CMakeLists.txt"]
+outputs = ["build/CMakeFiles/"]
+
+[feature.build-cpp.tasks.build-cpp]
+cmd = ["cmake", "--build", "build"]
+depends-on = ["configure"]
+inputs = ["CMakeLists.txt", "cpp/**/*", "src/**"]
+outputs = ["build/bin/*"]
+
+[feature.build-cpp.tasks.test-cpp]
+cmd = "ctest --test-dir build"
+depends_on = ["build-cpp"]
+
+[environments.test-cpp]
+features = ["build-cpp", "build-rust"]
+solve-group = "default"
+
+# ---- Format C++ ----
+[feature.format-cpp.dependencies]
+clang-format = ">=18.1.6,<18.2"
+
+[feature.format-cpp.tasks.format-cpp]
+cmd = "clang-format -i cpp/include/*.h cpp/tests/*.cpp"
+
+[environments.format-cpp]
+features=["format-cpp"]
+solve-group="default"
