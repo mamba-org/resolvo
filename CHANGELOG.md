@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/mamba-org/resolvo/compare/v0.5.0...v0.6.0) - 2024-06-07
+
+### Other
+- remove `Pool` from API ([#40](https://github.com/mamba-org/resolvo/pull/40))
+
 ## [0.5.0](https://github.com/mamba-org/resolvo/compare/v0.4.1...v0.5.0) - 2024-06-03
 
 ### Added
