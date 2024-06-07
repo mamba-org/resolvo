@@ -1,7 +1,6 @@
-use crate::internal::arena::ArenaId;
-use crate::solvable::DisplaySolvable;
-use crate::{PackageName, Pool, VersionSet};
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
+
+use crate::{internal::arena::ArenaId, Interner};
 
 /// The id associated to a package name
 #[repr(transparent)]
@@ -53,29 +52,84 @@ impl ArenaId for VersionSetId {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 pub struct SolvableId(u32);
 
-impl SolvableId {
-    pub(crate) fn root() -> Self {
+/// Internally used id for solvables that can also represent root and null.
+#[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
+pub(crate) struct InternalSolvableId(u32);
+
+const INTERNAL_SOLVABLE_NULL: u32 = u32::MAX;
+const INTERNAL_SOLVABLE_ROOT: u32 = 0;
+
+impl InternalSolvableId {
+    /// Returns the id of the "root" solvable. This is a special solvable that
+    /// is always present when solving.
+    pub const fn root() -> Self {
         Self(0)
     }
 
-    pub(crate) fn is_root(self) -> bool {
+    /// Returns if this id represents the root solvable.
+    pub const fn is_root(self) -> bool {
         self.0 == 0
     }
 
-    pub(crate) fn null() -> Self {
+    pub const fn null() -> Self {
         Self(u32::MAX)
     }
 
-    pub(crate) fn is_null(self) -> bool {
+    pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
     }
 
-    /// Returns an object that enables formatting the solvable.
-    pub fn display<VS: VersionSet, N: PackageName + Display>(
-        self,
-        pool: &Pool<VS, N>,
-    ) -> DisplaySolvable<'_, VS, N> {
-        pool.resolve_internal_solvable(self).display(pool)
+    pub const fn as_solvable(self) -> Option<SolvableId> {
+        match self.0 {
+            INTERNAL_SOLVABLE_NULL | INTERNAL_SOLVABLE_ROOT => None,
+            x => Some(SolvableId(x - 1)),
+        }
+    }
+
+    pub fn display<I: Interner>(self, interner: &I) -> impl std::fmt::Display + '_ {
+        DisplayInternalSolvable { interner, id: self }
+    }
+}
+
+pub struct DisplayInternalSolvable<'i, I: Interner> {
+    interner: &'i I,
+    id: InternalSolvableId,
+}
+
+impl<'i, I: Interner> Display for DisplayInternalSolvable<'i, I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.id.0 {
+            INTERNAL_SOLVABLE_ROOT => write!(f, "<root>"),
+            INTERNAL_SOLVABLE_NULL => write!(f, "<null>"),
+            x => {
+                write!(f, "{}", self.interner.display_solvable(SolvableId(x - 1)))
+            }
+        }
+    }
+}
+
+impl From<SolvableId> for InternalSolvableId {
+    fn from(value: SolvableId) -> Self {
+        Self(value.0 + 1)
+    }
+}
+
+impl TryFrom<InternalSolvableId> for SolvableId {
+    type Error = ();
+
+    fn try_from(value: InternalSolvableId) -> Result<Self, Self::Error> {
+        value.as_solvable().ok_or(())
+    }
+}
+
+impl ArenaId for InternalSolvableId {
+    fn from_usize(x: usize) -> Self {
+        Self(x as u32)
+    }
+
+    fn to_usize(self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -100,8 +154,8 @@ impl From<SolvableId> for u32 {
 pub(crate) struct ClauseId(u32);
 
 impl ClauseId {
-    /// There is a guarentee that ClauseId(0) will always be "Clause::InstallRoot". This assumption
-    /// is verified by the solver.
+    /// There is a guarentee that ClauseId(0) will always be
+    /// "Clause::InstallRoot". This assumption is verified by the solver.
     pub(crate) fn install_root() -> Self {
         Self(0)
     }

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Ranges are constraints defining sets of versions. They are a convenience struct that implements
-//! [`crate::VersionSet`] for any version type that implements [`Ord`] + [`Clone`].
+//! [`crate::pool::VersionSet`] for any version type that implements [`Ord`] + [`Clone`].
 //!
 //! Concretely, those constraints correspond to any set of versions representable as the
 //! concatenation, union, and complement of the ranges building blocks.
@@ -20,7 +20,8 @@
 //!
 //! Ranges can be created from any type that implements [`Ord`] + [`Clone`].
 
-use crate::{internal::small_vec::SmallVec, VersionSet};
+use super::pool::VersionSet;
+use crate::internal::small_vec::SmallVec;
 use std::{
     fmt::{Debug, Display, Formatter},
     hash::Hash,
@@ -305,10 +306,6 @@ impl<V: Ord + Clone> Range<V> {
 
 impl<T: Debug + Display + Clone + Eq + Ord + Hash> VersionSet for Range<T> {
     type V = T;
-
-    fn contains(&self, v: &Self::V) -> bool {
-        Range::contains(self, v)
-    }
 }
 
 impl<V: Display + Eq> Display for Range<V> {
