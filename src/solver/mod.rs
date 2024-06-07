@@ -114,7 +114,7 @@ pub(crate) enum PropagationError {
 impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// Returns the dependency provider used by this instance.
     pub fn provider(&self) -> &D {
-        &self.cache.provider
+        self.cache.provider()
     }
 
     /// Set the runtime of the solver to `runtime`.
@@ -308,11 +308,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     };
 
                     for version_set_id in chain(requirements.iter(), constrains.iter()).copied() {
-                        let dependency_name = self.cache.provider.version_set_name(version_set_id);
+                        let dependency_name = self.provider().version_set_name(version_set_id);
                         if clauses_added_for_package.insert(dependency_name) {
                             tracing::trace!(
                                 "┝━ adding clauses for package '{}'",
-                                self.cache.provider.display_name(dependency_name),
+                                self.provider().display_name(dependency_name),
                             );
 
                             pending_futures.push(
@@ -372,7 +372,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // Get the solvable information and request its requirements and constraints
                     tracing::trace!(
                         "package candidates available for {}",
-                        self.cache.provider.display_name(name_id)
+                        self.provider().display_name(name_id)
                     );
 
                     let locked_solvable_id = package_candidates.locked;
@@ -444,10 +444,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 } => {
                     tracing::trace!(
                         "sorted candidates available for {} {}",
-                        self.cache
-                            .provider
-                            .display_name(self.cache.provider.version_set_name(version_set_id)),
-                        self.cache.provider.display_version_set(version_set_id),
+                        self.provider()
+                            .display_name(self.provider().version_set_name(version_set_id)),
+                        self.provider().display_version_set(version_set_id),
                     );
 
                     // Queue requesting the dependencies of the candidates as well if they are
@@ -499,10 +498,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 } => {
                     tracing::trace!(
                         "non matching candidates available for {} {}",
-                        self.cache
-                            .provider
-                            .display_name(self.cache.provider.version_set_name(version_set_id)),
-                        self.cache.provider.display_version_set(version_set_id),
+                        self.provider()
+                            .display_name(self.provider().version_set_name(version_set_id)),
+                        self.provider().display_version_set(version_set_id),
                     );
 
                     // Add forbidden clauses for the candidates
@@ -601,7 +599,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
                         tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
-                                clause=self.clauses.borrow()[clause_id].display(&self.cache.provider));
+                                clause=self.clauses.borrow()[clause_id].display(self.provider()));
                         level = 0;
                         self.decision_tracker.clear();
                         continue;
@@ -651,7 +649,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .format_with("\n- ", |(id, derived_from), f| f(&format_args!(
                         "{} (derived from {})",
                         id.display(self.provider()),
-                        self.clauses.borrow()[derived_from].display(&self.cache.provider),
+                        self.clauses.borrow()[derived_from].display(self.provider()),
                     )))
             );
 
@@ -663,7 +661,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             // Serially process the outputs, to reduce the need for synchronization
             for &clause_id in &output.conflicting_clauses {
                 tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
-                                        clause=self.clauses.borrow()[clause_id].display(&self.cache.provider));
+                                        clause=self.clauses.borrow()[clause_id].display(self.provider()));
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
@@ -780,8 +778,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         if let Some((count, (candidate, _solvable_id, clause_id))) = best_decision {
             tracing::info!(
                 "deciding to assign {}, ({}, {} possible candidates)",
-                self.cache.provider.display_solvable(candidate),
-                self.clauses.borrow()[clause_id].display(&self.cache.provider),
+                self.provider().display_solvable(candidate),
+                self.clauses.borrow()[clause_id].display(self.provider()),
                 count,
             );
         }
@@ -872,7 +870,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             );
             tracing::info!(
                 "│  During unit propagation for clause: {}",
-                self.clauses.borrow()[conflicting_clause].display(&self.cache.provider)
+                self.clauses.borrow()[conflicting_clause].display(self.provider())
             );
 
             tracing::info!(
@@ -882,7 +880,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .decision_tracker
                     .find_clause_for_assignment(conflicting_solvable)
                     .unwrap()]
-                .display(&self.cache.provider),
+                .display(self.provider()),
             );
         }
 
@@ -901,7 +899,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 tracing::info!(
                     "* ({level}) {action} {}. Reason: {}",
                     decision.solvable_id.display(self.provider()),
-                    clause.display(&self.cache.provider),
+                    clause.display(self.provider()),
                 );
             }
 
@@ -941,7 +939,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// solvable has become false, in which case it picks a new solvable to
     /// watch (if available) or triggers an assignment.
     fn propagate(&mut self, level: u32) -> Result<(), PropagationError> {
-        if let Some(value) = self.cache.provider.should_cancel_with_value() {
+        if let Some(value) = self.provider().should_cancel_with_value() {
             return Err(PropagationError::Cancelled(value));
         };
 
@@ -1097,7 +1095,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                         "├─ Propagate {} = {}. {}",
                                         remaining_watch.solvable_id.display(self.provider()),
                                         remaining_watch.satisfying_value(),
-                                        clause.display(&self.cache.provider),
+                                        clause.display(self.provider()),
                                     );
                                 }
                             }

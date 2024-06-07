@@ -17,7 +17,7 @@ use crate::{
 /// Keeps a cache of previously computed and/or requested information about
 /// solvables and version sets.
 pub struct SolverCache<D: DependencyProvider> {
-    pub(crate) provider: D,
+    provider: D,
 
     /// A mapping from package name to a list of candidates.
     candidates: Arena<CandidatesId, Candidates>,
@@ -64,6 +64,11 @@ impl<D: DependencyProvider> SolverCache<D> {
             solvable_to_dependencies: Default::default(),
             hint_dependencies_available: Default::default(),
         }
+    }
+
+    /// Returns the [`DependencyProvider`] used by this cache.
+    pub fn provider(&self) -> &D {
+        &self.provider
     }
 
     /// Returns the candidates for the package with the given name. This will
