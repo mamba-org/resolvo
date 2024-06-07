@@ -52,12 +52,18 @@ pub trait Interner {
     /// When formatting the solvables, both the name of the package and any
     /// other identifying properties should be displayed.
     fn display_merged_solvables(&self, solvables: &[SolvableId]) -> impl Display + '_ {
-        solvables
+        if solvables.is_empty() {
+            return String::new();
+        }
+
+        let versions = solvables
             .iter()
             .map(|&id| self.display_solvable(id).to_string())
             .sorted()
-            .map(|s| s.to_string())
-            .join(" | ")
+            .format(" | ");
+
+        let name = self.display_solvable_name(solvables[0]);
+        format!("{name} {versions}")
     }
 
     /// Returns an object that can be used to display the given name in a
