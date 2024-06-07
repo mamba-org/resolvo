@@ -102,11 +102,9 @@ impl Problem {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
-                    if let Some(locked) = locked.as_solvable() {
-                        let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
-                        let conflict = ConflictCause::Locked(locked);
-                        graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
-                    }
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
+                    let conflict = ConflictCause::Locked(locked);
+                    graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id, _) => {
                     let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id.into());
@@ -276,7 +274,7 @@ impl ProblemNode {
 
 /// An edge in the graph representation of a [`Problem`]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ProblemEdge {
+pub(crate) enum ProblemEdge {
     /// The target node is a candidate for the dependency specified by the
     /// version set
     Requires(VersionSetId),
@@ -309,9 +307,9 @@ impl ProblemEdge {
 
 /// Conflict causes
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ConflictCause {
+pub(crate) enum ConflictCause {
     /// The solvable is locked
-    Locked(SolvableId),
+    Locked(InternalSolvableId),
     /// The target node is constrained by the specified version set
     Constrains(VersionSetId),
     /// It is forbidden to install multiple instances of the same dependency
@@ -336,8 +334,7 @@ pub(crate) struct MergedProblemNode {
 ///
 /// The root of the graph is the "root solvable". Note that not all the
 /// solvable's requirements are included in the graph, only those that are
-/// directly or indirectly involved in the conflict. See [`ProblemNode`] and
-/// [`ProblemEdge`] for the kinds of nodes and edges that make up the graph.
+/// directly or indirectly involved in the conflict.
 pub struct ProblemGraph {
     graph: DiGraph<ProblemNode, ProblemEdge>,
     root_node: NodeIndex,
@@ -1083,7 +1080,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                         writeln!(
                             f,
                             "{indent}{} is locked, but another version is required as reported above",
-                            self.interner.display_merged_solvables(&[solvable_id]),
+                            self.interner.display_merged_solvables(&[solvable_id.as_solvable().expect("root is never locked")]),
                         )?;
                     }
                     ConflictCause::Excluded => continue,
