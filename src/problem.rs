@@ -165,7 +165,7 @@ impl Problem {
         solver: &'a Solver<D, RT>,
     ) -> DisplayUnsat<'a, D> {
         let graph = self.graph(solver);
-        DisplayUnsat::new(graph, &solver.provider())
+        DisplayUnsat::new(graph, solver.provider())
     }
 }
 
