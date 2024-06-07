@@ -102,9 +102,11 @@ impl Problem {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
-                    let conflict = ConflictCause::Locked(locked);
-                    graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
+                    if let Some(locked) = locked.as_solvable() {
+                        let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
+                        let conflict = ConflictCause::Locked(locked);
+                        graph.add_edge(root_node, node2_id, ProblemEdge::Conflict(conflict));
+                    }
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id, _) => {
                     let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id.into());
@@ -274,7 +276,7 @@ impl ProblemNode {
 
 /// An edge in the graph representation of a [`Problem`]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum ProblemEdge {
+pub enum ProblemEdge {
     /// The target node is a candidate for the dependency specified by the
     /// version set
     Requires(VersionSetId),
@@ -307,9 +309,9 @@ impl ProblemEdge {
 
 /// Conflict causes
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum ConflictCause {
+pub enum ConflictCause {
     /// The solvable is locked
-    Locked(InternalSolvableId),
+    Locked(SolvableId),
     /// The target node is constrained by the specified version set
     Constrains(VersionSetId),
     /// It is forbidden to install multiple instances of the same dependency
@@ -1081,7 +1083,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                         writeln!(
                             f,
                             "{indent}{} is locked, but another version is required as reported above",
-                            self.interner.display_merged_solvables(&[solvable_id.as_solvable().expect("root is never locked")]),
+                            self.interner.display_merged_solvables(&[solvable_id]),
                         )?;
                     }
                     ConflictCause::Excluded => continue,
