@@ -1,6 +1,9 @@
 use crate::internal::id::{ExpandedVar, VarId};
 use crate::{
-    internal::{id::ClauseId, id::SolvableId, mapping::Mapping},
+    internal::{
+        id::{ClauseId, InternalSolvableId},
+        mapping::Mapping,
+    },
     solver::clause::ClauseState,
 };
 
@@ -8,7 +11,7 @@ use crate::{
 pub(crate) struct WatchMap {
     /// Note: the map is to a single clause, but clauses form a linked list, so it is possible to go
     /// from one to the next
-    solvables: Mapping<SolvableId, ClauseId>,
+    solvables: Mapping<InternalSolvableId, ClauseId>,
     variables: Mapping<u32, ClauseId>,
 }
 

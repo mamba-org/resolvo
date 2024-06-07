@@ -1,17 +1,19 @@
-use crate::internal::arena::ArenaId;
-use crate::internal::id::{ExpandedVar, VarId};
-use crate::{PackageName, Pool, VersionSet};
 use std::cmp::Ordering;
-use std::fmt::{Display, Formatter};
 
-/// Represents a decision (i.e. an assignment to a solvable) and the level at which it was made
+use crate::internal::{
+    arena::ArenaId,
+    id::{ExpandedVar, VarId},
+};
+
+/// Represents a decision (i.e. an assignment to a solvable) and the level at
+/// which it was made
 ///
 /// = 0: undecided
 /// > 0: level of decision when the solvable is set to true
 /// < 0: level of decision when the solvable is set to false
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-struct DecisionAndLevel(i64);
+struct DecisionAndLevel(i32);
 
 impl DecisionAndLevel {
     fn undecided() -> DecisionAndLevel {
@@ -27,11 +29,12 @@ impl DecisionAndLevel {
     }
 
     fn level(self) -> u32 {
-        self.0.unsigned_abs() as u32
+        self.0.unsigned_abs()
     }
 
     fn with_value_and_level(value: bool, level: u32) -> Self {
-        Self(if value { level as i64 } else { -(level as i64) })
+        debug_assert!(level <= (i32::MAX as u32), "level is too large");
+        Self(if value { level as i32 } else { -(level as i32) })
     }
 }
 
@@ -71,7 +74,8 @@ impl DecisionMap {
             map.resize_with(idx + 1, DecisionAndLevel::undecided);
         }
 
-        // SAFE: because we ensured that vec contains at least the correct number of elements.
+        // SAFE: because we ensured that vec contains at least the correct number of
+        // elements.
         unsafe {
             *map.get_unchecked_mut(idx) = DecisionAndLevel::with_value_and_level(value, level)
         };
@@ -93,38 +97,5 @@ impl DecisionMap {
         };
 
         map.get(idx).and_then(|d| d.value())
-    }
-
-    /// Returns an object that can be used to display the contents of the decision map in a human readable fashion.
-    #[allow(unused)]
-    pub fn display<'a, VS: VersionSet, N: PackageName + Display>(
-        &'a self,
-        pool: &'a Pool<VS, N>,
-    ) -> DecisionMapDisplay<'a, VS, N> {
-        DecisionMapDisplay { map: self, pool }
-    }
-}
-
-pub struct DecisionMapDisplay<'a, VS: VersionSet, N: PackageName + Display> {
-    map: &'a DecisionMap,
-    pool: &'a Pool<VS, N>,
-}
-
-impl<'a, VS: VersionSet, N: PackageName + Display> Display for DecisionMapDisplay<'a, VS, N> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for (id, solvable) in self.pool.solvables.iter() {
-            write!(f, "{} := ", solvable.display(self.pool))?;
-            if let Some(value) = self.map.value(id.into()) {
-                writeln!(
-                    f,
-                    "{} (level: {})",
-                    if value { "true " } else { "false" },
-                    self.map.level(id.into())
-                )?;
-            } else {
-                writeln!(f, "<undecided>")?;
-            }
-        }
-        Ok(())
     }
 }

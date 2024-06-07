@@ -1,6 +1,6 @@
 [package]
 name = "resolvo"
-version = "0.4.1"
+version = "0.6.0"
 authors = ["Adolfo Ochagavía <github@adolfo.ochagavia.nl>", "Bas Zalmstra <zalmstra.bas@gmail.com>", "Tim de Jager <tdejager89@gmail.com>"]
 description = "Fast package resolver written in Rust (CDCL based SAT solving)"
 keywords = ["dependency", "solver", "version"]
@@ -13,6 +13,7 @@ readme = "README.md"
 resolver = "2"
 
 [dependencies]
+ahash = "0.8.11"
 itertools = "0.13"
 petgraph = "0.6.5"
 tracing = "0.1.40"
