@@ -59,6 +59,10 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     /// Additional constraints imposed by the root.
     root_constraints: Vec<VersionSetId>,
+
+    /// Defines the current conflict level, e.g. the number of conflicts we
+    /// encountered.
+    conflict_level: usize,
 }
 
 impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
@@ -80,6 +84,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             root_constraints: Default::default(),
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
+            conflict_level: 0,
         }
     }
 }
@@ -134,6 +139,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
             root_constraints: self.root_constraints,
+            conflict_level: self.conflict_level,
         }
     }
 
@@ -157,6 +163,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.clauses = Default::default();
         self.root_requirements = root_requirements;
         self.root_constraints = root_constraints;
+        self.conflict_level = 0;
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
@@ -727,8 +734,18 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// available candidates and selects the best candidate from that list. This
     /// ensures that if there are conflicts they are delt with as early as
     /// possible.
+    ///
+    /// However, in some cases this heuristic causes the solver to get stuck
+    /// endlessly iterating over the same set of clauses. To prevent this,
+    /// the heuristic alternates between minimizing and maximizing the number
+    /// of candidates based on the number of conflicts encountered.
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
         let mut best_decision = None;
+
+        // Switch between minimizing and maximizing the number of candidates
+        // based on the number of conflicts.
+        let minimize_candidates = (self.conflict_level / 128) % 2 == 0;
+
         for &(solvable_id, deps, clause_id) in &self.requires_clauses {
             // Consider only clauses in which we have decided to install the solvable
             if self.decision_tracker.assigned_value(solvable_id) != Some(true) {
@@ -764,7 +781,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let possible_decision = (candidate, solvable_id, clause_id);
                     best_decision = Some(match best_decision {
                         None => (count, possible_decision),
-                        Some((best_count, _)) if count < best_count => {
+                        Some((best_count, _))
+                            if (minimize_candidates && count < best_count)
+                                || (!minimize_candidates && count > best_count) => {
                             (count, possible_decision)
                         }
                         Some(best_decision) => best_decision,
@@ -851,6 +870,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         attempted_value,
                         conflicting_clause,
                     )?;
+                    self.conflict_level += 1;
                 }
             }
         }
