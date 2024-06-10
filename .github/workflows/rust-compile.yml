@@ -43,7 +43,7 @@ jobs:
         run: cargo clippy
 
   build:
-    name: ubuntu-latest
+    name: Test
     runs-on: ubuntu-latest
     needs: [ format_and_lint ]
     steps:

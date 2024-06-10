@@ -7,7 +7,7 @@ use crate::{internal::arena::ArenaId, Interner};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct NameId(u32);
+pub struct NameId(pub u32);
 
 impl ArenaId for NameId {
     fn from_usize(x: usize) -> Self {
@@ -24,7 +24,7 @@ impl ArenaId for NameId {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct StringId(u32);
+pub struct StringId(pub u32);
 
 impl ArenaId for StringId {
     fn from_usize(x: usize) -> Self {
@@ -41,7 +41,7 @@ impl ArenaId for StringId {
 #[derive(Clone, Default, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct VersionSetId(u32);
+pub struct VersionSetId(pub u32);
 
 impl ArenaId for VersionSetId {
     fn from_usize(x: usize) -> Self {
@@ -58,7 +58,7 @@ impl ArenaId for VersionSetId {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SolvableId(u32);
+pub struct SolvableId(pub u32);
 
 /// Internally used id for solvables that can also represent root and null.
 #[repr(transparent)]
