@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.0...resolvo-v0.6.1) - 2024-06-10
+
+### Added
+- add `DependencySnapshot` ([#44](https://github.com/mamba-org/resolvo/pull/44))
+
+### Fixed
+- publish state of tool
+
 ## [0.6.0](https://github.com/mamba-org/resolvo/compare/v0.5.0...v0.6.0) - 2024-06-07
 
 ### Other
