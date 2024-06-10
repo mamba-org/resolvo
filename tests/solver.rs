@@ -277,7 +277,7 @@ impl BundleBoxProvider {
             .keys()
             .filter_map(|name| self.pool.lookup_package_name(name))
             .collect::<Vec<_>>();
-        DependencySnapshot::from_provider(self, name_ids).unwrap()
+        DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
     }
 }
 
