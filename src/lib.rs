@@ -13,6 +13,7 @@
 pub(crate) mod internal;
 pub mod problem;
 pub mod runtime;
+pub mod snapshot;
 mod solver;
 pub mod utils;
 
@@ -171,6 +172,8 @@ pub struct Candidates {
 
 /// Holds information about the dependencies of a package.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum Dependencies {
     /// The dependencies are known.
     Known(KnownDependencies),
@@ -184,9 +187,14 @@ pub enum Dependencies {
 
 /// Holds information about the dependencies of a package when they are known.
 #[derive(Default, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KnownDependencies {
     /// Defines which packages should be installed alongside the depending
     /// package and the constraints applied to the package.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
     pub requirements: Vec<VersionSetId>,
 
     /// Defines additional constraints on packages that may or may not be part
@@ -196,5 +204,9 @@ pub struct KnownDependencies {
     /// package also added to the solution.
     ///
     /// This is often useful to use for optional dependencies.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
     pub constrains: Vec<VersionSetId>,
 }
