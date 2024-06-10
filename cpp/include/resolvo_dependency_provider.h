@@ -102,46 +102,49 @@ struct DependencyProvider {
 };
 
 namespace private_api {
-extern "C" void bridge_display_solvable(void *data, SolvableId solvable, String *result) {
+extern "C" inline void bridge_display_solvable(void *data, SolvableId solvable, String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_solvable(solvable);
 }
-extern "C" void bridge_display_solvable_name(void *data, SolvableId solvable, String *result) {
+extern "C" inline void bridge_display_solvable_name(void *data, SolvableId solvable,
+                                                    String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_solvable_name(solvable);
 }
-extern "C" void bridge_display_merged_solvables(void *data, Slice<SolvableId> solvable,
-                                                String *result) {
+extern "C" inline void bridge_display_merged_solvables(void *data, Slice<SolvableId> solvable,
+                                                       String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_merged_solvables(solvable);
 }
-extern "C" void bridge_display_name(void *data, NameId name, String *result) {
+extern "C" inline void bridge_display_name(void *data, NameId name, String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_name(name);
 }
-extern "C" void bridge_display_version_set(void *data, VersionSetId version_set, String *result) {
+extern "C" inline void bridge_display_version_set(void *data, VersionSetId version_set,
+                                                  String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_version_set(version_set);
 }
-extern "C" void bridge_display_string(void *data, StringId string, String *result) {
+extern "C" inline void bridge_display_string(void *data, StringId string, String *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->display_string(string);
 }
 
-extern "C" NameId bridge_version_set_name(void *data, VersionSetId version_set_id) {
+extern "C" inline NameId bridge_version_set_name(void *data, VersionSetId version_set_id) {
     return reinterpret_cast<DependencyProvider *>(data)->version_set_name(version_set_id);
 }
-extern "C" NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
+extern "C" inline NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
     return reinterpret_cast<DependencyProvider *>(data)->solvable_name(solvable_id);
 }
 
-extern "C" void bridge_get_candidates(void *data, NameId package, Candidates *result) {
+extern "C" inline void bridge_get_candidates(void *data, NameId package, Candidates *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->get_candidates(package);
 }
-extern "C" void bridge_sort_candidates(void *data, Slice<SolvableId> solvables) {
+extern "C" inline void bridge_sort_candidates(void *data, Slice<SolvableId> solvables) {
     return reinterpret_cast<DependencyProvider *>(data)->sort_candidates(solvables);
 }
-extern "C" void bridge_filter_candidates(void *data, Slice<SolvableId> candidates,
-                                         VersionSetId version_set_id, bool inverse,
-                                         Vector<SolvableId> *result) {
+extern "C" inline void bridge_filter_candidates(void *data, Slice<SolvableId> candidates,
+                                                VersionSetId version_set_id, bool inverse,
+                                                Vector<SolvableId> *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->filter_candidates(
         candidates, version_set_id, inverse);
 }
-extern "C" void bridge_get_dependencies(void *data, SolvableId solvable, Dependencies *result) {
+extern "C" inline void bridge_get_dependencies(void *data, SolvableId solvable,
+                                               Dependencies *result) {
     *result = reinterpret_cast<DependencyProvider *>(data)->get_dependencies(solvable);
 }
 

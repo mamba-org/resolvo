@@ -12,8 +12,8 @@ namespace resolvo {
  * stored in `result`. If the solve was unsuccesfull an error describing the reason is returned and
  * the result vector will be empty.
  */
-String solve(DependencyProvider &provider, Slice<VersionSetId> requirements,
-             Slice<VersionSetId> constraints, Vector<SolvableId> &result) {
+inline String solve(DependencyProvider &provider, Slice<VersionSetId> requirements,
+                    Slice<VersionSetId> constraints, Vector<SolvableId> &result) {
     cbindgen_private::DependencyProvider bridge{
         static_cast<void *>(&provider),
         private_api::bridge_display_solvable,
