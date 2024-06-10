@@ -108,7 +108,9 @@ pub struct DependencySnapshot {
 
 impl DependencySnapshot {
     /// Construct a new [`DependencySnapshot`] from a [`DependencyProvider`]
-    /// capturing its entire state.
+    /// capturing its entire state. This function will recursively call all
+    /// methods on the provider with the given `names`, `version_sets`, and
+    /// `solvables`.
     ///
     /// This function assumes that the passed in [`DependencyProvider`] does not
     /// yield and will block until the snapshot is fully constructed. If you
@@ -117,8 +119,10 @@ impl DependencySnapshot {
     pub fn from_provider(
         provider: impl DependencyProvider,
         names: impl IntoIterator<Item = NameId>,
+        version_sets: impl IntoIterator<Item = VersionSetId>,
+        solvables: impl IntoIterator<Item = SolvableId>,
     ) -> Result<Self, Box<dyn Any>> {
-        Self::from_provider_async(provider, names)
+        Self::from_provider_async(provider, names, version_sets, solvables)
             .now_or_never()
             .expect(
                 "the DependencyProvider seems to have yielded. Use `from_provider_async` instead.",
@@ -126,10 +130,14 @@ impl DependencySnapshot {
     }
 
     /// Construct a new [`DependencySnapshot`] from a [`DependencyProvider`]
-    /// capturing its entire state.
+    /// capturing its entire state. This function will recursively call all
+    /// methods on the provider with the given `names`, `version_sets`, and
+    /// `solvables`.
     pub async fn from_provider_async(
         provider: impl DependencyProvider,
         names: impl IntoIterator<Item = NameId>,
+        version_sets: impl IntoIterator<Item = VersionSetId>,
+        solvables: impl IntoIterator<Item = SolvableId>,
     ) -> Result<Self, Box<dyn Any>> {
         #[derive(Hash, Copy, Clone, Debug, Eq, PartialEq)]
         pub enum Element {
@@ -151,6 +159,8 @@ impl DependencySnapshot {
         let mut queue = names
             .into_iter()
             .map(Element::Package)
+            .chain(version_sets.into_iter().map(Element::VersionSet))
+            .chain(solvables.into_iter().map(Element::Solvable))
             .collect::<VecDeque<_>>();
         let mut seen = queue.iter().copied().collect::<HashSet<_>>();
         let mut available_hints = HashSet::default();
@@ -162,6 +172,14 @@ impl DependencySnapshot {
                     for solvable in candidates.candidates.iter() {
                         if seen.insert(Element::Solvable(*solvable)) {
                             queue.push_back(Element::Solvable(*solvable));
+                        }
+                    }
+                    for &(excluded, reason) in &candidates.excluded {
+                        if seen.insert(Element::Solvable(excluded)) {
+                            queue.push_back(Element::Solvable(excluded));
+                        }
+                        if seen.insert(Element::String(reason)) {
+                            queue.push_back(Element::String(reason));
                         }
                     }
                     available_hints.extend(candidates.hint_dependencies_available.iter().copied());
@@ -225,10 +243,16 @@ impl DependencySnapshot {
                         .get_or_cache_matching_candidates(version_set_id)
                         .await?;
 
+                    for matching_candidate in matching_candidates.iter() {
+                        if seen.insert(Element::Solvable(*matching_candidate)) {
+                            queue.push_back(Element::Solvable(*matching_candidate));
+                        }
+                    }
+
                     let version_set = VersionSet {
                         name,
                         display,
-                        matching_candidates: matching_candidates.into_iter().copied().collect(),
+                        matching_candidates: matching_candidates.iter().copied().collect(),
                     };
 
                     result.requirements.insert(version_set_id, version_set);
@@ -383,7 +407,7 @@ impl<'s> DependencyProvider for SnapshotProvider<'s> {
     ) -> Vec<SolvableId> {
         let version_set = self.version_set(version_set);
         candidates
-            .into_iter()
+            .iter()
             .copied()
             .filter(|c| version_set.matching_candidates.contains(c) != inverse)
             .collect()
