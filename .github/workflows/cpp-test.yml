@@ -45,3 +45,31 @@ jobs:
       - name: Run the tests
         run: |
           pixi run test-cpp
+
+  package:
+    name: Test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target-platform: linux-64
+          - os: ubuntu-latest
+            target-platform: linux-aarch64
+          - os: windows-latest
+            target-platform: win-64
+          - os: macos-latest
+            target-platform: osx-64
+          - os: macos-14
+            target-platform: osx-arm64
+    runs-on: ${{ matrix.os }}
+    needs: [ format_and_lint ]
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Build conda package
+        uses: prefix-dev/rattler-build-action@v0.2.9
+        with:
+          # needs to be unique for each matrix entry
+          artifact-name: package-${{ matrix.target-platform }}
+          build-args: --target-platform ${{ matrix.target-platform }}${{ matrix.target-platform == 'linux-aarch64' && ' --no-test' || '' }}
+
