@@ -81,6 +81,46 @@ if(WIN32)
     install(FILES $<TARGET_LINKER_FILE:${resolvo_cpp_impl}> TYPE LIB)
 endif()
 
+include(CMakePackageConfigHelpers)
+
+function(_resolvo_write_configure_file)
+    foreach(prop
+        IMPORTED_LOCATION IMPORTED_LOCATION_DEBUG IMPORTED_LOCATION_RELEASE
+        IMPORTED_LOCATION_RELWITHDEBINFO IMPORTED_LOCATION_MINSIZEREL
+        IMPORTED_IMPLIB IMPORTED_IMPLIB_DEBUG IMPORTED_IMPLIB_RELEASE
+        IMPORTED_IMPLIB_RELWITHDEBINFO IMPORTED_IMPLIB_MINSIZEREL)
+        get_target_property(value ${resolvo_cpp_impl} ${prop})
+
+        if(value)
+            get_filename_component(value ${value} NAME)
+            list(APPEND RESOLVO_LIB_PROPERTIES ${prop} "\${_IMPORT_PREFIX}/${CMAKE_INSTALL_LIBDIR}/${value}")
+        endif()
+    endforeach()
+
+    foreach(prop IMPORTED_NO_SONAME IMPORTED_SONAME)
+        get_target_property(value ${resolvo_cpp_impl} ${prop})
+        if(value)
+            list(APPEND RESOLVO_LIB_PROPERTIES ${prop} ${value})
+        endif()
+    endforeach()
+
+    configure_package_config_file("cmake/ResolvoConfig.cmake.in" "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfig.cmake" INSTALL_DESTINATION lib/cmake/resolvo)
+endfunction()
+
+cmake_language(DEFER CALL _resolvo_write_configure_file)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfigVersion.cmake
+    VERSION 0.1.0
+    COMPATIBILITY SameMinorVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfigVersion.cmake"
+    DESTINATION lib/cmake/Resolvo
+)
+
 if(RESOLVO_BUILD_TESTING)
     add_subdirectory(tests)
 endif()
