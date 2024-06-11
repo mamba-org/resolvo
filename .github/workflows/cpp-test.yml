@@ -28,6 +28,7 @@ jobs:
           git diff --exit-code
 
   test:
+    name: Test
     strategy:
       fail-fast: false
       matrix:
