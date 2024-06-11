@@ -19,7 +19,7 @@ build:
 requirements: 
   build: 
     - ${{ compiler('cxx') }}
-    - ${{ compiler('rust') }} >=1.75.0
+    - ${{ compiler('rust') }}
     - cmake
     - ninja
 
