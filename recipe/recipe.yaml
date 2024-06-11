@@ -1,0 +1,30 @@
+package:
+  name: resolvo-cpp
+  version: 0.1.0
+
+source: 
+  - path: ../
+
+build:
+  number: 0
+  script:
+    - if: win
+      then: |
+        cmake %CMAKE_ARGS% -GNinja %SRC_DIR%
+        ninja install
+      else: |
+        cmake ${CMAKE_ARGS} -GNinja $SRC_DIR -DRust_CARGO_TARGET=${CARGO_BUILD_TARGET}
+        ninja install
+
+requirements: 
+  build: 
+    - ${{ compiler('cxx') }}
+    - ${{ compiler('rust') }}
+    - cmake
+    - ninja
+
+about:
+  license: BSD-3-Clause
+  summary: C++ bindings for resolvo, a universal package resolver.
+  repository: https://github.com/mamba-org/resolvo
+

@@ -3,7 +3,6 @@ members = ["cpp", "tools/*"]
 resolver = "2"
 
 [workspace.package]
-name = "resolvo"
 version = "0.6.1"
 authors = ["Adolfo Ochagavía <github@adolfo.ochagavia.nl>", "Bas Zalmstra <zalmstra.bas@gmail.com>", "Tim de Jager <tdejager89@gmail.com>"]
 homepage = "https://github.com/mamba-org/resolvo"

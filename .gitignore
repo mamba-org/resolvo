@@ -24,3 +24,8 @@ build/
 .pixi
 *.egg-info
 
+# Ignore rattler-build output directory
+output/
+
+# Any resolvo snapshots in the root
+snapshot-*.json
