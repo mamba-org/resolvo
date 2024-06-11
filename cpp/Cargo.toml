@@ -10,13 +10,12 @@ repository.workspace = true
 license.workspace = true
 edition.workspace = true
 readme.workspace = true
-publish = false
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-resolvo = { path = "../" }
+resolvo = { version = "0.6.1", path = "../" }
 
 [build-dependencies]
 anyhow = "1"

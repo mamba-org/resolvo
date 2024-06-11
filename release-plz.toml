@@ -1,0 +1,5 @@
+[workspace]
+
+[[package]]
+name = "resolvo_cpp"
+publish = false
