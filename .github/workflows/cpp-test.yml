@@ -62,7 +62,7 @@ jobs:
           - os: macos-14
             target-platform: osx-arm64
     runs-on: ${{ matrix.os }}
-    needs: [ format_and_lint ]
+    needs: [ format ]
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
