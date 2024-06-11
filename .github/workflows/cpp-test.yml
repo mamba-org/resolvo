@@ -47,7 +47,7 @@ jobs:
           pixi run test-cpp
 
   package:
-    name: Test
+    name: Create conda packages
     strategy:
       matrix:
         include:
