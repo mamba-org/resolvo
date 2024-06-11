@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.1...resolvo-v0.6.2) - 2024-06-11
+
+### Added
+- release-plz resolvo_cpp
+- add rattler-build recipe ([#47](https://github.com/mamba-org/resolvo/pull/47))
+- c++ bindings ([#41](https://github.com/mamba-org/resolvo/pull/41))
+
 ## [0.6.1](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.0...resolvo-v0.6.1) - 2024-06-10
 
 ### Added
