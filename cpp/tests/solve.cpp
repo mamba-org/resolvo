@@ -73,12 +73,13 @@ struct PackageDatabase : public resolvo::DependencyProvider {
         }
 
         std::stringstream ss;
-        ss << names[candidates[solvables[0].id].name];
+        ss << names[candidates[solvables[0].id].name] << " ";
 
         bool first = true;
         for (const auto& solvable : solvables) {
             if (!first) {
                 ss << " | ";
+            } else {
                 first = false;
             }
 
