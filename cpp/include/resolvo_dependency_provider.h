@@ -18,6 +18,8 @@ using cbindgen_private::VersionSetId;
  * An interface that implements ecosystem specific logic.
  */
 struct DependencyProvider {
+    virtual ~DependencyProvider() = default;
+
     /**
      * Returns a user-friendly string representation of the specified solvable.
      *
