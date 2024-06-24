@@ -167,6 +167,11 @@ SCENARIO("Solve") {
     /// Construct a database with packages a, b, and c.
     PackageDatabase db;
 
+    // Check that PackageDatabase correctly implements the DependencyProvider interface
+    static_assert(std::has_virtual_destructor_v<PackageDatabase>);
+    static_assert(std::is_polymorphic_v<PackageDatabase>);
+    static_assert(std::is_base_of_v<resolvo::DependencyProvider, PackageDatabase>);
+
     auto a_1 = db.alloc_candidate("a", 1, {{db.alloc_requirement("b", 1, 4)}, {}});
     auto a_2 = db.alloc_candidate("a", 2, {{db.alloc_requirement("b", 1, 4)}, {}});
     auto a_3 = db.alloc_candidate("a", 3, {{db.alloc_requirement("b", 4, 7)}, {}});
