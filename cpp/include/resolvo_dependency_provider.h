@@ -18,7 +18,6 @@ using cbindgen_private::VersionSetId;
  * An interface that implements ecosystem specific logic.
  */
 struct DependencyProvider {
-
     virtual ~DependencyProvider() = default;
 
     /**
