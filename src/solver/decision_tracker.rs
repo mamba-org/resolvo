@@ -77,6 +77,11 @@ impl DecisionTracker {
     }
 
     pub(crate) fn undo_until(&mut self, level: u32) {
+        if level == 0 {
+            self.clear();
+            return;
+        }
+
         while let Some(decision) = self.stack.last() {
             if self.level(decision.solvable_id) <= level {
                 break;
