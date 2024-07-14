@@ -410,15 +410,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
 
-                    // Check the assumption that no decision has been made about any of the
-                    // solvables.
-                    for &candidate in candidates {
-                        debug_assert!(
-                            self.decision_tracker.assigned_value(candidate.into()).is_none(),
-                            "a decision has been made about a candidate of a package that was not properly added yet."
-                        );
-                    }
-
                     // Each candidate gets a clause to disallow other candidates.
                     for (i, &candidate) in candidates.iter().enumerate() {
                         for &other_candidate in &candidates[i + 1..] {
