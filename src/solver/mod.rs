@@ -34,7 +34,12 @@ struct AddClauseOutput {
     clauses_to_watch: Vec<ClauseId>,
 }
 
-/// Drives the SAT solving process
+/// Drives the SAT solving process.
+///
+/// The solver can solve for multiple solvables in addition to the root requirements
+/// (see [`Solver::solve_with_additional`]), with the solution being _cumulative_. That is,
+/// each requested solvable is subject to all the clauses introduced and decisions made
+/// in previous solvable requests.
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) async_runtime: RT,
     pub(crate) cache: SolverCache<D>,
@@ -167,6 +172,78 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         root_requirements: Vec<Requirement>,
         root_constraints: Vec<VersionSetId>,
     ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
+        self.solve_for_root(root_requirements, root_constraints)?;
+
+        let steps: Vec<_> = self.chosen_solvables().collect();
+
+        tracing::trace!("Solvables found:");
+        for step in &steps {
+            tracing::trace!(
+                " - {}",
+                InternalSolvableId::from(*step).display(self.provider())
+            );
+        }
+
+        Ok(steps)
+    }
+
+    /// Solves for the provided `root_requirements` and `root_constraints`, along with
+    /// a set of additional (optional) solvables.
+    ///
+    /// The `root_requirements` are packages that must be included in the
+    /// solution. `root_constraints` are additional constraints applicable to
+    /// individual packages that the solvable (if any) chosen for that package
+    /// must adhere to.
+    ///
+    /// The solver first solves for the root requirements and constraints, and then
+    /// tries to include in the solution as many of the additional solvables as it can.
+    /// Each additional solvable is subject to all the clauses and decisions introduced
+    /// for all the previously decided solvables in the solution.
+    ///
+    /// Unless the corresponding package has been requested by a version set in another
+    /// solvable's clauses, each additional solvable is _not_ subject to the
+    /// package-level clauses introduced in [`DependencyProvider::get_candidates`] since the
+    /// solvables have been requested specifically (not through a version set) in the solution.
+    ///
+    /// Returns [`UnsolvableOrCancelled::Unsolvable`] only if the _root_ requirements and
+    /// constraints could not be solved for; if an additional solvable is unsolvable, it is
+    /// simply not included in the solution.
+    pub fn solve_with_additional(
+        &mut self,
+        root_requirements: Vec<VersionSetId>,
+        root_constraints: Vec<VersionSetId>,
+        additional_solvables: impl IntoIterator<Item = SolvableId>,
+    ) -> Result<impl Iterator<Item = SolvableId> + '_, UnsolvableOrCancelled> {
+        self.solve_for_root(root_requirements, root_constraints)?;
+
+        for additional in additional_solvables.into_iter() {
+            let additional = additional.into();
+
+            if self.decision_tracker.assigned_value(additional).is_none() {
+                self.run_sat(additional)?;
+            }
+        }
+
+        Ok(self.chosen_solvables())
+    }
+
+    /// Returns the solvables that the solver has chosen to include in the solution so far.
+    fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
+        self.decision_tracker.stack().filter_map(|d| {
+            if d.value {
+                d.solvable_id.as_solvable()
+            } else {
+                // Ignore things that are set to false
+                None
+            }
+        })
+    }
+
+    fn solve_for_root(
+        &mut self,
+        root_requirements: Vec<VersionSetId>,
+        root_constraints: Vec<VersionSetId>,
+    ) -> Result<(), UnsolvableOrCancelled> {
         // Clear state
         self.decision_tracker.clear();
         self.negative_assertions.clear();
@@ -181,31 +258,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let root_clause = self.clauses.borrow_mut().alloc(ClauseState::root());
         assert_eq!(root_clause, ClauseId::install_root());
 
-        // Run SAT
-        self.run_sat(InternalSolvableId::root())?;
+        assert!(
+            self.run_sat(InternalSolvableId::root())?,
+            "bug: Since root is the first requested solvable, \
+                  should have returned Err instead of Ok(false) if root is unsolvable"
+        );
 
-        let steps: Vec<SolvableId> = self
-            .decision_tracker
-            .stack()
-            .filter_map(|d| {
-                if d.value {
-                    d.solvable_id.as_solvable()
-                } else {
-                    // Ignore things that are set to false
-                    None
-                }
-            })
-            .collect();
-
-        tracing::trace!("Solvables found:");
-        for step in &steps {
-            tracing::trace!(
-                " - {}",
-                InternalSolvableId::from(*step).display(self.provider())
-            );
-        }
-
-        Ok(steps)
+        Ok(())
     }
 
     /// Adds clauses for a solvable. These clauses include requirements and
@@ -751,7 +810,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             self.decision_tracker
                 .try_add_decision(
                     Decision::new(solvable, false, ClauseId::install_root()),
-                    starting_level,
+                    starting_level + 1,
                 )
                 .expect("bug: already decided - decision should have been undone");
             Ok(false)
