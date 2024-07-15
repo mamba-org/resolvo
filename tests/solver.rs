@@ -179,6 +179,7 @@ struct BundleBoxProvider {
     // duplicate requests.
     requested_candidates: RefCell<HashSet<NameId>>,
     requested_dependencies: RefCell<HashSet<SolvableId>>,
+    interned_solvables: RefCell<HashMap<(NameId, Pack), SolvableId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +314,18 @@ impl BundleBoxProvider {
             .collect::<Vec<_>>();
         DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
     }
+
+    pub fn intern_solvable(&self, name_id: NameId, pack: Pack) -> SolvableId {
+        *self
+            .interned_solvables
+            .borrow_mut()
+            .entry((name_id, pack))
+            .or_insert_with_key(|&(name_id, pack)| self.pool.intern_solvable(name_id, pack))
+    }
+
+    pub fn solvable_id(&self, name: impl Into<String>, version: impl Into<Pack>) -> SolvableId {
+        self.intern_solvable(self.pool.intern_package_name(name.into()), version.into())
+    }
 }
 
 impl Interner for BundleBoxProvider {
@@ -411,7 +424,7 @@ impl DependencyProvider for BundleBoxProvider {
         let locked = self.locked.get(package_name);
         let excluded = self.excluded.get(package_name);
         for pack in package.keys() {
-            let solvable = self.pool.intern_solvable(name, *pack);
+            let solvable = self.intern_solvable(name, *pack);
             candidates.candidates.push(solvable);
             if Some(pack) == favor {
                 candidates.favored = Some(solvable);
@@ -1177,6 +1190,102 @@ fn test_constraints() {
     insta::assert_snapshot!(result, @r###"
         a=1
         b=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec![]),
+        ("e", 1, vec!["d"]),
+        ("locked", 1, vec![]),
+        ("locked", 2, vec![]),
+    ]);
+
+    provider.set_locked("locked", 2);
+
+    let requirements = provider.requirements(&["a 0..10"]);
+    let constraints = provider.requirements(&["b 1..2", "c"]);
+
+    let extra = [
+        provider.solvable_id("b", 2),
+        provider.solvable_id("c", 1),
+        provider.solvable_id("e", 1),
+        // Does not obey the locked clause since it has not been requested
+        // in a version set by another solvable
+        provider.solvable_id("locked", 1),
+        provider.solvable_id("unknown-deps", Pack::new(1).with_unknown_deps()),
+    ];
+
+    let mut solver = Solver::new(provider);
+    let solved = solver
+        .solve_with_additional(requirements, constraints, extra)
+        .unwrap()
+        .collect();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        d=1
+        e=1
+        locked=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional_with_constrains() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("b", 3, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec!["f"]),
+        ("e", 1, vec!["c"]),
+    ]);
+
+    provider.add_package("f", 1.into(), &[], &["c 2..3"]);
+    provider.add_package("g", 1.into(), &[], &["b 2..3"]);
+    provider.add_package("h", 1.into(), &[], &["b 1..2"]);
+    provider.add_package("i", 1.into(), &[], &[]);
+    provider.add_package("j", 1.into(), &["i"], &[]);
+    provider.add_package("k", 1.into(), &["i"], &[]);
+    provider.add_package("l", 1.into(), &["j", "k"], &[]);
+
+    let requirements = provider.requirements(&["a 0..10", "e"]);
+    let constraints = provider.requirements(&["b 1..2", "c", "k 2..3"]);
+
+    let extra_solvables = [
+        provider.solvable_id("d", 1),
+        provider.solvable_id("g", 1),
+        provider.solvable_id("h", 1),
+        provider.solvable_id("j", 1),
+        provider.solvable_id("l", 1),
+        provider.solvable_id("k", 1),
+    ];
+
+    let mut solver = Solver::new(provider);
+
+    let solved = solver
+        .solve_with_additional(requirements, constraints, extra_solvables)
+        .unwrap()
+        .collect();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        e=1
+        h=1
+        i=1
+        j=1
         "###);
 }
 
