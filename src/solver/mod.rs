@@ -182,7 +182,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         assert_eq!(root_clause, ClauseId::install_root());
 
         // Run SAT
-        self.run_sat()?;
+        self.run_sat(InternalSolvableId::root())?;
 
         let steps: Vec<SolvableId> = self
             .decision_tracker
@@ -572,32 +572,49 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ///    implementation of this step.
     ///
     /// The solver loop can be found in [`Solver::resolve_dependencies`].
-    fn run_sat(&mut self) -> Result<(), UnsolvableOrCancelled> {
-        assert!(self.decision_tracker.is_empty());
-        let mut level = 0;
+    ///
+    /// Returns `Ok(true)` if a solution was found for `solvable`. If a solution was not
+    /// found, returns `Ok(false)` if some decisions have already been made by the solver
+    /// (i.e. the decision tracker stack is not empty). Otherwise, returns
+    /// [`UnsolvableOrCancelled::Unsolvable`] as an `Err` on no solution.
+    ///
+    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
+    /// returns [`UnsolvableOrCancelled::Cancelled`] as an `Err`.
+    fn run_sat(&mut self, solvable: InternalSolvableId) -> Result<bool, UnsolvableOrCancelled> {
+        let starting_level = self
+            .decision_tracker
+            .stack()
+            .next_back()
+            .map(|decision| self.decision_tracker.level(decision.solvable_id))
+            .unwrap_or(0);
+
+        let mut level = starting_level;
 
         loop {
-            if level == 0 {
-                tracing::trace!("Level 0: Resetting the decision loop");
+            if level == starting_level {
+                tracing::trace!("Level {starting_level}: Resetting the decision loop");
             } else {
                 tracing::trace!("Level {}: Starting the decision loop", level);
             }
 
-            // A level of 0 means the decision loop has been completely reset because a
-            // partial solution was invalidated by newly added clauses.
-            if level == 0 {
-                // Level 1 is the initial decision level
-                level = 1;
+            // A level of starting_level means the decision loop has been completely reset
+            // because a partial solution was invalidated by newly added clauses.
+            if level == starting_level {
+                // Level starting_level + 1 is the initial decision level
+                level = starting_level + 1;
 
                 // Assign `true` to the root solvable. This must be installed to satisfy the
                 // solution. The root solvable contains the dependencies that
                 // were injected when calling `Solver::solve`. If we can find a
                 // solution were the root is installable we found a
                 // solution that satisfies the user requirements.
-                tracing::trace!("╤══ Install <root> at level {level}",);
+                tracing::trace!(
+                    "╤══ Install {} at level {level}",
+                    solvable.display(self.provider())
+                );
                 self.decision_tracker
                     .try_add_decision(
-                        Decision::new(InternalSolvableId::root(), true, ClauseId::install_root()),
+                        Decision::new(solvable, true, ClauseId::install_root()),
                         level,
                     )
                     .expect("already decided");
@@ -605,12 +622,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // Add the clauses for the root solvable.
                 let output = self
                     .async_runtime
-                    .block_on(self.add_clauses_for_solvables(vec![InternalSolvableId::root()]))?;
+                    .block_on(self.add_clauses_for_solvables([solvable]))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
-                    tracing::trace!("Unsolvable: {:?}", clause_id);
-                    return Err(UnsolvableOrCancelled::Unsolvable(
-                        self.analyze_unsolvable(clause_id),
-                    ));
+                    return self.run_sat_process_unsolvable(solvable, starting_level, clause_id);
                 }
             }
 
@@ -625,17 +639,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             match propagate_result {
                 Ok(()) => {}
                 Err(PropagationError::Conflict(_, _, clause_id)) => {
-                    if level == 1 {
-                        return Err(UnsolvableOrCancelled::Unsolvable(
-                            self.analyze_unsolvable(clause_id),
-                        ));
+                    if level == starting_level + 1 {
+                        return self.run_sat_process_unsolvable(
+                            solvable,
+                            starting_level,
+                            clause_id,
+                        );
                     } else {
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
                         tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
                                 clause=self.clauses.borrow()[clause_id].display(self.provider()));
-                        level = 0;
-                        self.decision_tracker.clear();
+                        level = starting_level;
+                        self.decision_tracker.undo_until(starting_level);
                         continue;
                     }
                 }
@@ -678,7 +694,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     "Level {}: No new solvables selected, solution is complete",
                     level
                 );
-                return Ok(());
+                return Ok(true);
             }
 
             tracing::debug!("==== Found newly selected solvables");
@@ -707,9 +723,38 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
-                self.decision_tracker.clear();
-                level = 0;
+                self.decision_tracker.undo_until(starting_level);
+                level = starting_level;
             }
+        }
+    }
+
+    /// Decides how to terminate the solver algorithm when the given `solvable` was
+    /// deemed unsolvable by [`Solver::run_sat`].
+    ///
+    /// Returns an `Err` value of [`UnsolvableOrCancelled::Unsolvable`] only if `solvable` is
+    /// the very first solvable we are solving for. Otherwise, undoes all the decisions made
+    /// when trying to solve for `solvable`, sets it to `false` and returns `Ok(false)`.
+    fn run_sat_process_unsolvable(
+        &mut self,
+        solvable: InternalSolvableId,
+        starting_level: u32,
+        clause_id: ClauseId,
+    ) -> Result<bool, UnsolvableOrCancelled> {
+        if starting_level == 0 {
+            tracing::trace!("Unsolvable: {:?}", clause_id);
+            Err(UnsolvableOrCancelled::Unsolvable(
+                self.analyze_unsolvable(clause_id),
+            ))
+        } else {
+            self.decision_tracker.undo_until(starting_level);
+            self.decision_tracker
+                .try_add_decision(
+                    Decision::new(solvable, false, ClauseId::install_root()),
+                    starting_level,
+                )
+                .expect("bug: already decided - decision should have been undone");
+            Ok(false)
         }
     }
 
