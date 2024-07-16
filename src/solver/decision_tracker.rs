@@ -27,10 +27,6 @@ impl DecisionTracker {
         self.propagate_index = 0;
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-
     pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
         self.map.value(solvable_id)
     }
