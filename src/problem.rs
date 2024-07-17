@@ -56,7 +56,7 @@ impl Problem {
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
-                    tracing::info!("{solvable:?} is excluded");
+                    tracing::trace!("{solvable:?} is excluded");
                     let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
                     let excluded_node = excluded_nodes
                         .entry(*reason)
@@ -76,7 +76,7 @@ impl Problem {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
                     });
                     if candidates.is_empty() {
-                        tracing::info!(
+                        tracing::trace!(
                             "{package_id:?} requires {version_set_id:?}, which has no candidates"
                         );
                         graph.add_edge(
@@ -86,7 +86,7 @@ impl Problem {
                         );
                     } else {
                         for &candidate_id in candidates {
-                            tracing::info!("{package_id:?} requires {candidate_id:?}");
+                            tracing::trace!("{package_id:?} requires {candidate_id:?}");
 
                             let candidate_node =
                                 Self::add_node(&mut graph, &mut nodes, candidate_id.into());
