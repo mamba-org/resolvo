@@ -174,8 +174,8 @@ impl<D: DependencyProvider> SolverCache<D> {
                 let package_name_id = self.provider.version_set_name(version_set_id);
 
                 tracing::trace!(
-                    "Getting matching candidates for package: {:?}",
-                    self.provider.display_name(package_name_id).to_string()
+                    "Getting matching candidates for package: {}",
+                    self.provider.display_name(package_name_id)
                 );
 
                 let candidates = self.get_or_cache_candidates(package_name_id).await?;

@@ -60,12 +60,6 @@ impl ArenaId for VersionSetId {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SolvableId(pub u32);
 
-impl SolvableId {
-    pub(crate) const fn as_internal(self) -> InternalSolvableId {
-        InternalSolvableId(self.0 + 1)
-    }
-}
-
 /// Internally used id for solvables that can also represent root and null.
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]

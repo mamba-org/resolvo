@@ -199,7 +199,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         tracing::trace!("Solvables found:");
         for step in &steps {
-            tracing::trace!(" - {}", step.as_internal().display(self.provider()));
+            tracing::trace!(
+                " - {}",
+                InternalSolvableId::from(step.clone()).display(self.provider())
+            );
         }
 
         Ok(steps)
@@ -987,8 +990,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// solvable has become false, in which case it picks a new solvable to
     /// watch (if available) or triggers an assignment.
     fn propagate(&mut self, level: u32) -> Result<(), PropagationError> {
-        tracing::trace!("Propagate");
-
         if let Some(value) = self.provider().should_cancel_with_value() {
             return Err(PropagationError::Cancelled(value));
         };
@@ -996,28 +997,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Negative assertions derived from other rules (assertions are clauses that
         // consist of a single literal, and therefore do not have watches)
         for &(solvable_id, clause_id) in &self.negative_assertions {
-            tracing::trace!(
-                "Negative assertions derived from other rules: {} = false",
-                solvable_id.display(self.provider())
-            );
-
             let value = false;
             let decided = self
                 .decision_tracker
                 .try_add_decision(Decision::new(solvable_id, value, clause_id), level)
                 .map_err(|_| PropagationError::Conflict(solvable_id, value, clause_id))?;
 
-            tracing::trace!(
-                "Negative assertions derived from other rules: Decided: {}",
-                decided
-            );
-
             if decided {
-                tracing::trace!(
-                    "├─ Propagate assertion {} = {}",
-                    solvable_id.display(self.provider()),
-                    value
-                );
                 tracing::trace!(
                     "Negative assertions derived from other rules: Propagate assertion {} = {}",
                     solvable_id.display(self.provider()),
@@ -1066,11 +1052,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Watched solvables
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
             let pkg = decision.solvable_id;
-
-            tracing::trace!(
-                "Exploring watched solvables for {}",
-                pkg.display(self.provider())
-            );
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
