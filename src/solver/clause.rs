@@ -615,16 +615,18 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
             Clause::Excluded(solvable_id, reason) => {
                 write!(
                     f,
-                    "Excluded({:?}, {})",
+                    "Excluded({}({:?}), {})",
+                    solvable_id.display(self.interner),
                     solvable_id,
                     self.interner.display_string(reason)
                 )
             }
-            Clause::Learnt(learnt_id) => write!(f, "Learnt({:?})", learnt_id),
+            Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
             Clause::Requires(solvable_id, version_set_id) => {
                 write!(
                     f,
-                    "Requires({:?}, {})",
+                    "Requires({}({:?}), {})",
+                    solvable_id.display(self.interner),
                     solvable_id,
                     self.interner.display_version_set(version_set_id)
                 )
@@ -632,8 +634,10 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
             Clause::Constrains(s1, s2, version_set_id) => {
                 write!(
                     f,
-                    "Constrains({:?}, {:?}, {})",
+                    "Constrains({}({:?}), {}({:?}), {})",
+                    s1.display(self.interner),
                     s1,
+                    s2.display(self.interner),
                     s2,
                     self.interner.display_version_set(version_set_id)
                 )
@@ -641,14 +645,23 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
             Clause::ForbidMultipleInstances(s1, s2, name) => {
                 write!(
                     f,
-                    "ForbidMultipleInstances({:?}, {:?}, {})",
+                    "ForbidMultipleInstances({}({:?}), {}({:?}), {})",
+                    s1.display(self.interner),
                     s1,
+                    s2.display(self.interner),
                     s2,
                     self.interner.display_name(name)
                 )
             }
             Clause::Lock(locked, other) => {
-                write!(f, "Lock({:?}, {:?})", locked, other)
+                write!(
+                    f,
+                    "Lock({}({:?}), {}({:?}))",
+                    locked.display(self.interner),
+                    locked,
+                    other.display(self.interner),
+                    other,
+                )
             }
         }
     }

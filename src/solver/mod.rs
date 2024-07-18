@@ -190,7 +190,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Run SAT
         self.run_sat()?;
 
-        let steps = self
+        let steps: Vec<SolvableId> = self
             .decision_tracker
             .stack()
             .filter_map(|d| {
@@ -205,7 +205,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         tracing::trace!("Solvables found:");
         for step in &steps {
-            tracing::trace!(" - {}", step.display(self.provider()));
+            tracing::trace!(" - {}", step.as_internal().display(self.provider()));
         }
 
         Ok(steps)
