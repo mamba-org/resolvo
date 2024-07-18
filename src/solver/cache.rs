@@ -173,20 +173,20 @@ impl<D: DependencyProvider> SolverCache<D> {
             None => {
                 let package_name_id = self.provider.version_set_name(version_set_id);
 
-                tracing::debug!(
+                tracing::trace!(
                     "Getting matching candidates for package: {:?}",
                      self.provider.display_name(package_name_id).to_string()
                 );
 
                 let candidates = self.get_or_cache_candidates(package_name_id).await?;
-                tracing::debug!("Got {:?} matching candidates", candidates.candidates.len());
+                tracing::trace!("Got {:?} matching candidates", candidates.candidates.len());
 
                 let matching_candidates = self
                     .provider
                     .filter_candidates(&candidates.candidates, version_set_id, false)
                     .await;
 
-                tracing::debug!(
+                tracing::trace!(
                     "Filtered {:?} matching candidates",
                     matching_candidates.len()
                 );
@@ -211,13 +211,13 @@ impl<D: DependencyProvider> SolverCache<D> {
             None => {
                 let package_name_id = self.provider.version_set_name(version_set_id);
 
-                tracing::debug!(
+                tracing::trace!(
                     "Getting NON-matching candidates for package: {:?}",
                      self.provider.display_name(package_name_id).to_string()
                 );
 
                 let candidates = self.get_or_cache_candidates(package_name_id).await?;
-                tracing::debug!(
+                tracing::trace!(
                     "Got {:?} NON-matching candidates",
                     candidates.candidates.len()
                 );
@@ -230,7 +230,7 @@ impl<D: DependencyProvider> SolverCache<D> {
                     .map(Into::into)
                     .collect();
 
-                tracing::debug!(
+                tracing::trace!(
                     "Filtered {:?} matching candidates",
                     matching_candidates.len()
                 );
@@ -255,7 +255,7 @@ impl<D: DependencyProvider> SolverCache<D> {
             Some(candidates) => Ok(candidates),
             None => {
                 let package_name_id = self.provider.version_set_name(version_set_id);
-                tracing::debug!(
+                tracing::trace!(
                     "Getting sorted matching candidates for package: {:?}",
                      self.provider.display_name(package_name_id).to_string()
                 );
