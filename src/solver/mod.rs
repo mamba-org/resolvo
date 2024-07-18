@@ -34,12 +34,6 @@ struct AddClauseOutput {
     clauses_to_watch: Vec<ClauseId>,
 }
 
-impl Display for AddClauseOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AddClauseOutput {{ new_requires_clauses: {:?}, conflicting_clauses: {:?}, negative_assertions: {:?}, clauses_to_watch: {:?} }}", self.new_requires_clauses, self.conflicting_clauses, self.negative_assertions, self.clauses_to_watch)
-    }
-}
-
 /// Drives the SAT solving process
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) async_runtime: RT,
