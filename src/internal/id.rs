@@ -167,12 +167,6 @@ impl From<SolvableId> for u32 {
 #[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
 pub(crate) struct ClauseId(u32);
 
-impl Display for ClauseId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ClauseId({})", self.0)
-    }
-}
-
 impl ClauseId {
     /// There is a guarentee that ClauseId(0) will always be
     /// "Clause::InstallRoot". This assumption is verified by the solver.
