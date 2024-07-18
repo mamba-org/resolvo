@@ -1,11 +1,11 @@
-use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::ControlFlow};
-
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use itertools::{chain, Itertools};
+use std::fmt::Display;
+use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
 
 use crate::{
@@ -106,9 +106,27 @@ impl From<Box<dyn Any>> for UnsolvableOrCancelled {
 }
 
 /// An error during the propagation step
+#[derive(Debug)]
 pub(crate) enum PropagationError {
     Conflict(InternalSolvableId, bool, ClauseId),
     Cancelled(Box<dyn Any>),
+}
+
+impl Display for PropagationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropagationError::Conflict(solvable, value, clause) => {
+                write!(
+                    f,
+                    "conflict while propagating solvable {:?}, value {} caused by clause {:?}",
+                    solvable, value, clause
+                )
+            }
+            PropagationError::Cancelled(_) => {
+                write!(f, "propagation was cancelled")
+            }
+        }
+    }
 }
 
 impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
@@ -166,7 +184,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Run SAT
         self.run_sat()?;
 
-        let steps = self
+        let steps: Vec<SolvableId> = self
             .decision_tracker
             .stack()
             .filter_map(|d| {
@@ -178,6 +196,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 }
             })
             .collect();
+
+        tracing::trace!("Solvables found:");
+        for step in &steps {
+            tracing::trace!(
+                " - {}",
+                InternalSolvableId::from(*step).display(self.provider())
+            );
+        }
 
         Ok(steps)
     }
@@ -195,6 +221,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         solvable_ids: impl IntoIterator<Item = InternalSolvableId>,
     ) -> Result<AddClauseOutput, Box<dyn Any>> {
         let mut output = AddClauseOutput::default();
+
+        tracing::trace!("Add clauses for solvables");
 
         pub enum TaskResult<'i> {
             Dependencies {
@@ -311,7 +339,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         let dependency_name = self.provider().version_set_name(version_set_id);
                         if clauses_added_for_package.insert(dependency_name) {
                             tracing::trace!(
-                                "┝━ adding clauses for package '{}'",
+                                "┝━ Adding clauses for package '{}'",
                                 self.provider().display_name(dependency_name),
                             );
 
@@ -371,7 +399,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 } => {
                     // Get the solvable information and request its requirements and constraints
                     tracing::trace!(
-                        "package candidates available for {}",
+                        "Package candidates available for {}",
                         self.provider().display_name(name_id)
                     );
 
@@ -443,7 +471,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     candidates,
                 } => {
                     tracing::trace!(
-                        "sorted candidates available for {} {}",
+                        "Sorted candidates available for {} {}",
                         self.provider()
                             .display_name(self.provider().version_set_name(version_set_id)),
                         self.provider().display_version_set(version_set_id),
@@ -523,6 +551,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
         }
 
+        tracing::trace!("Done adding clauses for solvables");
+
         Ok(output)
     }
 
@@ -554,6 +584,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut level = 0;
 
         loop {
+            if level == 0 {
+                tracing::trace!("Level 0: Resetting the decision loop");
+            } else {
+                tracing::trace!("Level {}: Starting the decision loop", level);
+            }
+
             // A level of 0 means the decision loop has been completely reset because a
             // partial solution was invalidated by newly added clauses.
             if level == 0 {
@@ -565,7 +601,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // were injected when calling `Solver::solve`. If we can find a
                 // solution were the root is installable we found a
                 // solution that satisfies the user requirements.
-                tracing::info!("╤══ install <root> at level {level}",);
+                tracing::trace!("╤══ Install <root> at level {level}",);
                 self.decision_tracker
                     .try_add_decision(
                         Decision::new(InternalSolvableId::root(), true, ClauseId::install_root()),
@@ -578,14 +614,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .async_runtime
                     .block_on(self.add_clauses_for_solvables(vec![InternalSolvableId::root()]))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
+                    tracing::trace!("Unsolvable: {:?}", clause_id);
                     return Err(UnsolvableOrCancelled::Unsolvable(
                         self.analyze_unsolvable(clause_id),
                     ));
                 }
             }
 
+            tracing::trace!("Level {}: Propagating", level);
+
             // Propagate decisions from assignments above
             let propagate_result = self.propagate(level);
+
+            tracing::trace!("Propagate result: {:?}", propagate_result);
 
             // Handle propagation errors
             match propagate_result {
@@ -613,7 +654,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             // Enter the solver loop, return immediately if no new assignments have been
             // made.
+            tracing::trace!("Level {}: Resolving dependencies", level);
             level = self.resolve_dependencies(level)?;
+            tracing::trace!("Level {}: Done resolving dependencies", level);
 
             // We have a partial solution. E.g. there is a solution that satisfies all the
             // clauses that have been added so far.
@@ -638,11 +681,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             if new_solvables.is_empty() {
                 // If no new literals were selected this solution is complete and we can return.
+                tracing::trace!(
+                    "Level {}: No new solvables selected, solution is complete",
+                    level
+                );
                 return Ok(());
             }
 
+            tracing::debug!("==== Found newly selected solvables");
             tracing::debug!(
-                "====\n==Found newly selected solvables\n- {}\n====",
+                " - {}",
                 new_solvables
                     .iter()
                     .copied()
@@ -652,6 +700,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         self.clauses.borrow()[derived_from].display(self.provider()),
                     )))
             );
+            tracing::debug!("====");
 
             // Concurrently get the solvable's clauses
             let output = self.async_runtime.block_on(self.add_clauses_for_solvables(
@@ -660,7 +709,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             // Serially process the outputs, to reduce the need for synchronization
             for &clause_id in &output.conflicting_clauses {
-                tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
+                tracing::debug!("├─ Added clause {clause} introduces a conflict which invalidates the partial solution",
                                         clause=self.clauses.borrow()[clause_id].display(self.provider()));
             }
 
@@ -707,6 +756,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// it was provided by the user, and set its value to true.
     fn resolve_dependencies(&mut self, mut level: u32) -> Result<u32, UnsolvableOrCancelled> {
         loop {
+            tracing::trace!("Loop in resolve_dependencies: Level {}: Deciding", level);
+
             // Make a decision. If no decision could be made it means the problem is
             // satisfyable.
             let Some((candidate, required_by, clause_id)) = self.decide() else {
@@ -776,7 +827,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
 
         if let Some((count, (candidate, _solvable_id, clause_id))) = best_decision {
-            tracing::info!(
+            tracing::trace!(
                 "deciding to assign {}, ({}, {} possible candidates)",
                 self.provider().display_solvable(candidate),
                 self.clauses.borrow()[clause_id].display(self.provider()),
@@ -813,7 +864,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ) -> Result<u32, UnsolvableOrCancelled> {
         level += 1;
 
-        tracing::info!(
+        tracing::trace!(
             "╤══ Install {} at level {level} (required by {})",
             solvable.display(self.provider()),
             required_by.display(self.provider())
@@ -954,7 +1005,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             if decided {
                 tracing::trace!(
-                    "├─ Propagate assertion {} = {}",
+                    "Negative assertions derived from other rules: Propagate assertion {} = {}",
                     solvable_id.display(self.provider()),
                     value
                 );
