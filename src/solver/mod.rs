@@ -201,7 +201,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         for step in &steps {
             tracing::trace!(
                 " - {}",
-                InternalSolvableId::from(step.clone()).display(self.provider())
+                InternalSolvableId::from(*step).display(self.provider())
             );
         }
 
