@@ -1,0 +1,8 @@
+---
+source: tests/solver.rs
+assertion_line: 1121
+expression: "solve_for_snapshot(snapshot_provider, &[menu_req])"
+---
+dropdown=2
+icons=2
+menu=15

@@ -5,7 +5,9 @@ use crate::{internal::arena::ArenaId, Interner};
 /// The id associated to a package name
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NameId(u32);
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct NameId(pub u32);
 
 impl ArenaId for NameId {
     fn from_usize(x: usize) -> Self {
@@ -20,7 +22,9 @@ impl ArenaId for NameId {
 /// The id associated with a generic string
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-pub struct StringId(u32);
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct StringId(pub u32);
 
 impl ArenaId for StringId {
     fn from_usize(x: usize) -> Self {
@@ -35,7 +39,9 @@ impl ArenaId for StringId {
 /// The id associated with a VersionSet.
 #[repr(transparent)]
 #[derive(Clone, Default, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct VersionSetId(u32);
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct VersionSetId(pub u32);
 
 impl ArenaId for VersionSetId {
     fn from_usize(x: usize) -> Self {
@@ -50,7 +56,9 @@ impl ArenaId for VersionSetId {
 /// The id associated to a solvable
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-pub struct SolvableId(u32);
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct SolvableId(pub u32);
 
 /// Internally used id for solvables that can also represent root and null.
 #[repr(transparent)]

@@ -615,48 +615,56 @@ pub(crate) struct ClauseDisplay<'i, I: Interner> {
 impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
-            Clause::InstallRoot => write!(f, "install root"),
+            Clause::InstallRoot => write!(f, "InstallRoot"),
             Clause::Excluded(solvable_id, reason) => {
                 write!(
                     f,
-                    "{} excluded because: {}",
+                    "Excluded({}({:?}), {})",
                     solvable_id.display(self.interner),
+                    solvable_id,
                     self.interner.display_string(reason)
                 )
             }
-            Clause::Learnt(learnt_id) => write!(f, "learnt clause {learnt_id:?}"),
+            Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
             Clause::Requires(solvable_id, version_set_id) => {
                 write!(
                     f,
-                    "{} requires {} {}",
+                    "Requires({}({:?}), {})",
                     solvable_id.display(self.interner),
-                    self.interner
-                        .display_name(self.interner.version_set_name(version_set_id)),
+                    solvable_id,
                     self.interner.display_version_set(version_set_id)
                 )
             }
             Clause::Constrains(s1, s2, version_set_id) => {
                 write!(
                     f,
-                    "{} excludes {} by {}",
+                    "Constrains({}({:?}), {}({:?}), {})",
                     s1.display(self.interner),
+                    s1,
                     s2.display(self.interner),
-                    self.interner.display_version_set(version_set_id),
+                    s2,
+                    self.interner.display_version_set(version_set_id)
                 )
             }
-            Clause::Lock(locked, forbidden) => {
+            Clause::ForbidMultipleInstances(s1, s2, name) => {
                 write!(
                     f,
-                    "{} is locked, so {} is forbidden",
+                    "ForbidMultipleInstances({}({:?}), {}({:?}), {})",
+                    s1.display(self.interner),
+                    s1,
+                    s2.var_id.display(self.interner),
+                    s2,
+                    self.interner.display_name(name)
+                )
+            }
+            Clause::Lock(locked, other) => {
+                write!(
+                    f,
+                    "Lock({}({:?}), {}({:?}))",
                     locked.display(self.interner),
-                    forbidden.display(self.interner),
-                )
-            }
-            Clause::ForbidMultipleInstances(_, _, name_id) => {
-                write!(
-                    f,
-                    "only one {} allowed",
-                    self.interner.display_name(name_id)
+                    locked,
+                    other.display(self.interner),
+                    other,
                 )
             }
         }

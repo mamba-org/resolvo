@@ -16,8 +16,10 @@ use std::{
 
 use ahash::HashMap;
 use indexmap::IndexMap;
+use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
+    snapshot::{DependencySnapshot, SnapshotProvider},
     utils::{Pool, Range},
     Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, SolvableId,
     Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
@@ -152,7 +154,7 @@ impl FromStr for Spec {
 /// This provides sorting functionality for our `BundleBox` packaging system
 #[derive(Default)]
 struct BundleBoxProvider {
-    pool: Rc<Pool<Range<Pack>>>,
+    pool: Pool<Range<Pack>>,
     packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,
@@ -169,6 +171,7 @@ struct BundleBoxProvider {
     requested_dependencies: RefCell<HashSet<SolvableId>>,
 }
 
+#[derive(Debug, Clone)]
 struct BundleBoxPackageDependencies {
     dependencies: Vec<Spec>,
     constrains: Vec<Spec>,
@@ -177,6 +180,12 @@ struct BundleBoxPackageDependencies {
 impl BundleBoxProvider {
     pub fn new() -> Self {
         Default::default()
+    }
+
+    pub fn package_name(&self, name: &str) -> NameId {
+        self.pool
+            .lookup_package_name(&name.to_string())
+            .expect("package missing")
     }
 
     pub fn requirements(&self, requirements: &[&str]) -> Vec<VersionSetId> {
@@ -223,6 +232,8 @@ impl BundleBoxProvider {
         dependencies: &[&str],
         constrains: &[&str],
     ) {
+        self.pool.intern_package_name(package_name);
+
         let dependencies = dependencies
             .iter()
             .map(|dep| Spec::from_str(dep))
@@ -258,6 +269,15 @@ impl BundleBoxProvider {
         } else {
             value
         }
+    }
+
+    pub fn into_snapshot(self) -> DependencySnapshot {
+        let name_ids = self
+            .packages
+            .keys()
+            .filter_map(|name| self.pool.lookup_package_name(name))
+            .collect::<Vec<_>>();
+        DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
     }
 }
 
@@ -1088,4 +1108,58 @@ fn test_constraints() {
         a=1
         b=1
         "###);
+}
+
+#[test]
+fn test_snapshot() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("menu", 15, vec!["dropdown 2..3"]),
+        ("menu", 10, vec!["dropdown 1..2"]),
+        ("dropdown", 2, vec!["icons 2"]),
+        ("dropdown", 1, vec!["intl 3"]),
+        ("icons", 2, vec![]),
+        ("icons", 1, vec![]),
+        ("intl", 5, vec![]),
+        ("intl", 3, vec![]),
+    ]);
+
+    let menu_name_id = provider.package_name("menu");
+
+    let snapshot = provider.into_snapshot();
+
+    #[cfg(feature = "serde")]
+    serialize_snapshot(&snapshot, "snapshot_pubgrub_menu.json");
+
+    let mut snapshot_provider = snapshot.provider();
+
+    let menu_req = snapshot_provider.add_package_requirement(menu_name_id);
+
+    assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req]));
+}
+
+#[cfg(feature = "serde")]
+fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
+    let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
+    serde_json::to_writer_pretty(file, snapshot).unwrap()
+}
+
+fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
+    let mut solver = Solver::new(provider);
+    match solver.solve(root_reqs.to_vec(), Vec::new()) {
+        Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
+        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
+            // Write the problem graphviz to stderr
+            let graph = problem.graph(&solver);
+            let mut output = stderr();
+            writeln!(output, "UNSOLVABLE:").unwrap();
+            graph
+                .graphviz(&mut output, solver.provider(), true)
+                .unwrap();
+            writeln!(output, "\n").unwrap();
+
+            // Format a user friendly error message
+            problem.display_user_friendly(&solver).to_string()
+        }
+        Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
+    }
 }

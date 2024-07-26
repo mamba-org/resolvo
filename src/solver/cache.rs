@@ -171,13 +171,25 @@ impl<D: DependencyProvider> SolverCache<D> {
         match self.version_set_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.provider.version_set_name(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name).await?;
+                let package_name_id = self.provider.version_set_name(version_set_id);
+
+                tracing::trace!(
+                    "Getting matching candidates for package: {}",
+                    self.provider.display_name(package_name_id)
+                );
+
+                let candidates = self.get_or_cache_candidates(package_name_id).await?;
+                tracing::trace!("Got {:?} matching candidates", candidates.candidates.len());
 
                 let matching_candidates = self
                     .provider
                     .filter_candidates(&candidates.candidates, version_set_id, false)
                     .await;
+
+                tracing::trace!(
+                    "Filtered {:?} matching candidates",
+                    matching_candidates.len()
+                );
 
                 Ok(self
                     .version_set_candidates
@@ -197,16 +209,31 @@ impl<D: DependencyProvider> SolverCache<D> {
         match self.version_set_inverse_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.provider.version_set_name(version_set_id);
-                let candidates = self.get_or_cache_candidates(package_name).await?;
+                let package_name_id = self.provider.version_set_name(version_set_id);
 
-                let matching_candidates = self
+                tracing::trace!(
+                    "Getting NON-matching candidates for package: {:?}",
+                    self.provider.display_name(package_name_id).to_string()
+                );
+
+                let candidates = self.get_or_cache_candidates(package_name_id).await?;
+                tracing::trace!(
+                    "Got {:?} NON-matching candidates",
+                    candidates.candidates.len()
+                );
+
+                let matching_candidates: Vec<SolvableId> = self
                     .provider
                     .filter_candidates(&candidates.candidates, version_set_id, true)
                     .await
                     .into_iter()
                     .map(Into::into)
                     .collect();
+
+                tracing::trace!(
+                    "Filtered {:?} matching candidates",
+                    matching_candidates.len()
+                );
 
                 Ok(self
                     .version_set_inverse_candidates
@@ -227,11 +254,16 @@ impl<D: DependencyProvider> SolverCache<D> {
         match self.version_set_to_sorted_candidates.get(&version_set_id) {
             Some(candidates) => Ok(candidates),
             None => {
-                let package_name = self.provider.version_set_name(version_set_id);
+                let package_name_id = self.provider.version_set_name(version_set_id);
+                tracing::trace!(
+                    "Getting sorted matching candidates for package: {:?}",
+                    self.provider.display_name(package_name_id).to_string()
+                );
+
                 let matching_candidates = self
                     .get_or_cache_matching_candidates(version_set_id)
                     .await?;
-                let candidates = self.get_or_cache_candidates(package_name).await?;
+                let candidates = self.get_or_cache_candidates(package_name_id).await?;
 
                 // Sort all the candidates in order in which they should be tried by the solver.
                 let mut sorted_candidates = Vec::new();

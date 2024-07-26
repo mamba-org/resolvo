@@ -1,16 +1,17 @@
+use std::{cmp, iter::FusedIterator, marker::PhantomData};
+
 use crate::internal::arena::ArenaId;
-use std::cmp;
-use std::iter::FusedIterator;
-use std::marker::PhantomData;
 
 const VALUES_PER_CHUNK: usize = 128;
 
-/// A `Mapping<TValue>` holds a collection of `TValue`s that can be addressed by `TId`s. You can
-/// think of it as a HashMap<TId, TValue>, optimized for the case in which we know the `TId`s are
-/// contiguous.
+/// A `Mapping<TValue>` holds a collection of `TValue`s that can be addressed by
+/// `TId`s. You can think of it as a HashMap<TId, TValue>, optimized for the
+/// case in which we know the `TId`s are contiguous.
+#[derive(Clone)]
 pub struct Mapping<TId, TValue> {
     chunks: Vec<[Option<TValue>; VALUES_PER_CHUNK]>,
     len: usize,
+    max: usize,
     _phantom: PhantomData<TId>,
 }
 
@@ -35,6 +36,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
         Self {
             chunks,
             len: 0,
+            max: 0,
             _phantom: Default::default(),
         }
     }
@@ -49,7 +51,8 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
 
     /// Insert into the mapping with the specific value
     pub fn insert(&mut self, id: TId, value: TValue) {
-        let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
+        let idx = id.to_usize();
+        let (chunk, offset) = Self::chunk_and_offset(idx);
 
         // Resize to fit if needed
         if chunk >= self.chunks.len() {
@@ -58,6 +61,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
         }
         self.chunks[chunk][offset] = Some(value);
         self.len += 1;
+        self.max = self.max.max(idx);
     }
 
     /// Get a specific value in the mapping with bound checks
@@ -95,7 +99,9 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Get a specific value in the mapping without bound checks
     ///
     /// # Safety
-    /// The caller must uphold most of the safety requirements for `get_unchecked`. i.e. the id having been inserted into the Mapping before.
+    /// The caller must uphold most of the safety requirements for
+    /// `get_unchecked`. i.e. the id having been inserted into the Mapping
+    /// before.
     pub unsafe fn get_unchecked(&self, id: TId) -> &TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
         self.chunks
@@ -108,7 +114,9 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Get a specific value in the mapping without bound checks
     ///
     /// # Safety
-    /// The caller must uphold most of the safety requirements for `get_unchecked_mut`. i.e. the id having been inserted into the Mapping before.
+    /// The caller must uphold most of the safety requirements for
+    /// `get_unchecked_mut`. i.e. the id having been inserted into the Mapping
+    /// before.
     pub unsafe fn get_unchecked_mut(&mut self, id: TId) -> &mut TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
         self.chunks
@@ -126,6 +134,11 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Returns true if the Mapping is empty
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Returns the maximum id that has been inserted
+    pub(crate) fn max(&self) -> usize {
+        self.max
     }
 
     /// Defines the number of slots that can be used
@@ -176,6 +189,35 @@ impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
 }
 
 impl<'a, TId: ArenaId, TValue> FusedIterator for MappingIter<'a, TId, TValue> {}
+
+#[cfg(feature = "serde")]
+impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.chunks
+            .iter()
+            .flatten()
+            .take(self.max())
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, K: ArenaId, V: serde::Deserialize<'de>> serde::Deserialize<'de> for Mapping<K, V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = Vec::<Option<V>>::deserialize(deserializer)?;
+        let mut mapping = Mapping::with_capacity(values.len());
+        for (i, value) in values.into_iter().enumerate() {
+            if let Some(value) = value {
+                mapping.insert(K::from_usize(i), value);
+            }
+        }
+        Ok(mapping)
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,77 @@
+on:
+  push:
+    branches:
+    - "main"
+  pull_request:
+
+name: C++
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format and Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: format-cpp
+
+      - name: Ensure code is properly formatted
+        run: |
+          pixi run format-cpp
+          git diff --exit-code
+
+  test:
+    name: Test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, macOS-latest, macOS-14, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    needs: [ format ]
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: test-cpp
+
+      - name: Run the tests
+        run: |
+          pixi run test-cpp
+
+  package:
+    name: Create conda packages
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target-platform: linux-64
+          - os: ubuntu-latest
+            target-platform: linux-aarch64
+          - os: windows-latest
+            target-platform: win-64
+          - os: macos-latest
+            target-platform: osx-64
+          - os: macos-14
+            target-platform: osx-arm64
+    runs-on: ${{ matrix.os }}
+    needs: [ format ]
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Build conda package
+        uses: prefix-dev/rattler-build-action@v0.2.11
+        with:
+          recipe-path: recipe/recipe.yaml
+          # needs to be unique for each matrix entry
+          artifact-name: package-${{ matrix.target-platform }}
+          build-args: --target-platform ${{ matrix.target-platform }}${{ matrix.target-platform == 'linux-aarch64' && ' --no-test' || '' }}
+
