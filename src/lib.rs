@@ -12,6 +12,7 @@
 
 pub(crate) mod internal;
 pub mod problem;
+mod requirement;
 pub mod runtime;
 pub mod snapshot;
 mod solver;
@@ -27,6 +28,7 @@ pub use internal::{
     mapping::Mapping,
 };
 use itertools::Itertools;
+pub use requirement::Requirement;
 pub use solver::{Solver, SolverCache, UnsolvableOrCancelled};
 
 /// An object that is used by the solver to query certain properties of
