@@ -203,7 +203,7 @@ pub struct KnownDependencies {
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
-    pub requirements: Vec<VersionSetId>,
+    pub requirements: Vec<Requirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set

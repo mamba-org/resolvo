@@ -45,11 +45,11 @@ impl Requirement {
         &'i self,
         interner: &'i impl Interner,
     ) -> impl Iterator<Item = VersionSetId> + 'i {
-        match self {
-            &Requirement::Single(version_set) => {
+        match *self {
+            Requirement::Single(version_set) => {
                 itertools::Either::Left(std::iter::once(version_set))
             }
-            &Requirement::Union(version_set_union) => {
+            Requirement::Union(version_set_union) => {
                 itertools::Either::Right(interner.version_sets_in_union(version_set_union))
             }
         }
@@ -63,15 +63,15 @@ pub(crate) struct DisplayRequirement<'i, I: Interner> {
 
 impl<'i, I: Interner> Display for DisplayRequirement<'i, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.requirement {
-            &Requirement::Single(version_set) => write!(
+        match *self.requirement {
+            Requirement::Single(version_set) => write!(
                 f,
                 "{} {}",
                 self.interner
                     .display_name(self.interner.version_set_name(version_set)),
                 self.interner.display_version_set(version_set)
             ),
-            &Requirement::Union(version_set_union) => {
+            Requirement::Union(version_set_union) => {
                 let formatted_version_sets = self
                     .interner
                     .version_sets_in_union(version_set_union)

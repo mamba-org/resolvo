@@ -16,7 +16,7 @@ use futures::FutureExt;
 
 use crate::{
     internal::arena::ArenaId, Candidates, Dependencies, DependencyProvider, Interner, Mapping,
-    NameId, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
+    NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -84,12 +84,19 @@ pub struct DependencySnapshot {
     )]
     pub solvables: Mapping<SolvableId, Solvable>,
 
-    /// All the requirements in the snapshot
+    /// All the version set unions in the snapshot
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Mapping::is_empty")
     )]
-    pub requirements: Mapping<VersionSetId, VersionSet>,
+    pub version_set_unions: Mapping<VersionSetUnionId, HashSet<VersionSetId>>,
+
+    /// All the version sets in the snapshot
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Mapping::is_empty")
+    )]
+    pub version_sets: Mapping<VersionSetId, VersionSet>,
 
     /// All the packages in the snapshot
     #[cfg_attr(
@@ -151,7 +158,8 @@ impl DependencySnapshot {
 
         let mut result = Self {
             solvables: Mapping::new(),
-            requirements: Mapping::new(),
+            version_set_unions: Mapping::new(),
+            version_sets: Mapping::new(),
             packages: Mapping::new(),
             strings: Mapping::new(),
         };
@@ -206,9 +214,35 @@ impl DependencySnapshot {
                             }
                         }
                         Dependencies::Known(deps) => {
-                            for &dep in deps.requirements.iter().chain(deps.constrains.iter()) {
+                            for &dep in deps.constrains.iter() {
                                 if seen.insert(Element::VersionSet(dep)) {
                                     queue.push_back(Element::VersionSet(dep));
+                                }
+                            }
+
+                            for &requirement in deps.requirements.iter() {
+                                match requirement {
+                                    Requirement::Single(version_set) => {
+                                        if seen.insert(Element::VersionSet(version_set)) {
+                                            queue.push_back(Element::VersionSet(version_set));
+                                        }
+                                    }
+                                    Requirement::Union(version_set_union_id) => {
+                                        let version_sets: HashSet<_> = cache
+                                            .provider()
+                                            .version_sets_in_union(version_set_union_id)
+                                            .collect();
+
+                                        for &version_set in version_sets.iter() {
+                                            if seen.insert(Element::VersionSet(version_set)) {
+                                                queue.push_back(Element::VersionSet(version_set));
+                                            }
+                                        }
+
+                                        result
+                                            .version_set_unions
+                                            .insert(version_set_union_id, version_sets);
+                                    }
                                 }
                             }
                         }
@@ -255,7 +289,7 @@ impl DependencySnapshot {
                         matching_candidates: matching_candidates.iter().copied().collect(),
                     };
 
-                    result.requirements.insert(version_set_id, version_set);
+                    result.version_sets.insert(version_set_id, version_set);
                 }
             }
         }
@@ -323,7 +357,7 @@ impl<'s> SnapshotProvider<'s> {
 
     /// Adds another requirement that matches any version of a package
     pub fn add_package_requirement(&mut self, name: NameId) -> VersionSetId {
-        let id = self.snapshot.requirements.max() + self.additional_version_sets.len();
+        let id = self.snapshot.version_sets.max() + self.additional_version_sets.len();
 
         let package = self.package(name);
 
@@ -360,12 +394,12 @@ impl<'s> SnapshotProvider<'s> {
 
     fn version_set(&self, version_set: VersionSetId) -> &VersionSet {
         let idx = version_set.to_usize();
-        let max_idx = self.snapshot.requirements.max();
+        let max_idx = self.snapshot.version_sets.max();
         if idx >= max_idx {
             &self.additional_version_sets[idx - max_idx]
         } else {
             self.snapshot
-                .requirements
+                .version_sets
                 .get(version_set)
                 .expect("missing version set")
         }
@@ -399,9 +433,14 @@ impl<'s> Interner for SnapshotProvider<'s> {
 
     fn version_sets_in_union(
         &self,
-        _version_set_union: VersionSetUnionId,
+        version_set_union_id: VersionSetUnionId,
     ) -> impl Iterator<Item = VersionSetId> {
-        std::iter::empty()
+        self.snapshot
+            .version_set_unions
+            .get(version_set_union_id)
+            .expect("missing constraint")
+            .iter()
+            .copied()
     }
 }
 

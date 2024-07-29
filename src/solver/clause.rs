@@ -11,7 +11,7 @@ use crate::{
         id::{ClauseId, InternalSolvableId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{decision_map::DecisionMap, decision_tracker::DecisionTracker},
-    Interner, NameId, SolvableId,
+    Interner, NameId, Requirement, SolvableId,
 };
 
 /// Represents a single clause in the SAT problem
@@ -47,11 +47,11 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (root)
     InstallRoot,
-    /// The solvable requires the candidates associated with the version set
+    /// Makes the solvable require the candidates associated with the [`Requirement`].
     ///
     /// In SAT terms: (¬A ∨ B1 ∨ B2 ∨ ... ∨ B99), where B1 to B99 represent the
-    /// possible candidates for the provided version set
-    Requires(InternalSolvableId, VersionSetId),
+    /// possible candidates for the provided [`Requirement`].
+    Requires(InternalSolvableId, Requirement),
     /// Ensures only a single version of a package is installed
     ///
     /// Usage: generate one [`Clause::ForbidMultipleInstances`] clause for each
@@ -108,7 +108,7 @@ impl Clause {
     ///   added dynamically.
     fn requires(
         parent: InternalSolvableId,
-        requirement: VersionSetId,
+        requirement: Requirement,
         candidates: &[SolvableId],
         decision_tracker: &DecisionTracker,
     ) -> (Self, Option<[InternalSolvableId; 2]>, bool) {
@@ -228,8 +228,8 @@ impl Clause {
     pub fn visit_literals(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
-        version_set_to_sorted_candidates: &FrozenMap<
-            VersionSetId,
+        requirements_to_sorted_candidates: &FrozenMap<
+            Requirement,
             Vec<SolvableId>,
             ahash::RandomState,
         >,
@@ -254,7 +254,7 @@ impl Clause {
                     negate: true,
                 });
 
-                for &solvable_id in &version_set_to_sorted_candidates[&match_spec_id] {
+                for &solvable_id in &requirements_to_sorted_candidates[&match_spec_id] {
                     visit(Literal {
                         solvable_id: solvable_id.into(),
                         negate: false,
@@ -320,7 +320,7 @@ impl ClauseState {
     /// conflict.
     pub fn requires(
         candidate: InternalSolvableId,
-        requirement: VersionSetId,
+        requirement: Requirement,
         matching_candidates: &[SolvableId],
         decision_tracker: &DecisionTracker,
     ) -> (Self, bool) {
@@ -519,8 +519,8 @@ impl ClauseState {
     pub fn next_unwatched_variable(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
-        version_set_to_sorted_candidates: &FrozenMap<
-            VersionSetId,
+        requirement_to_sorted_candidates: &FrozenMap<
+            Requirement,
             Vec<SolvableId>,
             ahash::RandomState,
         >,
@@ -543,7 +543,7 @@ impl ClauseState {
                 .find(|&l| can_watch(l))
                 .map(|l| l.solvable_id),
             Clause::Constrains(..) | Clause::ForbidMultipleInstances(..) | Clause::Lock(..) => None,
-            Clause::Requires(solvable_id, version_set_id) => {
+            Clause::Requires(solvable_id, requirement) => {
                 // The solvable that added this clause
                 let solvable_lit = Literal {
                     solvable_id,
@@ -554,7 +554,7 @@ impl ClauseState {
                 }
 
                 // The available candidates
-                for &candidate in &version_set_to_sorted_candidates[&version_set_id] {
+                for &candidate in &requirement_to_sorted_candidates[&requirement] {
                     let lit = Literal {
                         solvable_id: candidate.into(),
                         negate: false,
@@ -622,13 +622,13 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
-            Clause::Requires(solvable_id, version_set_id) => {
+            Clause::Requires(solvable_id, requirement) => {
                 write!(
                     f,
                     "Requires({}({:?}), {})",
                     solvable_id.display(self.interner),
                     solvable_id,
-                    self.interner.display_version_set(version_set_id)
+                    requirement.display(self.interner),
                 )
             }
             Clause::Constrains(s1, s2, version_set_id) => {
@@ -850,7 +850,7 @@ mod test {
         // No conflict, all candidates available
         let (clause, conflict) = ClauseState::requires(
             parent,
-            VersionSetId::from_usize(0),
+            VersionSetId::from_usize(0).into(),
             &[candidate1, candidate2],
             &decisions,
         );
@@ -864,7 +864,7 @@ mod test {
             .unwrap();
         let (clause, conflict) = ClauseState::requires(
             parent,
-            VersionSetId::from_usize(0),
+            VersionSetId::from_usize(0).into(),
             &[candidate1, candidate2],
             &decisions,
         );
@@ -878,7 +878,7 @@ mod test {
             .unwrap();
         let (clause, conflict) = ClauseState::requires(
             parent,
-            VersionSetId::from_usize(0),
+            VersionSetId::from_usize(0).into(),
             &[candidate1, candidate2],
             &decisions,
         );
@@ -893,7 +893,7 @@ mod test {
         let panicked = std::panic::catch_unwind(|| {
             ClauseState::requires(
                 parent,
-                VersionSetId::from_usize(0),
+                VersionSetId::from_usize(0).into(),
                 &[candidate1, candidate2],
                 &decisions,
             )

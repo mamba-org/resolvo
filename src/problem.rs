@@ -15,7 +15,7 @@ use crate::{
     internal::id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
-    DependencyProvider, Interner,
+    DependencyProvider, Interner, Requirement,
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -198,21 +198,21 @@ impl ProblemNode {
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum ProblemEdge {
     /// The target node is a candidate for the dependency specified by the
-    /// version set
-    Requires(VersionSetId),
+    /// [`Requirement`]
+    Requires(Requirement),
     /// The target node is involved in a conflict, caused by `ConflictCause`
     Conflict(ConflictCause),
 }
 
 impl ProblemEdge {
-    fn try_requires(self) -> Option<VersionSetId> {
+    fn try_requires(self) -> Option<Requirement> {
         match self {
             ProblemEdge::Requires(match_spec_id) => Some(match_spec_id),
             ProblemEdge::Conflict(_) => None,
         }
     }
 
-    fn requires(self) -> VersionSetId {
+    fn requires(self) -> Requirement {
         match self {
             ProblemEdge::Requires(match_spec_id) => match_spec_id,
             ProblemEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
@@ -301,8 +301,8 @@ impl ProblemGraph {
                 };
 
                 let label = match edge.weight() {
-                    ProblemEdge::Requires(version_set_id)
-                    | ProblemEdge::Conflict(ConflictCause::Constrains(version_set_id)) => {
+                    ProblemEdge::Requires(requirement) => requirement.display(interner).to_string(),
+                    ProblemEdge::Conflict(ConflictCause::Constrains(version_set_id)) => {
                         interner.display_version_set(*version_set_id).to_string()
                     }
                     ProblemEdge::Conflict(ConflictCause::ForbidMultipleInstances)
@@ -651,7 +651,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
         top_level_indent: bool,
     ) -> fmt::Result {
         pub enum DisplayOp {
-            Requirement(VersionSetId, Vec<EdgeIndex>),
+            Requirement(Requirement, Vec<EdgeIndex>),
             Candidate(NodeIndex),
         }
 
@@ -693,7 +693,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
             let indent = indenter.get_indent();
 
             match node {
-                DisplayOp::Requirement(version_set_id, edges) => {
+                DisplayOp::Requirement(requirement, edges) => {
                     debug_assert!(!edges.is_empty());
 
                     let installable = edges.iter().any(|&e| {
@@ -701,12 +701,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         installable_nodes.contains(&target)
                     });
 
-                    let req = self
-                        .interner
-                        .display_version_set(version_set_id)
-                        .to_string();
-                    let name = self.interner.version_set_name(version_set_id);
-                    let name = self.interner.display_name(name).to_string();
+                    let req = requirement.display(self.interner).to_string();
 
                     let target_nx = graph.edge_endpoints(edges[0]).unwrap().1;
                     let missing =
@@ -714,22 +709,19 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                     if missing {
                         // No candidates for requirement
                         if top_level {
-                            writeln!(f, "{indent}No candidates were found for {name} {req}.")?;
+                            writeln!(f, "{indent}No candidates were found for {req}.")?;
                         } else {
-                            writeln!(
-                                f,
-                                "{indent}{name} {req}, for which no candidates were found.",
-                            )?;
+                            writeln!(f, "{indent}{req}, for which no candidates were found.",)?;
                         }
                     } else if installable {
                         // Package can be installed (only mentioned for top-level requirements)
                         if top_level {
                             writeln!(
                                 f,
-                                "{indent}{name} {req} can be installed with any of the following options:"
+                                "{indent}{req} can be installed with any of the following options:"
                             )?;
                         } else {
-                            writeln!(f, "{indent}{name} {req}, which can be installed with any of the following options:")?;
+                            writeln!(f, "{indent}{req}, which can be installed with any of the following options:")?;
                         }
 
                         let children: Vec<_> = edges
@@ -780,9 +772,9 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         // Package cannot be installed (the conflicting requirement is further down
                         // the tree)
                         if top_level {
-                            writeln!(f, "{indent}{name} {req} cannot be installed because there are no viable options:")?;
+                            writeln!(f, "{indent}{req} cannot be installed because there are no viable options:")?;
                         } else {
-                            writeln!(f, "{indent}{name} {req}, which cannot be installed because there are no viable options:")?;
+                            writeln!(f, "{indent}{req}, which cannot be installed because there are no viable options:")?;
                         }
 
                         let children: Vec<_> = edges
