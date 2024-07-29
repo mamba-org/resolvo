@@ -52,10 +52,7 @@ impl WatchMap {
         clause.watched_literals[watch_index] = new_watch;
         clause.link_to_clause(
             watch_index,
-            *self
-                .map
-                .get(new_watch)
-                .expect("linking to unknown solvable"),
+            self.map.get(new_watch).copied().unwrap_or(ClauseId::null()),
         );
         self.map.insert(new_watch, clause_id);
     }
