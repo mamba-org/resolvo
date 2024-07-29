@@ -196,7 +196,7 @@ impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {
         self.chunks
             .iter()
             .flatten()
-            .take(self.max())
+            .take(self.max() + 1)
             .collect::<Vec<_>>()
             .serialize(serializer)
     }
