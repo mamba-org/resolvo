@@ -23,7 +23,7 @@ use std::{
 };
 
 pub use internal::{
-    id::{NameId, SolvableId, StringId, VersionSetId},
+    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     mapping::Mapping,
 };
 use itertools::Itertools;
@@ -87,6 +87,12 @@ pub trait Interner {
 
     /// Returns the name of the package for the given solvable.
     fn solvable_name(&self, solvable: SolvableId) -> NameId;
+
+    /// Returns the version sets comprising the given union.
+    fn version_sets_in_union(
+        &self,
+        version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId>;
 }
 
 /// Defines implementation specific behavior for the solver and a way for the

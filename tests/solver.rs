@@ -22,7 +22,7 @@ use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::{Pool, Range},
     Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, SolvableId,
-    Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
 };
 use tracing_test::traced_test;
 
@@ -318,6 +318,13 @@ impl Interner for BundleBoxProvider {
 
     fn solvable_name(&self, solvable: SolvableId) -> NameId {
         self.pool.resolve_solvable(solvable).name
+    }
+
+    fn version_sets_in_union(
+        &self,
+        _version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId> {
+        std::iter::empty()
     }
 }
 

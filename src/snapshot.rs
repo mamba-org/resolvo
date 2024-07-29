@@ -16,7 +16,7 @@ use futures::FutureExt;
 
 use crate::{
     internal::arena::ArenaId, Candidates, Dependencies, DependencyProvider, Interner, Mapping,
-    NameId, SolvableId, SolverCache, StringId, VersionSetId,
+    NameId, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -395,6 +395,13 @@ impl<'s> Interner for SnapshotProvider<'s> {
 
     fn solvable_name(&self, solvable: SolvableId) -> NameId {
         self.solvable(solvable).name
+    }
+
+    fn version_sets_in_union(
+        &self,
+        _version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId> {
+        std::iter::empty()
     }
 }
 
