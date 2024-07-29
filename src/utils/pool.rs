@@ -6,7 +6,8 @@ use std::{
 use crate::internal::{
     arena::Arena,
     frozen_copy_map::FrozenCopyMap,
-    id::{NameId, SolvableId, StringId, VersionSetId},
+    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
+    small_vec::SmallVec,
 };
 
 /// A solvable represents a single candidate of a package.
@@ -47,6 +48,8 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
 
     /// Map from version set to the id of their interned counterpart
     version_set_to_id: FrozenCopyMap<(NameId, VS), VersionSetId, ahash::RandomState>,
+
+    version_set_unions: Arena<VersionSetUnionId, SmallVec<VersionSetId>>,
 }
 
 impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
@@ -61,6 +64,7 @@ impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
             string_to_ids: Default::default(),
             version_set_to_id: Default::default(),
             version_sets: Arena::new(),
+            version_set_unions: Arena::new(),
         }
     }
 }
@@ -181,6 +185,32 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
     /// Panics if the version set is not found in the pool
     pub fn resolve_version_set_package_name(&self, id: VersionSetId) -> NameId {
         self.version_sets[id].0
+    }
+
+    /// Interns a union of two or more version sets and returns its [`VersionSetUnionId`].
+    ///
+    /// Version set unions are *not* deduplicated, and a unique id is returned on every
+    /// invocation.
+    pub fn intern_version_set_union(
+        &self,
+        first: VersionSetId,
+        others: impl Iterator<Item = VersionSetId>,
+    ) -> VersionSetUnionId {
+        self.version_set_unions
+            .alloc(others.fold(SmallVec::one(first), |mut vec, version_set| {
+                vec.push(version_set);
+                vec
+            }))
+    }
+
+    /// Returns the version sets in the version set union with the given id.
+    ///
+    /// Panics if there is no union with the given id.
+    pub fn resolve_version_set_union(
+        &self,
+        id: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId> + '_ {
+        self.version_set_unions[id].iter().copied()
     }
 }
 
