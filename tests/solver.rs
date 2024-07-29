@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    borrow::Borrow,
     cell::{Cell, RefCell},
     collections::HashSet,
     fmt::{Debug, Display, Formatter},
@@ -21,8 +22,9 @@ use itertools::Itertools;
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::{Pool, Range},
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, SolvableId,
-    Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
+    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Requirement,
+    SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    VersionSetUnionId,
 };
 use tracing_test::traced_test;
 
@@ -116,6 +118,14 @@ impl Spec {
     pub fn new(name: String, versions: Range<Pack>) -> Self {
         Self { name, versions }
     }
+
+    pub fn parse_union(
+        spec: &str,
+    ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
+        spec.split('|')
+            .map(str::trim)
+            .map(|dep| Spec::from_str(dep))
+    }
 }
 
 impl FromStr for Spec {
@@ -173,7 +183,7 @@ struct BundleBoxProvider {
 
 #[derive(Debug, Clone)]
 struct BundleBoxPackageDependencies {
-    dependencies: Vec<Spec>,
+    dependencies: Vec<Vec<Spec>>,
     constrains: Vec<Spec>,
 }
 
@@ -188,16 +198,40 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements(&self, requirements: &[&str]) -> Vec<VersionSetId> {
+    pub fn requirements<R: From<VersionSetId>>(&self, requirements: &[&str]) -> Vec<R> {
         requirements
             .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
-            .map(|spec| {
-                let dep_name = self.pool.intern_package_name(&spec.name);
-                self.pool
-                    .intern_version_set(dep_name, spec.versions.clone())
+            .map(|spec| self.intern_version_set(&spec))
+            .map(From::from)
+            .collect()
+    }
+
+    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<Requirement> {
+        requirements
+            .iter()
+            .map(|deps| {
+                let specs = Spec::parse_union(deps).map(Result::unwrap);
+                self.intern_version_set_union(specs).into()
             })
             .collect()
+    }
+
+    pub fn intern_version_set(&self, spec: &Spec) -> VersionSetId {
+        let dep_name = self.pool.intern_package_name(&spec.name);
+        self.pool
+            .intern_version_set(dep_name, spec.versions.clone())
+    }
+
+    pub fn intern_version_set_union(
+        &self,
+        specs: impl IntoIterator<Item = impl Borrow<Spec>>,
+    ) -> VersionSetUnionId {
+        let mut specs = specs
+            .into_iter()
+            .map(|spec| self.intern_version_set(spec.borrow()));
+        self.pool
+            .intern_version_set_union(specs.next().unwrap(), specs)
     }
 
     pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
@@ -236,7 +270,7 @@ impl BundleBoxProvider {
 
         let dependencies = dependencies
             .iter()
-            .map(|dep| Spec::from_str(dep))
+            .map(|dep| Spec::parse_union(dep).collect())
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -319,12 +353,11 @@ impl Interner for BundleBoxProvider {
     fn solvable_name(&self, solvable: SolvableId) -> NameId {
         self.pool.resolve_solvable(solvable).name
     }
-
     fn version_sets_in_union(
         &self,
-        _version_set_union: VersionSetUnionId,
+        version_set_union: VersionSetUnionId,
     ) -> impl Iterator<Item = VersionSetId> {
-        std::iter::empty()
+        self.pool.resolve_version_set_union(version_set_union)
     }
 }
 
@@ -443,9 +476,33 @@ impl DependencyProvider for BundleBoxProvider {
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
         for req in &deps.dependencies {
-            let dep_name = self.pool.intern_package_name(&req.name);
-            let dep_spec = self.pool.intern_version_set(dep_name, req.versions.clone());
-            result.requirements.push(dep_spec);
+            let mut remaining_req_specs = req.iter();
+
+            let first = remaining_req_specs
+                .next()
+                .expect("Dependency spec must have at least one constraint");
+
+            let first_name = self.pool.intern_package_name(&first.name);
+            let first_version_set = self
+                .pool
+                .intern_version_set(first_name, first.versions.clone());
+
+            let requirement = if remaining_req_specs.len() == 0 {
+                first_version_set.into()
+            } else {
+                let other_version_sets = remaining_req_specs.map(|spec| {
+                    self.pool.intern_version_set(
+                        self.pool.intern_package_name(&spec.name),
+                        spec.versions.clone(),
+                    )
+                });
+
+                self.pool
+                    .intern_version_set_union(first_version_set, other_version_sets)
+                    .into()
+            };
+
+            result.requirements.push(requirement);
         }
 
         for req in &deps.constrains {
@@ -516,7 +573,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     provider.sleep_before_return = true;
 
-    let requirements = provider.requirements(specs);
+    let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
     match solver.solve(requirements, Vec::new()) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
@@ -841,6 +898,28 @@ fn test_resolve_cyclic() {
 }
 
 #[test]
+fn test_resolve_union_requirements() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec![]),
+        ("b", 1, vec![]),
+        ("c", 1, vec!["a"]),
+        ("d", 1, vec!["b"]),
+        ("e", 1, vec!["a | b"]),
+    ]);
+
+    // Make d conflict with a=1
+    provider.add_package("f", 1.into(), &["b"], &["a 2"]);
+
+    let result = solve_snapshot(provider, &["c | d", "e", "f"]);
+    assert_snapshot!(result, @r###"
+        b=1
+        d=1
+        e=1
+        f=1
+        "###);
+}
+
+#[test]
 fn test_unsat_locked_and_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[
         ("asdf", 1, vec!["c 2"]),
@@ -1128,6 +1207,32 @@ fn test_snapshot() {
     assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req]));
 }
 
+#[test]
+fn test_snapshot_union_requirements() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("icons", 2, vec![]),
+        ("icons", 1, vec![]),
+        ("intl", 5, vec![]),
+        ("intl", 3, vec![]),
+        ("union", 1, vec!["icons 2 | intl"]),
+    ]);
+
+    let intl_name_id = provider.package_name("intl");
+    let union_name_id = provider.package_name("union");
+
+    let snapshot = provider.into_snapshot();
+
+    let mut snapshot_provider = snapshot.provider();
+
+    let intl_req = snapshot_provider.add_package_requirement(intl_name_id);
+    let union_req = snapshot_provider.add_package_requirement(union_name_id);
+
+    assert_snapshot!(solve_for_snapshot(
+        snapshot_provider,
+        &[intl_req, union_req]
+    ));
+}
+
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
@@ -1136,7 +1241,10 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
 
 fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
     let mut solver = Solver::new(provider);
-    match solver.solve(root_reqs.to_vec(), Vec::new()) {
+    match solver.solve(
+        root_reqs.iter().copied().map(Into::into).collect(),
+        Vec::new(),
+    ) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
             // Write the problem graphviz to stderr

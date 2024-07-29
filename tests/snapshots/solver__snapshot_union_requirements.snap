@@ -1,0 +1,6 @@
+---
+source: tests/solver.rs
+expression: "solve_for_snapshot(snapshot_provider, &[intl_req, union_req])"
+---
+intl=5
+union=1
