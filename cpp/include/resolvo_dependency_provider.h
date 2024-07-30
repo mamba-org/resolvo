@@ -13,6 +13,7 @@ using cbindgen_private::NameId;
 using cbindgen_private::SolvableId;
 using cbindgen_private::StringId;
 using cbindgen_private::VersionSetId;
+using cbindgen_private::VersionSetUnionId;
 
 /**
  * An interface that implements ecosystem specific logic.
@@ -76,6 +77,11 @@ struct DependencyProvider {
     virtual NameId solvable_name(SolvableId solvable_id) = 0;
 
     /**
+     * Returns the version sets comprising the given union.
+     */
+    virtual Slice<VersionSetId> version_sets_in_union(VersionSetUnionId version_set_union_id) = 0;
+
+    /**
      * Obtains a list of solvables that should be considered when a package
      * with the given name is requested.
      */
@@ -131,6 +137,11 @@ extern "C" inline NameId bridge_version_set_name(void *data, VersionSetId versio
 }
 extern "C" inline NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
     return reinterpret_cast<DependencyProvider *>(data)->solvable_name(solvable_id);
+}
+extern "C" inline Slice<VersionSetId> bridge_version_sets_in_union(
+    void *data, VersionSetUnionId version_set_union_id) {
+    return reinterpret_cast<DependencyProvider *>(data)->version_sets_in_union(
+        version_set_union_id);
 }
 
 extern "C" inline void bridge_get_candidates(void *data, NameId package, Candidates *result) {

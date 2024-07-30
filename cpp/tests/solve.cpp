@@ -16,9 +16,9 @@ struct Candidate {
 };
 
 /**
- * A requirement for a package.
+ * A version set for a package.
  */
-struct Requirement {
+struct VersionSet {
     resolvo::NameId name;
     uint32_t version_start;
     uint32_t version_end;
@@ -31,17 +31,45 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     resolvo::Pool<resolvo::NameId, resolvo::String> names;
     resolvo::Pool<resolvo::StringId, resolvo::String> strings;
     std::vector<Candidate> candidates;
-    std::vector<Requirement> requirements;
+    std::vector<VersionSet> version_sets;
+    std::vector<std::vector<resolvo::VersionSetId>> version_set_unions;
 
     /**
-     * Allocates a new requirement and return the id of the requirement.
+     * Allocates a new version set and return the id of the version set.
      */
-    resolvo::VersionSetId alloc_requirement(std::string_view package, uint32_t version_start,
+    resolvo::VersionSetId alloc_version_set(std::string_view package, uint32_t version_start,
                                             uint32_t version_end) {
         auto name_id = names.alloc(std::move(package));
-        auto id = resolvo::VersionSetId{static_cast<uint32_t>(requirements.size())};
-        requirements.push_back(Requirement{name_id, version_start, version_end});
+        auto id = resolvo::VersionSetId{static_cast<uint32_t>(version_sets.size())};
+        version_sets.push_back(VersionSet{name_id, version_start, version_end});
         return id;
+    }
+
+    /**
+     * Allocates a new requirement for a single version set.
+     */
+    resolvo::Requirement alloc_requirement(std::string_view package, uint32_t version_start,
+                                           uint32_t version_end) {
+        auto id = alloc_version_set(package, version_start, version_end);
+        return resolvo::requirement_single(id);
+    }
+
+    /**
+     * Allocates a new requirement for a version set union.
+     */
+    resolvo::Requirement alloc_requirement_union(
+        std::initializer_list<std::tuple<std::string_view, uint32_t, uint32_t>> version_sets) {
+        std::vector<resolvo::VersionSetId> version_set_union{version_sets.size()};
+
+        auto version_sets_it = version_sets.begin();
+        for (size_t i = 0; i < version_sets.size(); ++i, ++version_sets_it) {
+            auto [package, version_start, version_end] = *version_sets_it;
+            version_set_union[i] = alloc_version_set(package, version_start, version_end);
+        }
+
+        auto id = resolvo::VersionSetUnionId{static_cast<uint32_t>(version_set_unions.size())};
+        version_set_unions.push_back(std::move(version_set_union));
+        return resolvo::requirement_union(id);
     }
 
     /**
@@ -90,7 +118,7 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     }
 
     resolvo::String display_version_set(resolvo::VersionSetId version_set) override {
-        const auto& req = requirements[version_set.id];
+        const auto& req = version_sets[version_set.id];
         std::stringstream ss;
         ss << req.version_start << ".." << req.version_end;
         return resolvo::String(ss.str());
@@ -101,11 +129,17 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     }
 
     resolvo::NameId version_set_name(resolvo::VersionSetId version_set_id) override {
-        return requirements[version_set_id.id].name;
+        return version_sets[version_set_id.id].name;
     }
 
     resolvo::NameId solvable_name(resolvo::SolvableId solvable_id) override {
         return candidates[solvable_id.id].name;
+    }
+
+    resolvo::Slice<resolvo::VersionSetId> version_sets_in_union(
+        resolvo::VersionSetUnionId version_set_union_id) override {
+        const auto& version_set_ids = version_set_unions[version_set_union_id.id];
+        return {version_set_ids.data(), version_set_ids.size()};
     }
 
     resolvo::Candidates get_candidates(resolvo::NameId package) override {
@@ -137,11 +171,11 @@ struct PackageDatabase : public resolvo::DependencyProvider {
         resolvo::Slice<resolvo::SolvableId> solvables, resolvo::VersionSetId version_set_id,
         bool inverse) override {
         resolvo::Vector<resolvo::SolvableId> result;
-        const auto& requirement = requirements[version_set_id.id];
+        const auto& version_set = version_sets[version_set_id.id];
         for (auto solvable : solvables) {
             const auto& candidate = candidates[solvable.id];
-            bool matches = candidate.version >= requirement.version_start &&
-                           candidate.version < requirement.version_end;
+            bool matches = candidate.version >= version_set.version_start &&
+                           candidate.version < version_set.version_end;
             if (matches != inverse) {
                 result.push_back(solvable);
             }
@@ -183,9 +217,9 @@ SCENARIO("Solve") {
     auto c_1 = db.alloc_candidate("c", 1, {});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::VersionSetId> requirements = {db.alloc_requirement("a", 1, 3)};
-    resolvo::Vector<resolvo::VersionSetId> constraints = {db.alloc_requirement("b", 1, 3),
-                                                          db.alloc_requirement("c", 1, 3)};
+    resolvo::Vector<resolvo::Requirement> requirements = {db.alloc_requirement("a", 1, 3)};
+    resolvo::Vector<resolvo::VersionSetId> constraints = {db.alloc_version_set("b", 1, 3),
+                                                          db.alloc_version_set("c", 1, 3)};
 
     // Solve the problem
     resolvo::Vector<resolvo::SolvableId> result;
@@ -195,4 +229,47 @@ SCENARIO("Solve") {
     REQUIRE(result.size() == 2);
     REQUIRE(result[0] == a_2);
     REQUIRE(result[1] == b_2);
+}
+
+SCENARIO("Solve Union") {
+    /// Construct a database with packages a, b, and c.
+    PackageDatabase db;
+
+    // Check that PackageDatabase correctly implements the DependencyProvider interface
+    static_assert(std::has_virtual_destructor_v<PackageDatabase>);
+    static_assert(std::is_polymorphic_v<PackageDatabase>);
+    static_assert(std::is_base_of_v<resolvo::DependencyProvider, PackageDatabase>);
+
+    auto a_1 = db.alloc_candidate("a", 1, {});
+
+    auto b_1 = db.alloc_candidate("b", 1, {});
+
+    auto c_1 = db.alloc_candidate("c", 1, {{db.alloc_requirement("a", 1, 10)}, {}});
+
+    auto d_1 = db.alloc_candidate("d", 1, {{db.alloc_requirement("b", 1, 10)}, {}});
+
+    auto e_1 = db.alloc_candidate("e", 1,
+                                  {{db.alloc_requirement_union({{"a", 1, 10}, {"b", 1, 10}})}, {}});
+
+    auto f_1 = db.alloc_candidate(
+        "f", 1, {{db.alloc_requirement("b", 1, 10)}, {db.alloc_version_set("a", 10, 20)}});
+
+    // Construct a problem to be solved by the solver
+    resolvo::Vector<resolvo::Requirement> requirements = {
+        db.alloc_requirement_union({{"c", 1, 10}, {"d", 1, 10}}),
+        db.alloc_requirement("e", 1, 10),
+        db.alloc_requirement("f", 1, 10),
+    };
+    resolvo::Vector<resolvo::VersionSetId> constraints = {};
+
+    // Solve the problem
+    resolvo::Vector<resolvo::SolvableId> result;
+    resolvo::solve(db, requirements, constraints, result);
+
+    // Check the result
+    REQUIRE(result.size() == 4);
+    REQUIRE(result[0] == f_1);
+    REQUIRE(result[1] == e_1);
+    REQUIRE(result[2] == b_1);
+    REQUIRE(result[3] == d_1);
 }
