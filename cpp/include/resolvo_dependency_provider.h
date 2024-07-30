@@ -138,6 +138,10 @@ extern "C" inline NameId bridge_version_set_name(void *data, VersionSetId versio
 extern "C" inline NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
     return reinterpret_cast<DependencyProvider *>(data)->solvable_name(solvable_id);
 }
+
+// HACK(clang): For some reason, clang needs this to know that the return type is complete
+static_assert(sizeof(Slice<VersionSetId>));
+
 extern "C" inline Slice<VersionSetId> bridge_version_sets_in_union(
     void *data, VersionSetUnionId version_set_union_id) {
     return reinterpret_cast<DependencyProvider *>(data)->version_sets_in_union(
