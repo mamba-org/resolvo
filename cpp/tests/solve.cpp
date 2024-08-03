@@ -216,19 +216,27 @@ SCENARIO("Solve") {
 
     auto c_1 = db.alloc_candidate("c", 1, {});
 
+    const auto d_1 = db.alloc_candidate("d", 1, {});
+
     // Construct a problem to be solved by the solver
     resolvo::Vector<resolvo::Requirement> requirements = {db.alloc_requirement("a", 1, 3)};
-    resolvo::Vector<resolvo::VersionSetId> constraints = {db.alloc_version_set("b", 1, 3),
-                                                          db.alloc_version_set("c", 1, 3)};
+    resolvo::Vector<resolvo::VersionSetId> constraints = {
+        db.alloc_version_set("b", 1, 3),
+        db.alloc_version_set("c", 1, 3),
+        db.alloc_version_set("d", 2, 2),
+    };
+    resolvo::Vector soft_requirements{c_1, d_1};
 
     // Solve the problem
     resolvo::Vector<resolvo::SolvableId> result;
-    resolvo::solve(db, requirements, constraints, result);
+    resolvo::Problem problem = {requirements, constraints, soft_requirements};
+    resolvo::solve(db, problem, result);
 
     // Check the result
-    REQUIRE(result.size() == 2);
+    REQUIRE(result.size() == 3);
     REQUIRE(result[0] == a_2);
     REQUIRE(result[1] == b_2);
+    REQUIRE(result[2] == c_1);
 }
 
 SCENARIO("Solve Union") {
@@ -264,7 +272,9 @@ SCENARIO("Solve Union") {
 
     // Solve the problem
     resolvo::Vector<resolvo::SolvableId> result;
-    resolvo::solve(db, requirements, constraints, result);
+    resolvo::Problem problem = {requirements, constraints, {}};
+    resolvo::solve(db, problem, result);
+    ;
 
     // Check the result
     REQUIRE(result.size() == 4);

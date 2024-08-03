@@ -34,12 +34,30 @@ struct AddClauseOutput {
     clauses_to_watch: Vec<ClauseId>,
 }
 
+/// Describes the problem that is to be solved by the solver.
+#[derive(Default)]
+pub struct Problem {
+    /// The requirements that _must_ have one candidate solvable be included in the
+    /// solution.
+    pub requirements: Vec<Requirement>,
+
+    /// Additional constraints imposed on individual packages that the solvable (if any)
+    /// chosen for that package _must_ adhere to.
+    pub constraints: Vec<VersionSetId>,
+
+    /// A set of additional requirements that the solver should _try_ and fulfill once it has
+    /// found a solution to the main problem.
+    ///
+    /// An unsatisfiable soft requirement does not cause a conflict; the solver will try
+    /// and fulfill as many soft requirements as possible and skip the unsatisfiable ones.
+    ///
+    /// Soft requirements are currently only specified as individual solvables to be
+    /// included in the solution, however in the future they will be able to be specified
+    /// as version sets.
+    pub soft_requirements: Vec<SolvableId>,
+}
+
 /// Drives the SAT solving process.
-///
-/// The solver can solve for multiple solvables in addition to the root requirements
-/// (see [`Solver::solve_with_additional`]), with the solution being _cumulative_. That is,
-/// each requested solvable is subject to all the clauses introduced and decisions made
-/// in previous solvable requests.
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) async_runtime: RT,
     pub(crate) cache: SolverCache<D>,
@@ -160,98 +178,37 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
     }
 
-    /// Solves for the provided `root_requirements` and `root_constraints`. The
-    /// `root_requirements` are package that will be included in the
-    /// solution. `root_constraints` are additional constrains which do not
-    /// necesarily need to be included in the solution.
-    ///
-    /// Returns a [`Conflict`] if no solution was found, which provides ways to
-    /// inspect the causes and report them to the user.
-    pub fn solve(
-        &mut self,
-        root_requirements: Vec<Requirement>,
-        root_constraints: Vec<VersionSetId>,
-    ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
-        self.solve_for_root(root_requirements, root_constraints)?;
-
-        let steps: Vec<_> = self.chosen_solvables().collect();
-
-        tracing::trace!("Solvables found:");
-        for step in &steps {
-            tracing::trace!(
-                " - {}",
-                InternalSolvableId::from(*step).display(self.provider())
-            );
-        }
-
-        Ok(steps)
-    }
-
-    /// Solves for the provided `root_requirements` and `root_constraints`, along with
-    /// a set of additional (optional) solvables.
-    ///
-    /// The `root_requirements` are packages that must be included in the
-    /// solution. `root_constraints` are additional constraints applicable to
-    /// individual packages that the solvable (if any) chosen for that package
-    /// must adhere to.
+    /// Solves the given [`Problem`].
     ///
     /// The solver first solves for the root requirements and constraints, and then
-    /// tries to include in the solution as many of the additional solvables as it can.
-    /// Each additional solvable is subject to all the clauses and decisions introduced
+    /// tries to include in the solution as many of the soft requirements as it can.
+    /// Each soft requirement is subject to all the clauses and decisions introduced
     /// for all the previously decided solvables in the solution.
     ///
     /// Unless the corresponding package has been requested by a version set in another
-    /// solvable's clauses, each additional solvable is _not_ subject to the
+    /// solvable's clauses, each soft requirement is _not_ subject to the
     /// package-level clauses introduced in [`DependencyProvider::get_candidates`] since the
     /// solvables have been requested specifically (not through a version set) in the solution.
     ///
-    /// Returns [`UnsolvableOrCancelled::Unsolvable`] only if the _root_ requirements and
-    /// constraints could not be solved for; if an additional solvable is unsolvable, it is
-    /// simply not included in the solution.
-    pub fn solve_with_additional(
-        &mut self,
-        root_requirements: Vec<VersionSetId>,
-        root_constraints: Vec<VersionSetId>,
-        additional_solvables: impl IntoIterator<Item = SolvableId>,
-    ) -> Result<impl Iterator<Item = SolvableId> + '_, UnsolvableOrCancelled> {
-        self.solve_for_root(root_requirements, root_constraints)?;
-
-        for additional in additional_solvables.into_iter() {
-            let additional = additional.into();
-
-            if self.decision_tracker.assigned_value(additional).is_none() {
-                self.run_sat(additional)?;
-            }
-        }
-
-        Ok(self.chosen_solvables())
-    }
-
-    /// Returns the solvables that the solver has chosen to include in the solution so far.
-    fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
-        self.decision_tracker.stack().filter_map(|d| {
-            if d.value {
-                d.solvable_id.as_solvable()
-            } else {
-                // Ignore things that are set to false
-                None
-            }
-        })
-    }
-
-    fn solve_for_root(
-        &mut self,
-        root_requirements: Vec<VersionSetId>,
-        root_constraints: Vec<VersionSetId>,
-    ) -> Result<(), UnsolvableOrCancelled> {
-        // Clear state
+    /// # Returns
+    ///
+    /// If a solution was found, returns a [`Vec`] of the solvables included in the solution.
+    ///
+    /// If no solution to the _root_ requirements and constraints was found, returns a
+    /// [`Conflict`] wrapped in a [`UnsolvableOrCancelled::Unsolvable`], which provides ways to
+    /// inspect the causes and report them to the user. If a soft requirement is unsolvable,
+    /// it is simply not included in the solution.
+    ///
+    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
+    /// returns an [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
+    pub fn solve(&mut self, problem: Problem) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
         self.decision_tracker.clear();
         self.negative_assertions.clear();
         self.learnt_clauses.clear();
         self.learnt_why = Mapping::new();
         self.clauses = Default::default();
-        self.root_requirements = root_requirements;
-        self.root_constraints = root_constraints;
+        self.root_requirements = problem.requirements;
+        self.root_constraints = problem.constraints;
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
@@ -264,7 +221,27 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                   should have returned Err instead of Ok(false) if root is unsolvable"
         );
 
-        Ok(())
+        for additional in problem.soft_requirements {
+            let additional = additional.into();
+
+            if self.decision_tracker.assigned_value(additional).is_none() {
+                self.run_sat(additional)?;
+            }
+        }
+
+        Ok(self.chosen_solvables().collect())
+    }
+
+    /// Returns the solvables that the solver has chosen to include in the solution so far.
+    fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
+        self.decision_tracker.stack().filter_map(|d| {
+            if d.value {
+                d.solvable_id.as_solvable()
+            } else {
+                // Ignore things that are set to false
+                None
+            }
+        })
     }
 
     /// Adds clauses for a solvable. These clauses include requirements and

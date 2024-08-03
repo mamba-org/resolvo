@@ -4,6 +4,7 @@
 #include "resolvo_internal.h"
 
 namespace resolvo {
+using cbindgen_private::Problem;
 using cbindgen_private::Requirement;
 
 /**
@@ -30,8 +31,8 @@ inline Requirement requirement_union(VersionSetUnionId id) {
  * stored in `result`. If the solve was unsuccesfull an error describing the reason is returned and
  * the result vector will be empty.
  */
-inline String solve(DependencyProvider &provider, Slice<Requirement> requirements,
-                    Slice<VersionSetId> constraints, Vector<SolvableId> &result) {
+inline String solve(DependencyProvider &provider, const Problem &problem,
+                    Vector<SolvableId> &result) {
     cbindgen_private::DependencyProvider bridge{
         static_cast<void *>(&provider),
         private_api::bridge_display_solvable,
@@ -50,7 +51,7 @@ inline String solve(DependencyProvider &provider, Slice<Requirement> requirement
     };
 
     String error;
-    cbindgen_private::resolvo_solve(&bridge, requirements, constraints, &error, &result);
+    cbindgen_private::resolvo_solve(&bridge, &problem, &error, &result);
     return error;
 }
 }  // namespace resolvo
