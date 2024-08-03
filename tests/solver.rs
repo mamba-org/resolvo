@@ -552,15 +552,15 @@ fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) 
     buf
 }
 
-/// Unsat so that we can view the problem
+/// Unsat so that we can view the conflict
 fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider);
     match solver.solve(requirements, Vec::new()) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -569,7 +569,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -590,9 +590,9 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
     let mut solver = Solver::new(provider).with_runtime(runtime);
     match solver.solve(requirements, Vec::new()) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -601,7 +601,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -1355,9 +1355,9 @@ fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) ->
         Vec::new(),
     ) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -1366,7 +1366,7 @@ fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) ->
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }

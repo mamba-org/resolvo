@@ -9,12 +9,12 @@ use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::Con
 use watch_map::WatchMap;
 
 use crate::{
+    conflict::Conflict,
     internal::{
         arena::Arena,
         id::{ClauseId, InternalSolvableId, LearntClauseId, NameId, SolvableId},
         mapping::Mapping,
     },
-    problem::Problem,
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
 };
@@ -93,13 +93,13 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
 #[derive(Debug)]
 pub enum UnsolvableOrCancelled {
     /// The problem was unsolvable.
-    Unsolvable(Problem),
+    Unsolvable(Conflict),
     /// The solving process was cancelled.
     Cancelled(Box<dyn Any>),
 }
 
-impl From<Problem> for UnsolvableOrCancelled {
-    fn from(value: Problem) -> Self {
+impl From<Conflict> for UnsolvableOrCancelled {
+    fn from(value: Conflict) -> Self {
         UnsolvableOrCancelled::Unsolvable(value)
     }
 }
@@ -165,7 +165,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// solution. `root_constraints` are additional constrains which do not
     /// necesarily need to be included in the solution.
     ///
-    /// Returns a [`Problem`] if no solution was found, which provides ways to
+    /// Returns a [`Conflict`] if no solution was found, which provides ways to
     /// inspect the causes and report them to the user.
     pub fn solve(
         &mut self,
@@ -950,7 +950,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// CDCL algorithm.
     ///
     /// Returns the new level after this set-propagate-learn round, or a
-    /// [`Problem`] if we discovered that the requested jobs are
+    /// [`Conflict`] if we discovered that the requested jobs are
     /// unsatisfiable.
     fn set_propagate_learn(
         &mut self,
@@ -1010,7 +1010,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         conflicting_solvable: InternalSolvableId,
         attempted_value: bool,
         conflicting_clause: ClauseId,
-    ) -> Result<u32, Problem> {
+    ) -> Result<u32, Conflict> {
         {
             tracing::info!(
                 "├─ Propagation conflicted: could not set {solvable} to {attempted_value}",
@@ -1256,15 +1256,15 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         Ok(())
     }
 
-    /// Adds the clause with `clause_id` to the current `Problem`
+    /// Adds the clause with `clause_id` to the current [`Conflict`]
     ///
     /// Because learnt clauses are not relevant for the user, they are not added
-    /// to the `Problem`. Instead, we report the clauses that caused them.
+    /// to the [`Conflict`]. Instead, we report the clauses that caused them.
     fn analyze_unsolvable_clause(
         clauses: &Arena<ClauseId, ClauseState>,
         learnt_why: &Mapping<LearntClauseId, Vec<ClauseId>>,
         clause_id: ClauseId,
-        problem: &mut Problem,
+        conflict: &mut Conflict,
         seen: &mut HashSet<ClauseId>,
     ) {
         let clause = &clauses[clause_id];
@@ -1278,21 +1278,21 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .get(learnt_clause_id)
                     .expect("no cause for learnt clause available")
                 {
-                    Self::analyze_unsolvable_clause(clauses, learnt_why, cause, problem, seen);
+                    Self::analyze_unsolvable_clause(clauses, learnt_why, cause, conflict, seen);
                 }
             }
-            _ => problem.add_clause(clause_id),
+            _ => conflict.add_clause(clause_id),
         }
     }
 
-    /// Create a [`Problem`] based on the id of the clause that triggered an
+    /// Create a [`Conflict`] based on the id of the clause that triggered an
     /// unrecoverable conflict
-    fn analyze_unsolvable(&mut self, clause_id: ClauseId) -> Problem {
+    fn analyze_unsolvable(&mut self, clause_id: ClauseId) -> Conflict {
         let last_decision = self.decision_tracker.stack().last().unwrap();
         let highest_level = self.decision_tracker.level(last_decision.solvable_id);
         debug_assert_eq!(highest_level, 1);
 
-        let mut problem = Problem::default();
+        let mut conflict = Conflict::default();
 
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
@@ -1310,7 +1310,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             &self.clauses.borrow(),
             &self.learnt_why,
             clause_id,
-            &mut problem,
+            &mut conflict,
             &mut seen,
         );
 
@@ -1331,7 +1331,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 &self.clauses.borrow(),
                 &self.learnt_why,
                 why,
-                &mut problem,
+                &mut conflict,
                 &mut seen,
             );
 
@@ -1348,7 +1348,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             );
         }
 
-        problem
+        conflict
     }
 
     /// Analyze the causes of the conflict and learn from it

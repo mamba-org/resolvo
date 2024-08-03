@@ -10,8 +10,8 @@
 
 #![deny(missing_docs)]
 
+pub mod conflict;
 pub(crate) mod internal;
-pub mod problem;
 mod requirement;
 pub mod runtime;
 pub mod snapshot;
