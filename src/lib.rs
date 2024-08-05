@@ -12,6 +12,7 @@
 
 pub(crate) mod internal;
 pub mod problem;
+mod requirement;
 pub mod runtime;
 pub mod snapshot;
 mod solver;
@@ -23,10 +24,11 @@ use std::{
 };
 
 pub use internal::{
-    id::{NameId, SolvableId, StringId, VersionSetId},
+    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     mapping::Mapping,
 };
 use itertools::Itertools;
+pub use requirement::Requirement;
 pub use solver::{Solver, SolverCache, UnsolvableOrCancelled};
 
 /// An object that is used by the solver to query certain properties of
@@ -87,6 +89,12 @@ pub trait Interner {
 
     /// Returns the name of the package for the given solvable.
     fn solvable_name(&self, solvable: SolvableId) -> NameId;
+
+    /// Returns the version sets comprising the given union.
+    fn version_sets_in_union(
+        &self,
+        version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId>;
 }
 
 /// Defines implementation specific behavior for the solver and a way for the
@@ -195,7 +203,7 @@ pub struct KnownDependencies {
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
-    pub requirements: Vec<VersionSetId>,
+    pub requirements: Vec<Requirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set

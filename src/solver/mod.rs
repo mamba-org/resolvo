@@ -3,7 +3,7 @@ use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use itertools::{chain, Itertools};
+use itertools::Itertools;
 use std::fmt::Display;
 use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
@@ -16,7 +16,7 @@ use crate::{
     },
     problem::Problem,
     runtime::{AsyncRuntime, NowOrNeverRuntime},
-    Candidates, Dependencies, DependencyProvider, KnownDependencies, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
 };
 
 mod cache;
@@ -28,7 +28,7 @@ mod watch_map;
 
 #[derive(Default)]
 struct AddClauseOutput {
-    new_requires_clauses: Vec<(InternalSolvableId, VersionSetId, ClauseId)>,
+    new_requires_clauses: Vec<(InternalSolvableId, Requirement, ClauseId)>,
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
@@ -40,7 +40,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) cache: SolverCache<D>,
 
     pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
-    requires_clauses: Vec<(InternalSolvableId, VersionSetId, ClauseId)>,
+    requires_clauses: Vec<(InternalSolvableId, Requirement, ClauseId)>,
     watches: WatchMap,
 
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
@@ -54,8 +54,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     decision_tracker: DecisionTracker,
 
-    /// The version sets that must be installed as part of the solution.
-    root_requirements: Vec<VersionSetId>,
+    /// The [`Requirement`]s that must be installed as part of the solution.
+    root_requirements: Vec<Requirement>,
 
     /// Additional constraints imposed by the root.
     root_constraints: Vec<VersionSetId>,
@@ -164,7 +164,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// inspect the causes and report them to the user.
     pub fn solve(
         &mut self,
-        root_requirements: Vec<VersionSetId>,
+        root_requirements: Vec<Requirement>,
         root_constraints: Vec<VersionSetId>,
     ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
         // Clear state
@@ -231,7 +231,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             },
             SortedCandidates {
                 solvable_id: InternalSolvableId,
-                version_set_id: VersionSetId,
+                requirement: Requirement,
                 candidates: &'i [SolvableId],
             },
             NonMatchingCandidates {
@@ -335,7 +335,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         }
                     };
 
-                    for version_set_id in chain(requirements.iter(), constrains.iter()).copied() {
+                    for version_set_id in requirements
+                        .iter()
+                        .flat_map(|requirement| requirement.version_sets(self.provider()))
+                        .chain(constrains.iter().copied())
+                    {
                         let dependency_name = self.provider().version_set_name(version_set_id);
                         if clauses_added_for_package.insert(dependency_name) {
                             tracing::trace!(
@@ -357,17 +361,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         }
                     }
 
-                    for version_set_id in requirements {
+                    for requirement in requirements {
                         // Find all the solvable that match for the given version set
                         pending_futures.push(
                             async move {
                                 let candidates = self
                                     .cache
-                                    .get_or_cache_sorted_candidates(version_set_id)
+                                    .get_or_cache_sorted_candidates(requirement)
                                     .await?;
                                 Ok(TaskResult::SortedCandidates {
                                     solvable_id,
-                                    version_set_id,
+                                    requirement,
                                     candidates,
                                 })
                             }
@@ -467,14 +471,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 }
                 TaskResult::SortedCandidates {
                     solvable_id,
-                    version_set_id,
+                    requirement,
                     candidates,
                 } => {
                     tracing::trace!(
-                        "Sorted candidates available for {} {}",
-                        self.provider()
-                            .display_name(self.provider().version_set_name(version_set_id)),
-                        self.provider().display_version_set(version_set_id),
+                        "Sorted candidates available for {}",
+                        requirement.display(self.provider()),
                     );
 
                     // Queue requesting the dependencies of the candidates as well if they are
@@ -492,7 +494,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let no_candidates = candidates.is_empty();
                     let (clause, conflict) = ClauseState::requires(
                         solvable_id,
-                        version_set_id,
+                        requirement,
                         candidates,
                         &self.decision_tracker,
                     );
@@ -500,7 +502,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let clause_id = self.clauses.borrow_mut().alloc(clause);
                     let clause = &self.clauses.borrow()[clause_id];
 
-                    let &Clause::Requires(solvable_id, version_set_id) = &clause.kind else {
+                    let &Clause::Requires(solvable_id, requirement) = &clause.kind else {
                         unreachable!();
                     };
 
@@ -510,7 +512,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                     output
                         .new_requires_clauses
-                        .push((solvable_id, version_set_id, clause_id));
+                        .push((solvable_id, requirement, clause_id));
 
                     if conflict {
                         output.conflicting_clauses.push(clause_id);
@@ -787,7 +789,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
 
             // Consider only clauses in which no candidates have been installed
-            let candidates = &self.cache.version_set_to_sorted_candidates[&deps];
+            let candidates = &self.cache.requirement_to_sorted_candidates[&deps];
 
             // Either find the first assignable candidate or determine that one of the
             // candidates is already assigned in which case the clause has
@@ -1091,7 +1093,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // One of the watched literals is now false
                     if let Some(variable) = clause.next_unwatched_variable(
                         &self.learnt_clauses,
-                        &self.cache.version_set_to_sorted_candidates,
+                        &self.cache.requirement_to_sorted_candidates,
                         self.decision_tracker.map(),
                     ) {
                         debug_assert!(!clause.watched_literals.contains(&variable));
@@ -1202,7 +1204,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut involved = HashSet::new();
         self.clauses.borrow()[clause_id].kind.visit_literals(
             &self.learnt_clauses,
-            &self.cache.version_set_to_sorted_candidates,
+            &self.cache.requirement_to_sorted_candidates,
             |literal| {
                 involved.insert(literal.solvable_id);
             },
@@ -1240,7 +1242,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             self.clauses.borrow()[why].kind.visit_literals(
                 &self.learnt_clauses,
-                &self.cache.version_set_to_sorted_candidates,
+                &self.cache.requirement_to_sorted_candidates,
                 |literal| {
                     if literal.eval(self.decision_tracker.map()) == Some(true) {
                         assert_eq!(literal.solvable_id, decision.solvable_id);
@@ -1286,7 +1288,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             self.clauses.borrow()[clause_id].kind.visit_literals(
                 &self.learnt_clauses,
-                &self.cache.version_set_to_sorted_candidates,
+                &self.cache.requirement_to_sorted_candidates,
                 |literal| {
                     if !first_iteration && literal.solvable_id == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the

@@ -11,7 +11,7 @@ use crate::{
         frozen_copy_map::FrozenCopyMap,
         id::{CandidatesId, DependenciesId},
     },
-    Candidates, Dependencies, DependencyProvider, NameId, SolvableId, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, NameId, Requirement, SolvableId, VersionSetId,
 };
 
 /// Keeps a cache of previously computed and/or requested information about
@@ -32,10 +32,10 @@ pub struct SolverCache<D: DependencyProvider> {
     /// included).
     version_set_inverse_candidates: FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
 
-    /// A mapping of `VersionSetId` to a sorted list of candidates that match
-    /// that set.
-    pub(crate) version_set_to_sorted_candidates:
-        FrozenMap<VersionSetId, Vec<SolvableId>, ahash::RandomState>,
+    /// A mapping of [`Requirement`] to a sorted list of candidates that fulfill
+    /// that requirement.
+    pub(crate) requirement_to_sorted_candidates:
+        FrozenMap<Requirement, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping from a solvable to a list of dependencies
     solvable_dependencies: Arena<DependenciesId, Dependencies>,
@@ -59,7 +59,7 @@ impl<D: DependencyProvider> SolverCache<D> {
             package_name_to_candidates_in_flight: Default::default(),
             version_set_candidates: Default::default(),
             version_set_inverse_candidates: Default::default(),
-            version_set_to_sorted_candidates: Default::default(),
+            requirement_to_sorted_candidates: Default::default(),
             solvable_dependencies: Default::default(),
             solvable_to_dependencies: Default::default(),
             hint_dependencies_available: Default::default(),
@@ -242,50 +242,89 @@ impl<D: DependencyProvider> SolverCache<D> {
         }
     }
 
-    /// Returns the candidates for the package with the given name similar to
-    /// [`Self::get_or_cache_candidates`] sorted from highest to lowest.
+    /// Returns the candidates fulfilling the [`Requirement`] sorted from highest to lowest
+    /// within each version set comprising the [`Requirement`].
     ///
     /// If the provider has requested the solving process to be cancelled, the
     /// cancellation value will be returned as an `Err(...)`.
     pub async fn get_or_cache_sorted_candidates(
         &self,
-        version_set_id: VersionSetId,
+        requirement: Requirement,
     ) -> Result<&[SolvableId], Box<dyn Any>> {
-        match self.version_set_to_sorted_candidates.get(&version_set_id) {
-            Some(candidates) => Ok(candidates),
-            None => {
-                let package_name_id = self.provider.version_set_name(version_set_id);
-                tracing::trace!(
-                    "Getting sorted matching candidates for package: {:?}",
-                    self.provider.display_name(package_name_id).to_string()
-                );
+        match requirement {
+            Requirement::Single(version_set_id) => {
+                self.get_or_cache_sorted_candidates_for_version_set(version_set_id)
+                    .await
+            }
+            Requirement::Union(version_set_union_id) => {
+                match self.requirement_to_sorted_candidates.get(&requirement) {
+                    Some(candidates) => Ok(candidates),
+                    None => {
+                        let sorted_candidates = futures::future::try_join_all(
+                            self.provider()
+                                .version_sets_in_union(version_set_union_id)
+                                .map(|version_set_id| {
+                                    self.get_or_cache_sorted_candidates_for_version_set(
+                                        version_set_id,
+                                    )
+                                }),
+                        )
+                        .await?
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .collect();
 
-                let matching_candidates = self
-                    .get_or_cache_matching_candidates(version_set_id)
-                    .await?;
-                let candidates = self.get_or_cache_candidates(package_name_id).await?;
-
-                // Sort all the candidates in order in which they should be tried by the solver.
-                let mut sorted_candidates = Vec::new();
-                sorted_candidates.extend_from_slice(matching_candidates);
-                self.provider
-                    .sort_candidates(self, &mut sorted_candidates)
-                    .await;
-
-                // If we have a solvable that we favor, we sort that to the front. This ensures
-                // that the version that is favored is picked first.
-                if let Some(favored_id) = candidates.favored {
-                    if let Some(pos) = sorted_candidates.iter().position(|&s| s == favored_id) {
-                        // Move the element at `pos` to the front of the array
-                        sorted_candidates[0..=pos].rotate_right(1);
+                        Ok(self
+                            .requirement_to_sorted_candidates
+                            .insert(requirement, sorted_candidates))
                     }
                 }
-
-                Ok(self
-                    .version_set_to_sorted_candidates
-                    .insert(version_set_id, sorted_candidates))
             }
         }
+    }
+
+    /// Returns the sorted candidates for a singular version set requirement
+    /// (akin to a [`Requirement::Single`]).
+    async fn get_or_cache_sorted_candidates_for_version_set(
+        &self,
+        version_set_id: VersionSetId,
+    ) -> Result<&[SolvableId], Box<dyn Any>> {
+        let requirement = version_set_id.into();
+        if let Some(candidates) = self.requirement_to_sorted_candidates.get(&requirement) {
+            return Ok(candidates);
+        }
+
+        let package_name_id = self.provider.version_set_name(version_set_id);
+        tracing::trace!(
+            "Getting sorted matching candidates for package: {:?}",
+            self.provider.display_name(package_name_id).to_string()
+        );
+
+        let matching_candidates = self
+            .get_or_cache_matching_candidates(version_set_id)
+            .await?;
+        let candidates = self.get_or_cache_candidates(package_name_id).await?;
+
+        // Sort all the candidates in order in which they should be tried by the solver.
+        let mut sorted_candidates = Vec::with_capacity(matching_candidates.len());
+        sorted_candidates.extend_from_slice(matching_candidates);
+        self.provider
+            .sort_candidates(self, &mut sorted_candidates)
+            .await;
+
+        // If we have a solvable that we favor, we sort that to the front. This ensures
+        // that the version that is favored is picked first.
+        if let Some(favored_id) = candidates.favored {
+            if let Some(pos) = sorted_candidates.iter().position(|&s| s == favored_id) {
+                // Move the element at `pos` to the front of the array
+                sorted_candidates[0..=pos].rotate_right(1);
+            }
+        }
+
+        Ok(self
+            .requirement_to_sorted_candidates
+            .insert(requirement, sorted_candidates))
     }
 
     /// Returns the dependencies of a solvable. Requests the solvables from the
