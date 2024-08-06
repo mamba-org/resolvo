@@ -1424,7 +1424,11 @@ fn test_explicit_root_requirements() {
     let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
-    assert_snapshot!(result, @r###""###);
+    assert_snapshot!(result, @r###"
+    a=1
+    b=1
+    c=5
+    "###);
 }
 
 #[cfg(feature = "serde")]
