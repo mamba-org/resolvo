@@ -1396,6 +1396,37 @@ fn test_snapshot_union_requirements() {
     ));
 }
 
+#[test]
+fn test_explicit_root_requirements() {
+    let provider = BundleBoxProvider::from_packages(&[
+        // `a` depends transitively on `b`
+        ("a", 1, vec!["b"]),
+        // `b` depends on `c`, but the highest version of `b` constrains `c` to `<2`.
+        ("b", 1, vec!["c"]),
+        ("b", 2, vec!["c 1..2"]),
+        // `c` has more versions than `b`, so the heuristic will most likely pick `b` first.
+        ("c", 1, vec![]),
+        ("c", 2, vec![]),
+        ("c", 3, vec![]),
+        ("c", 4, vec![]),
+        ("c", 5, vec![]),
+    ]);
+
+    // We require both `a` and `c` explicitly. The expected outcome will be that we
+    // get the highest versions of `a` and `c` and a lower version of `b`.
+    let requirements = provider.requirements(&["a", "c"]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem {
+        requirements,
+        ..Problem::default()
+    };
+    let solved = solver.solve(problem).unwrap();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###""###);
+}
+
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());

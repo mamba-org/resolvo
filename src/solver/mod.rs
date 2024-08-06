@@ -2,7 +2,6 @@ use std::{
     any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
 };
 
-use ahash::AHashSet;
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
@@ -866,7 +865,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// ensures that if there are conflicts they are delt with as early as
     /// possible.
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
-        let explicit_requirements: AHashSet<_> = self.root_requirements.iter().collect();
         let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
             None;
         for &(solvable_id, deps, clause_id) in &self.requires_clauses {
@@ -899,7 +897,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 },
             );
 
-            let is_explicit_requirement = explicit_requirements.contains(&deps);
+            let is_explicit_requirement = solvable_id == InternalSolvableId::root();
             match candidate {
                 ControlFlow::Continue((Some(candidate), count)) => {
                     let possible_decision = (candidate, solvable_id, clause_id);
