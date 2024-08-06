@@ -868,6 +868,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
             None;
         for &(solvable_id, deps, clause_id) in &self.requires_clauses {
+            let is_explicit_requirement = solvable_id == InternalSolvableId::root();
+            if !is_explicit_requirement && matches!(best_decision, Some((true, _, _))) {
+                // If we already have an explicit requirement, there is no need to evaluate
+                // non-explicit requirements.
+                continue;
+            }
+
             // Consider only clauses in which we have decided to install the solvable
             if self.decision_tracker.assigned_value(solvable_id) != Some(true) {
                 continue;
@@ -897,13 +904,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 },
             );
 
-            let is_explicit_requirement = solvable_id == InternalSolvableId::root();
             match candidate {
                 ControlFlow::Continue((Some(candidate), count)) => {
                     let possible_decision = (candidate, solvable_id, clause_id);
                     best_decision = Some(match best_decision {
                         None => (is_explicit_requirement, count, possible_decision),
-                        Some((was_explicit_requirement, best_count, _)) if (is_explicit_requirement && !was_explicit_requirement) || (count < best_count && was_explicit_requirement == is_explicit_requirement) => {
+                        Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
+                        Some((_, best_count, _)) if count < best_count => {
                             (is_explicit_requirement, count, possible_decision)
                         }
                         Some(best_decision) => best_decision,
