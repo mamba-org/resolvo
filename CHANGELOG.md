@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.2...resolvo-v0.7.0) - 2024-08-06
+
+### Added
+- *(solver)* [**breaking**] Solve for optional solvables in addition to the root solvable ([#54](https://github.com/mamba-org/resolvo/pull/54))
+- [**breaking**] Version set unions as solvable requirements ([#56](https://github.com/mamba-org/resolvo/pull/56))
+
+### Fixed
+- Fix off-by-one error in `Mapping::serialize` ([#58](https://github.com/mamba-org/resolvo/pull/58))
+
+### Other
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.12 to 0.2.13 ([#59](https://github.com/mamba-org/resolvo/pull/59))
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.11 to 0.2.12 ([#57](https://github.com/mamba-org/resolvo/pull/57))
+- Add more tracing ([#55](https://github.com/mamba-org/resolvo/pull/55))
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.10 to 0.2.11 ([#53](https://github.com/mamba-org/resolvo/pull/53))
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.9 to 0.2.10 ([#51](https://github.com/mamba-org/resolvo/pull/51))
+
 ## [0.6.2](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.1...resolvo-v0.6.2) - 2024-06-11
 
 ### Added
