@@ -9,12 +9,12 @@ use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::Con
 use watch_map::WatchMap;
 
 use crate::{
+    conflict::Conflict,
     internal::{
         arena::Arena,
         id::{ClauseId, InternalSolvableId, LearntClauseId, NameId, SolvableId},
         mapping::Mapping,
     },
-    problem::Problem,
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
 };
@@ -34,7 +34,30 @@ struct AddClauseOutput {
     clauses_to_watch: Vec<ClauseId>,
 }
 
-/// Drives the SAT solving process
+/// Describes the problem that is to be solved by the solver.
+#[derive(Default)]
+pub struct Problem {
+    /// The requirements that _must_ have one candidate solvable be included in the
+    /// solution.
+    pub requirements: Vec<Requirement>,
+
+    /// Additional constraints imposed on individual packages that the solvable (if any)
+    /// chosen for that package _must_ adhere to.
+    pub constraints: Vec<VersionSetId>,
+
+    /// A set of additional requirements that the solver should _try_ and fulfill once it has
+    /// found a solution to the main problem.
+    ///
+    /// An unsatisfiable soft requirement does not cause a conflict; the solver will try
+    /// and fulfill as many soft requirements as possible and skip the unsatisfiable ones.
+    ///
+    /// Soft requirements are currently only specified as individual solvables to be
+    /// included in the solution, however in the future they will be able to be specified
+    /// as version sets.
+    pub soft_requirements: Vec<SolvableId>,
+}
+
+/// Drives the SAT solving process.
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) async_runtime: RT,
     pub(crate) cache: SolverCache<D>,
@@ -88,13 +111,13 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
 #[derive(Debug)]
 pub enum UnsolvableOrCancelled {
     /// The problem was unsolvable.
-    Unsolvable(Problem),
+    Unsolvable(Conflict),
     /// The solving process was cancelled.
     Cancelled(Box<dyn Any>),
 }
 
-impl From<Problem> for UnsolvableOrCancelled {
-    fn from(value: Problem) -> Self {
+impl From<Conflict> for UnsolvableOrCancelled {
+    fn from(value: Conflict) -> Self {
         UnsolvableOrCancelled::Unsolvable(value)
     }
 }
@@ -155,57 +178,70 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
     }
 
-    /// Solves for the provided `root_requirements` and `root_constraints`. The
-    /// `root_requirements` are package that will be included in the
-    /// solution. `root_constraints` are additional constrains which do not
-    /// necesarily need to be included in the solution.
+    /// Solves the given [`Problem`].
     ///
-    /// Returns a [`Problem`] if no solution was found, which provides ways to
-    /// inspect the causes and report them to the user.
-    pub fn solve(
-        &mut self,
-        root_requirements: Vec<Requirement>,
-        root_constraints: Vec<VersionSetId>,
-    ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
-        // Clear state
+    /// The solver first solves for the root requirements and constraints, and then
+    /// tries to include in the solution as many of the soft requirements as it can.
+    /// Each soft requirement is subject to all the clauses and decisions introduced
+    /// for all the previously decided solvables in the solution.
+    ///
+    /// Unless the corresponding package has been requested by a version set in another
+    /// solvable's clauses, each soft requirement is _not_ subject to the
+    /// package-level clauses introduced in [`DependencyProvider::get_candidates`] since the
+    /// solvables have been requested specifically (not through a version set) in the solution.
+    ///
+    /// # Returns
+    ///
+    /// If a solution was found, returns a [`Vec`] of the solvables included in the solution.
+    ///
+    /// If no solution to the _root_ requirements and constraints was found, returns a
+    /// [`Conflict`] wrapped in a [`UnsolvableOrCancelled::Unsolvable`], which provides ways to
+    /// inspect the causes and report them to the user. If a soft requirement is unsolvable,
+    /// it is simply not included in the solution.
+    ///
+    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
+    /// returns an [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
+    pub fn solve(&mut self, problem: Problem) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
         self.decision_tracker.clear();
         self.negative_assertions.clear();
         self.learnt_clauses.clear();
         self.learnt_why = Mapping::new();
         self.clauses = Default::default();
-        self.root_requirements = root_requirements;
-        self.root_constraints = root_constraints;
+        self.root_requirements = problem.requirements;
+        self.root_constraints = problem.constraints;
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
         let root_clause = self.clauses.borrow_mut().alloc(ClauseState::root());
         assert_eq!(root_clause, ClauseId::install_root());
 
-        // Run SAT
-        self.run_sat()?;
+        assert!(
+            self.run_sat(InternalSolvableId::root())?,
+            "bug: Since root is the first requested solvable, \
+                  should have returned Err instead of Ok(false) if root is unsolvable"
+        );
 
-        let steps: Vec<SolvableId> = self
-            .decision_tracker
-            .stack()
-            .filter_map(|d| {
-                if d.value {
-                    d.solvable_id.as_solvable()
-                } else {
-                    // Ignore things that are set to false
-                    None
-                }
-            })
-            .collect();
+        for additional in problem.soft_requirements {
+            let additional = additional.into();
 
-        tracing::trace!("Solvables found:");
-        for step in &steps {
-            tracing::trace!(
-                " - {}",
-                InternalSolvableId::from(*step).display(self.provider())
-            );
+            if self.decision_tracker.assigned_value(additional).is_none() {
+                self.run_sat(additional)?;
+            }
         }
 
-        Ok(steps)
+        Ok(self.chosen_solvables().collect())
+    }
+
+    /// Returns the solvables that the solver has chosen to include in the solution so far.
+    fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
+        self.decision_tracker.stack().filter_map(|d| {
+            if d.value {
+                d.solvable_id.as_solvable()
+            } else {
+                // Ignore things that are set to false
+                None
+            }
+        })
     }
 
     /// Adds clauses for a solvable. These clauses include requirements and
@@ -410,15 +446,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
 
-                    // Check the assumption that no decision has been made about any of the
-                    // solvables.
-                    for &candidate in candidates {
-                        debug_assert!(
-                            self.decision_tracker.assigned_value(candidate.into()).is_none(),
-                            "a decision has been made about a candidate of a package that was not properly added yet."
-                        );
-                    }
-
                     // Each candidate gets a clause to disallow other candidates.
                     for (i, &candidate) in candidates.iter().enumerate() {
                         for &other_candidate in &candidates[i + 1..] {
@@ -581,32 +608,49 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ///    implementation of this step.
     ///
     /// The solver loop can be found in [`Solver::resolve_dependencies`].
-    fn run_sat(&mut self) -> Result<(), UnsolvableOrCancelled> {
-        assert!(self.decision_tracker.is_empty());
-        let mut level = 0;
+    ///
+    /// Returns `Ok(true)` if a solution was found for `solvable`. If a solution was not
+    /// found, returns `Ok(false)` if some decisions have already been made by the solver
+    /// (i.e. the decision tracker stack is not empty). Otherwise, returns
+    /// [`UnsolvableOrCancelled::Unsolvable`] as an `Err` on no solution.
+    ///
+    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
+    /// returns [`UnsolvableOrCancelled::Cancelled`] as an `Err`.
+    fn run_sat(&mut self, solvable: InternalSolvableId) -> Result<bool, UnsolvableOrCancelled> {
+        let starting_level = self
+            .decision_tracker
+            .stack()
+            .next_back()
+            .map(|decision| self.decision_tracker.level(decision.solvable_id))
+            .unwrap_or(0);
+
+        let mut level = starting_level;
 
         loop {
-            if level == 0 {
-                tracing::trace!("Level 0: Resetting the decision loop");
+            if level == starting_level {
+                tracing::trace!("Level {starting_level}: Resetting the decision loop");
             } else {
                 tracing::trace!("Level {}: Starting the decision loop", level);
             }
 
-            // A level of 0 means the decision loop has been completely reset because a
-            // partial solution was invalidated by newly added clauses.
-            if level == 0 {
-                // Level 1 is the initial decision level
-                level = 1;
+            // A level of starting_level means the decision loop has been completely reset
+            // because a partial solution was invalidated by newly added clauses.
+            if level == starting_level {
+                // Level starting_level + 1 is the initial decision level
+                level = starting_level + 1;
 
                 // Assign `true` to the root solvable. This must be installed to satisfy the
                 // solution. The root solvable contains the dependencies that
                 // were injected when calling `Solver::solve`. If we can find a
                 // solution were the root is installable we found a
                 // solution that satisfies the user requirements.
-                tracing::trace!("╤══ Install <root> at level {level}",);
+                tracing::trace!(
+                    "╤══ Install {} at level {level}",
+                    solvable.display(self.provider())
+                );
                 self.decision_tracker
                     .try_add_decision(
-                        Decision::new(InternalSolvableId::root(), true, ClauseId::install_root()),
+                        Decision::new(solvable, true, ClauseId::install_root()),
                         level,
                     )
                     .expect("already decided");
@@ -614,12 +658,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // Add the clauses for the root solvable.
                 let output = self
                     .async_runtime
-                    .block_on(self.add_clauses_for_solvables(vec![InternalSolvableId::root()]))?;
+                    .block_on(self.add_clauses_for_solvables([solvable]))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
-                    tracing::trace!("Unsolvable: {:?}", clause_id);
-                    return Err(UnsolvableOrCancelled::Unsolvable(
-                        self.analyze_unsolvable(clause_id),
-                    ));
+                    return self.run_sat_process_unsolvable(solvable, starting_level, clause_id);
                 }
             }
 
@@ -634,17 +675,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             match propagate_result {
                 Ok(()) => {}
                 Err(PropagationError::Conflict(_, _, clause_id)) => {
-                    if level == 1 {
-                        return Err(UnsolvableOrCancelled::Unsolvable(
-                            self.analyze_unsolvable(clause_id),
-                        ));
+                    if level == starting_level + 1 {
+                        return self.run_sat_process_unsolvable(
+                            solvable,
+                            starting_level,
+                            clause_id,
+                        );
                     } else {
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
                         tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
                                 clause=self.clauses.borrow()[clause_id].display(self.provider()));
-                        level = 0;
-                        self.decision_tracker.clear();
+                        level = starting_level;
+                        self.decision_tracker.undo_until(starting_level);
                         continue;
                     }
                 }
@@ -687,7 +730,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     "Level {}: No new solvables selected, solution is complete",
                     level
                 );
-                return Ok(());
+                return Ok(true);
             }
 
             tracing::debug!("==== Found newly selected solvables");
@@ -716,9 +759,38 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
-                self.decision_tracker.clear();
-                level = 0;
+                self.decision_tracker.undo_until(starting_level);
+                level = starting_level;
             }
+        }
+    }
+
+    /// Decides how to terminate the solver algorithm when the given `solvable` was
+    /// deemed unsolvable by [`Solver::run_sat`].
+    ///
+    /// Returns an `Err` value of [`UnsolvableOrCancelled::Unsolvable`] only if `solvable` is
+    /// the very first solvable we are solving for. Otherwise, undoes all the decisions made
+    /// when trying to solve for `solvable`, sets it to `false` and returns `Ok(false)`.
+    fn run_sat_process_unsolvable(
+        &mut self,
+        solvable: InternalSolvableId,
+        starting_level: u32,
+        clause_id: ClauseId,
+    ) -> Result<bool, UnsolvableOrCancelled> {
+        if starting_level == 0 {
+            tracing::trace!("Unsolvable: {:?}", clause_id);
+            Err(UnsolvableOrCancelled::Unsolvable(
+                self.analyze_unsolvable(clause_id),
+            ))
+        } else {
+            self.decision_tracker.undo_until(starting_level);
+            self.decision_tracker
+                .try_add_decision(
+                    Decision::new(solvable, false, ClauseId::install_root()),
+                    starting_level + 1,
+                )
+                .expect("bug: already decided - decision should have been undone");
+            Ok(false)
         }
     }
 
@@ -855,7 +927,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// CDCL algorithm.
     ///
     /// Returns the new level after this set-propagate-learn round, or a
-    /// [`Problem`] if we discovered that the requested jobs are
+    /// [`Conflict`] if we discovered that the requested jobs are
     /// unsatisfiable.
     fn set_propagate_learn(
         &mut self,
@@ -915,7 +987,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         conflicting_solvable: InternalSolvableId,
         attempted_value: bool,
         conflicting_clause: ClauseId,
-    ) -> Result<u32, Problem> {
+    ) -> Result<u32, Conflict> {
         {
             tracing::info!(
                 "├─ Propagation conflicted: could not set {solvable} to {attempted_value}",
@@ -1161,15 +1233,15 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         Ok(())
     }
 
-    /// Adds the clause with `clause_id` to the current `Problem`
+    /// Adds the clause with `clause_id` to the current [`Conflict`]
     ///
     /// Because learnt clauses are not relevant for the user, they are not added
-    /// to the `Problem`. Instead, we report the clauses that caused them.
+    /// to the [`Conflict`]. Instead, we report the clauses that caused them.
     fn analyze_unsolvable_clause(
         clauses: &Arena<ClauseId, ClauseState>,
         learnt_why: &Mapping<LearntClauseId, Vec<ClauseId>>,
         clause_id: ClauseId,
-        problem: &mut Problem,
+        conflict: &mut Conflict,
         seen: &mut HashSet<ClauseId>,
     ) {
         let clause = &clauses[clause_id];
@@ -1183,21 +1255,21 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .get(learnt_clause_id)
                     .expect("no cause for learnt clause available")
                 {
-                    Self::analyze_unsolvable_clause(clauses, learnt_why, cause, problem, seen);
+                    Self::analyze_unsolvable_clause(clauses, learnt_why, cause, conflict, seen);
                 }
             }
-            _ => problem.add_clause(clause_id),
+            _ => conflict.add_clause(clause_id),
         }
     }
 
-    /// Create a [`Problem`] based on the id of the clause that triggered an
+    /// Create a [`Conflict`] based on the id of the clause that triggered an
     /// unrecoverable conflict
-    fn analyze_unsolvable(&mut self, clause_id: ClauseId) -> Problem {
+    fn analyze_unsolvable(&mut self, clause_id: ClauseId) -> Conflict {
         let last_decision = self.decision_tracker.stack().last().unwrap();
         let highest_level = self.decision_tracker.level(last_decision.solvable_id);
         debug_assert_eq!(highest_level, 1);
 
-        let mut problem = Problem::default();
+        let mut conflict = Conflict::default();
 
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
@@ -1215,7 +1287,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             &self.clauses.borrow(),
             &self.learnt_why,
             clause_id,
-            &mut problem,
+            &mut conflict,
             &mut seen,
         );
 
@@ -1236,7 +1308,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 &self.clauses.borrow(),
                 &self.learnt_why,
                 why,
-                &mut problem,
+                &mut conflict,
                 &mut seen,
             );
 
@@ -1253,7 +1325,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             );
         }
 
-        problem
+        conflict
     }
 
     /// Analyze the causes of the conflict and learn from it

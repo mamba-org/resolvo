@@ -22,8 +22,8 @@ use itertools::Itertools;
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::{Pool, Range},
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Requirement,
-    SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
+    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
     VersionSetUnionId,
 };
 use tracing_test::traced_test;
@@ -179,6 +179,7 @@ struct BundleBoxProvider {
     // duplicate requests.
     requested_candidates: RefCell<HashSet<NameId>>,
     requested_dependencies: RefCell<HashSet<SolvableId>>,
+    interned_solvables: RefCell<HashMap<(NameId, Pack), SolvableId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +314,18 @@ impl BundleBoxProvider {
             .collect::<Vec<_>>();
         DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
     }
+
+    pub fn intern_solvable(&self, name_id: NameId, pack: Pack) -> SolvableId {
+        *self
+            .interned_solvables
+            .borrow_mut()
+            .entry((name_id, pack))
+            .or_insert_with_key(|&(name_id, pack)| self.pool.intern_solvable(name_id, pack))
+    }
+
+    pub fn solvable_id(&self, name: impl Into<String>, version: impl Into<Pack>) -> SolvableId {
+        self.intern_solvable(self.pool.intern_package_name(name.into()), version.into())
+    }
 }
 
 impl Interner for BundleBoxProvider {
@@ -411,7 +424,7 @@ impl DependencyProvider for BundleBoxProvider {
         let locked = self.locked.get(package_name);
         let excluded = self.excluded.get(package_name);
         for pack in package.keys() {
-            let solvable = self.pool.intern_solvable(name, *pack);
+            let solvable = self.intern_solvable(name, *pack);
             candidates.candidates.push(solvable);
             if Some(pack) == favor {
                 candidates.favored = Some(solvable);
@@ -539,15 +552,19 @@ fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) 
     buf
 }
 
-/// Unsat so that we can view the problem
+/// Unsat so that we can view the conflict
 fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider);
-    match solver.solve(requirements, Vec::new()) {
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    match solver.solve(problem) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -556,7 +573,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -575,11 +592,15 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    match solver.solve(requirements, Vec::new()) {
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -588,7 +609,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -598,9 +619,13 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 #[test]
 fn test_unit_propagation_1() {
     let provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
-    let root_requirements = provider.requirements(&["asdf"]);
+    let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(root_requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -620,7 +645,11 @@ fn test_unit_propagation_nested() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 2);
@@ -647,7 +676,11 @@ fn test_resolve_multiple() {
     ]);
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 2);
@@ -705,7 +738,11 @@ fn test_resolve_with_nonexisting() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -739,7 +776,11 @@ fn test_resolve_with_nested_deps() {
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -763,7 +804,11 @@ fn test_resolve_with_unknown_deps() {
     provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -808,7 +853,11 @@ fn test_resolve_locked_top_level() {
     let requirements = provider.requirements(&["asdf"]);
 
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -830,7 +879,11 @@ fn test_resolve_ignored_locked_top_level() {
 
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -888,7 +941,11 @@ fn test_resolve_cyclic() {
         BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
     let requirements = provider.requirements(&["a 0..100"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem {
+        requirements,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
     insta::assert_snapshot!(result, @r###"
@@ -1171,12 +1228,118 @@ fn test_constraints() {
     let requirements = provider.requirements(&["a 0..10"]);
     let constraints = provider.requirements(&["b 1..2", "c"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, constraints).unwrap();
+    let problem = Problem {
+        requirements,
+        constraints,
+        ..Default::default()
+    };
+    let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
     insta::assert_snapshot!(result, @r###"
         a=1
         b=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec![]),
+        ("e", 1, vec!["d"]),
+        ("locked", 1, vec![]),
+        ("locked", 2, vec![]),
+    ]);
+
+    provider.set_locked("locked", 2);
+
+    let requirements = provider.requirements(&["a 0..10"]);
+    let constraints = provider.requirements(&["b 1..2", "c"]);
+
+    let extra_solvables = [
+        provider.solvable_id("b", 2),
+        provider.solvable_id("c", 1),
+        provider.solvable_id("e", 1),
+        // Does not obey the locked clause since it has not been requested
+        // in a version set by another solvable
+        provider.solvable_id("locked", 1),
+        provider.solvable_id("unknown-deps", Pack::new(1).with_unknown_deps()),
+    ];
+
+    let mut solver = Solver::new(provider);
+
+    let problem = Problem {
+        requirements,
+        constraints,
+        soft_requirements: extra_solvables.to_vec(),
+    };
+    let solved = solver.solve(problem).unwrap();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        d=1
+        e=1
+        locked=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional_with_constrains() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("b", 3, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec!["f"]),
+        ("e", 1, vec!["c"]),
+    ]);
+
+    provider.add_package("f", 1.into(), &[], &["c 2..3"]);
+    provider.add_package("g", 1.into(), &[], &["b 2..3"]);
+    provider.add_package("h", 1.into(), &[], &["b 1..2"]);
+    provider.add_package("i", 1.into(), &[], &[]);
+    provider.add_package("j", 1.into(), &["i"], &[]);
+    provider.add_package("k", 1.into(), &["i"], &[]);
+    provider.add_package("l", 1.into(), &["j", "k"], &[]);
+
+    let requirements = provider.requirements(&["a 0..10", "e"]);
+    let constraints = provider.requirements(&["b 1..2", "c", "k 2..3"]);
+
+    let extra_solvables = [
+        provider.solvable_id("d", 1),
+        provider.solvable_id("g", 1),
+        provider.solvable_id("h", 1),
+        provider.solvable_id("j", 1),
+        provider.solvable_id("l", 1),
+        provider.solvable_id("k", 1),
+    ];
+
+    let mut solver = Solver::new(provider);
+
+    let problem = Problem {
+        requirements,
+        constraints,
+        soft_requirements: extra_solvables.to_vec(),
+    };
+    let solved = solver.solve(problem).unwrap();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        e=1
+        h=1
+        i=1
+        j=1
         "###);
 }
 
@@ -1241,14 +1404,15 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
 
 fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
     let mut solver = Solver::new(provider);
-    match solver.solve(
-        root_reqs.iter().copied().map(Into::into).collect(),
-        Vec::new(),
-    ) {
+    let problem = Problem {
+        requirements: root_reqs.iter().copied().map(Into::into).collect(),
+        ..Default::default()
+    };
+    match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -1257,7 +1421,7 @@ fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) ->
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }

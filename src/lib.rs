@@ -10,8 +10,8 @@
 
 #![deny(missing_docs)]
 
+pub mod conflict;
 pub(crate) mod internal;
-pub mod problem;
 mod requirement;
 pub mod runtime;
 pub mod snapshot;
@@ -29,7 +29,7 @@ pub use internal::{
 };
 use itertools::Itertools;
 pub use requirement::Requirement;
-pub use solver::{Solver, SolverCache, UnsolvableOrCancelled};
+pub use solver::{Problem, Solver, SolverCache, UnsolvableOrCancelled};
 
 /// An object that is used by the solver to query certain properties of
 /// different internalized objects.

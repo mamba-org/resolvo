@@ -473,28 +473,45 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
     }
 }
 
+#[repr(C)]
+pub struct Problem<'a> {
+    pub requirements: Slice<'a, Requirement>,
+    pub constraints: Slice<'a, VersionSetId>,
+    pub soft_requirements: Slice<'a, SolvableId>,
+}
+
 #[no_mangle]
 #[allow(unused)]
 pub extern "C" fn resolvo_solve(
     provider: &DependencyProvider,
-    requirements: Slice<Requirement>,
-    constraints: Slice<VersionSetId>,
+    problem: &Problem,
     error: &mut String,
     result: &mut Vector<SolvableId>,
 ) -> bool {
-    let requirements = requirements
-        .into_iter()
-        .copied()
-        .map(Into::into)
-        .collect::<Vec<_>>();
-    let constraints = constraints
-        .into_iter()
-        .copied()
-        .map(Into::into)
-        .collect::<Vec<_>>();
-
     let mut solver = resolvo::Solver::new(provider);
-    match solver.solve(requirements, constraints) {
+
+    let problem = resolvo::Problem {
+        requirements: problem
+            .requirements
+            .into_iter()
+            .copied()
+            .map(Into::into)
+            .collect(),
+        constraints: problem
+            .constraints
+            .into_iter()
+            .copied()
+            .map(Into::into)
+            .collect(),
+        soft_requirements: problem
+            .soft_requirements
+            .into_iter()
+            .copied()
+            .map(Into::into)
+            .collect(),
+    };
+
+    match solver.solve(problem) {
         Ok(solution) => {
             *result = solution.into_iter().map(Into::into).collect();
             true

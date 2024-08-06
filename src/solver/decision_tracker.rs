@@ -27,10 +27,6 @@ impl DecisionTracker {
         self.propagate_index = 0;
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-
     pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
         self.map.value(solvable_id)
     }
@@ -77,6 +73,11 @@ impl DecisionTracker {
     }
 
     pub(crate) fn undo_until(&mut self, level: u32) {
+        if level == 0 {
+            self.clear();
+            return;
+        }
+
         while let Some(decision) = self.stack.last() {
             if self.level(decision.solvable_id) <= level {
                 break;
