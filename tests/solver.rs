@@ -556,10 +556,7 @@ fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) 
 fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     match solver.solve(problem) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
@@ -592,10 +589,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
@@ -621,10 +615,7 @@ fn test_unit_propagation_1() {
     let provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -645,10 +636,7 @@ fn test_unit_propagation_nested() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -676,10 +664,7 @@ fn test_resolve_multiple() {
     ]);
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -738,10 +723,7 @@ fn test_resolve_with_nonexisting() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -776,10 +758,7 @@ fn test_resolve_with_nested_deps() {
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -804,10 +783,7 @@ fn test_resolve_with_unknown_deps() {
     provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -853,10 +829,7 @@ fn test_resolve_locked_top_level() {
     let requirements = provider.requirements(&["asdf"]);
 
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -879,10 +852,7 @@ fn test_resolve_ignored_locked_top_level() {
 
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
@@ -941,10 +911,7 @@ fn test_resolve_cyclic() {
         BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
     let requirements = provider.requirements(&["a 0..100"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
@@ -1228,11 +1195,9 @@ fn test_constraints() {
     let requirements = provider.requirements(&["a 0..10"]);
     let constraints = provider.requirements(&["b 1..2", "c"]);
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements,
-        constraints,
-        ..Default::default()
-    };
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints);
     let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
@@ -1272,11 +1237,10 @@ fn test_solve_with_additional() {
 
     let mut solver = Solver::new(provider);
 
-    let problem = Problem {
-        requirements,
-        constraints,
-        soft_requirements: extra_solvables.to_vec(),
-    };
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints)
+        .soft_requirements(extra_solvables);
     let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
@@ -1324,11 +1288,11 @@ fn test_solve_with_additional_with_constrains() {
 
     let mut solver = Solver::new(provider);
 
-    let problem = Problem {
-        requirements,
-        constraints,
-        soft_requirements: extra_solvables.to_vec(),
-    };
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints)
+        .soft_requirements(extra_solvables);
+
     let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
@@ -1404,10 +1368,7 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
 
 fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
     let mut solver = Solver::new(provider);
-    let problem = Problem {
-        requirements: root_reqs.iter().copied().map(Into::into).collect(),
-        ..Default::default()
-    };
+    let problem = Problem::new().requirements(root_reqs.iter().copied().map(Into::into).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
