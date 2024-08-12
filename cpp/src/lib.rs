@@ -490,26 +490,30 @@ pub extern "C" fn resolvo_solve(
 ) -> bool {
     let mut solver = resolvo::Solver::new(provider);
 
-    let problem = resolvo::Problem {
-        requirements: problem
-            .requirements
-            .into_iter()
-            .copied()
-            .map(Into::into)
-            .collect(),
-        constraints: problem
-            .constraints
-            .into_iter()
-            .copied()
-            .map(Into::into)
-            .collect(),
-        soft_requirements: problem
-            .soft_requirements
-            .into_iter()
-            .copied()
-            .map(Into::into)
-            .collect(),
-    };
+    let problem = resolvo::Problem::new()
+        .requirements(
+            problem
+                .requirements
+                .into_iter()
+                .copied()
+                .map(Into::into)
+                .collect(),
+        )
+        .constraints(
+            problem
+                .constraints
+                .into_iter()
+                .copied()
+                .map(Into::into)
+                .collect(),
+        )
+        .soft_requirements(
+            problem
+                .soft_requirements
+                .into_iter()
+                .copied()
+                .map(Into::into),
+        );
 
     match solver.solve(problem) {
         Ok(solution) => {
