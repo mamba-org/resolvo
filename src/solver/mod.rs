@@ -37,17 +37,63 @@ struct AddClauseOutput {
 }
 
 /// Describes the problem that is to be solved by the solver.
-#[derive(Default)]
-pub struct Problem {
-    /// The requirements that _must_ have one candidate solvable be included in
-    /// the solution.
-    pub requirements: Vec<Requirement>,
+///
+/// This struct is generic over the type `S` of the collection of soft
+/// requirements passed to the solver, typically expected to be a type
+/// implementing [`IntoIterator`].
+///
+/// This struct follows the builder pattern and can have its fields set by one
+/// of the available setter methods.
+pub struct Problem<S> {
+    requirements: Vec<Requirement>,
+    constraints: Vec<VersionSetId>,
+    soft_requirements: S,
+}
 
-    /// Additional constraints imposed on individual packages that the solvable
-    /// (if any) chosen for that package _must_ adhere to.
-    pub constraints: Vec<VersionSetId>,
+impl Default for Problem<std::iter::Empty<SolvableId>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    /// A set of additional requirements that the solver should _try_ and
+impl Problem<std::iter::Empty<SolvableId>> {
+    /// Creates a new empty [`Problem`]. Use the setter methods to build the
+    /// problem before passing it to the solver to be solved.
+    pub fn new() -> Self {
+        Self {
+            requirements: Default::default(),
+            constraints: Default::default(),
+            soft_requirements: Default::default(),
+        }
+    }
+}
+
+impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
+    /// Sets the requirements that _must_ have one candidate solvable be
+    /// included in the solution.
+    ///
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
+    pub fn requirements(self, requirements: Vec<Requirement>) -> Self {
+        Self {
+            requirements,
+            ..self
+        }
+    }
+
+    /// Sets the additional constraints imposed on individual packages that the
+    /// solvable (if any) chosen for that package _must_ adhere to.
+    ///
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
+    pub fn constraints(self, constraints: Vec<VersionSetId>) -> Self {
+        Self {
+            constraints,
+            ..self
+        }
+    }
+
+    /// Sets the additional requirements that the solver should _try_ and
     /// fulfill once it has found a solution to the main problem.
     ///
     /// An unsatisfiable soft requirement does not cause a conflict; the solver
@@ -57,7 +103,21 @@ pub struct Problem {
     /// Soft requirements are currently only specified as individual solvables
     /// to be included in the solution, however in the future they will be
     /// able to be specified as version sets.
-    pub soft_requirements: Vec<SolvableId>,
+    ///
+    /// # Returns
+    ///
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
+    pub fn soft_requirements<I: IntoIterator<Item = SolvableId>>(
+        self,
+        soft_requirements: I,
+    ) -> Problem<I> {
+        Problem {
+            requirements: self.requirements,
+            constraints: self.constraints,
+            soft_requirements,
+        }
+    }
 }
 
 /// Drives the SAT solving process.
@@ -209,7 +269,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// If the solution process is cancelled (see
     /// [`DependencyProvider::should_cancel_with_value`]), returns an
     /// [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
-    pub fn solve(&mut self, problem: Problem) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
+    pub fn solve(
+        &mut self,
+        problem: Problem<impl IntoIterator<Item = SolvableId>>,
+    ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
         self.decision_tracker.clear();
         self.negative_assertions.clear();
         self.learnt_clauses.clear();

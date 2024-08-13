@@ -7,7 +7,7 @@ use std::{
 
 use clap::Parser;
 use csv::WriterBuilder;
-use resolvo::{snapshot::DependencySnapshot, Solver, UnsolvableOrCancelled};
+use resolvo::{snapshot::DependencySnapshot, Problem, Solver, UnsolvableOrCancelled};
 
 #[derive(Parser)]
 #[clap(version = "0.1.0", author = "Bas Zalmstra <zalmstra.bas@gmail.com>")]
@@ -27,7 +27,7 @@ fn main() {
     let opts: Opts = Opts::parse();
 
     eprintln!("Loading snapshot ...");
-    let snapshot_file = BufReader::new(File::open(&opts.snapshot).unwrap());
+    let snapshot_file = BufReader::new(File::open(opts.snapshot).unwrap());
     let snapshot: DependencySnapshot = serde_json::from_reader(snapshot_file).unwrap();
 
     let mut writer = WriterBuilder::new()
@@ -50,7 +50,9 @@ fn main() {
         let mut solver = Solver::new(provider);
         let mut records = None;
         let mut error = None;
-        match solver.solve(vec![package_requirement.into()], vec![]) {
+
+        let problem = Problem::default().requirements(vec![package_requirement.into()]);
+        match solver.solve(problem) {
             Ok(solution) => {
                 eprintln!("OK");
                 records = Some(solution.len())
