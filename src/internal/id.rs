@@ -53,6 +53,23 @@ impl ArenaId for VersionSetId {
     }
 }
 
+/// The id associated with a union (logical OR) of two or more version sets.
+#[repr(transparent)]
+#[derive(Clone, Default, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct VersionSetUnionId(pub u32);
+
+impl ArenaId for VersionSetUnionId {
+    fn from_usize(x: usize) -> Self {
+        Self(x as u32)
+    }
+
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// The id associated to a solvable
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]

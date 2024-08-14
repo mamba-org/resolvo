@@ -3,8 +3,8 @@ use crate::{
     solver::{decision::Decision, decision_map::DecisionMap},
 };
 
-/// Tracks the assignments to solvables, keeping a log that can be used to backtrack, and a map that
-/// can be used to query the current value assigned
+/// Tracks the assignments to solvables, keeping a log that can be used to
+/// backtrack, and a map that can be used to query the current value assigned
 pub(crate) struct DecisionTracker {
     map: DecisionMap,
     stack: Vec<Decision>,
@@ -26,10 +26,6 @@ impl DecisionTracker {
         self.propagate_index = 0;
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-
     pub(crate) fn assigned_value(&self, var_id: VarId) -> Option<bool> {
         self.map.value(var_id)
     }
@@ -46,8 +42,8 @@ impl DecisionTracker {
         self.map.level(var_id)
     }
 
-    // Find the clause that caused the assignment of the specified solvable. If no assignment has
-    // been made to the solvable than `None` is returned.
+    // Find the clause that caused the assignment of the specified solvable. If no
+    // assignment has been made to the solvable than `None` is returned.
     pub(crate) fn find_clause_for_assignment(&self, var_id: VarId) -> Option<ClauseId> {
         self.stack
             .iter()
@@ -57,9 +53,11 @@ impl DecisionTracker {
 
     /// Attempts to add a decision
     ///
-    /// Returns true if the solvable was undecided, false if it was already decided to the same value
+    /// Returns true if the solvable was undecided, false if it was already
+    /// decided to the same value
     ///
-    /// Returns an error if the solvable was decided to a different value (which means there is a conflict)
+    /// Returns an error if the solvable was decided to a different value (which
+    /// means there is a conflict)
     pub(crate) fn try_add_decision(&mut self, decision: Decision, level: u32) -> Result<bool, ()> {
         match self.map.value(decision.var_id) {
             None => {
@@ -73,6 +71,11 @@ impl DecisionTracker {
     }
 
     pub(crate) fn undo_until(&mut self, level: u32) {
+        if level == 0 {
+            self.clear();
+            return;
+        }
+
         while let Some(decision) = self.stack.last() {
             if self.level(decision.var_id) <= level {
                 break;
@@ -92,7 +95,8 @@ impl DecisionTracker {
         (decision, self.map.level(top_decision.var_id))
     }
 
-    /// Returns the next decision in the log for which unit propagation still needs to run
+    /// Returns the next decision in the log for which unit propagation still
+    /// needs to run
     ///
     /// Side-effect: the decision will be marked as propagated
     pub(crate) fn next_unpropagated(&mut self) -> Option<Decision> {

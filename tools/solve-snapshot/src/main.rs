@@ -50,7 +50,7 @@ fn main() {
         let mut solver = Solver::new(provider);
         let mut records = None;
         let mut error = None;
-        match solver.solve(vec![package_requirement], vec![]) {
+        match solver.solve(vec![package_requirement.into()], vec![]) {
             Ok(solution) => {
                 eprintln!("OK");
                 records = Some(solution.len())

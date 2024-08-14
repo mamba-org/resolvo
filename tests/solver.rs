@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    borrow::Borrow,
     cell::{Cell, RefCell},
     collections::HashSet,
     fmt::{Debug, Display, Formatter},
@@ -21,8 +22,9 @@ use itertools::Itertools;
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::{Pool, Range},
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, SolvableId,
-    Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
+    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    VersionSetUnionId,
 };
 use tracing_test::traced_test;
 
@@ -116,6 +118,14 @@ impl Spec {
     pub fn new(name: String, versions: Range<Pack>) -> Self {
         Self { name, versions }
     }
+
+    pub fn parse_union(
+        spec: &str,
+    ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
+        spec.split('|')
+            .map(str::trim)
+            .map(|dep| Spec::from_str(dep))
+    }
 }
 
 impl FromStr for Spec {
@@ -169,11 +179,12 @@ struct BundleBoxProvider {
     // duplicate requests.
     requested_candidates: RefCell<HashSet<NameId>>,
     requested_dependencies: RefCell<HashSet<SolvableId>>,
+    interned_solvables: RefCell<HashMap<(NameId, Pack), SolvableId>>,
 }
 
 #[derive(Debug, Clone)]
 struct BundleBoxPackageDependencies {
-    dependencies: Vec<Spec>,
+    dependencies: Vec<Vec<Spec>>,
     constrains: Vec<Spec>,
 }
 
@@ -188,16 +199,40 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements(&self, requirements: &[&str]) -> Vec<VersionSetId> {
+    pub fn requirements<R: From<VersionSetId>>(&self, requirements: &[&str]) -> Vec<R> {
         requirements
             .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
-            .map(|spec| {
-                let dep_name = self.pool.intern_package_name(&spec.name);
-                self.pool
-                    .intern_version_set(dep_name, spec.versions.clone())
+            .map(|spec| self.intern_version_set(&spec))
+            .map(From::from)
+            .collect()
+    }
+
+    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<Requirement> {
+        requirements
+            .iter()
+            .map(|deps| {
+                let specs = Spec::parse_union(deps).map(Result::unwrap);
+                self.intern_version_set_union(specs).into()
             })
             .collect()
+    }
+
+    pub fn intern_version_set(&self, spec: &Spec) -> VersionSetId {
+        let dep_name = self.pool.intern_package_name(&spec.name);
+        self.pool
+            .intern_version_set(dep_name, spec.versions.clone())
+    }
+
+    pub fn intern_version_set_union(
+        &self,
+        specs: impl IntoIterator<Item = impl Borrow<Spec>>,
+    ) -> VersionSetUnionId {
+        let mut specs = specs
+            .into_iter()
+            .map(|spec| self.intern_version_set(spec.borrow()));
+        self.pool
+            .intern_version_set_union(specs.next().unwrap(), specs)
     }
 
     pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
@@ -236,7 +271,7 @@ impl BundleBoxProvider {
 
         let dependencies = dependencies
             .iter()
-            .map(|dep| Spec::from_str(dep))
+            .map(|dep| Spec::parse_union(dep).collect())
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -279,6 +314,18 @@ impl BundleBoxProvider {
             .collect::<Vec<_>>();
         DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
     }
+
+    pub fn intern_solvable(&self, name_id: NameId, pack: Pack) -> SolvableId {
+        *self
+            .interned_solvables
+            .borrow_mut()
+            .entry((name_id, pack))
+            .or_insert_with_key(|&(name_id, pack)| self.pool.intern_solvable(name_id, pack))
+    }
+
+    pub fn solvable_id(&self, name: impl Into<String>, version: impl Into<Pack>) -> SolvableId {
+        self.intern_solvable(self.pool.intern_package_name(name.into()), version.into())
+    }
 }
 
 impl Interner for BundleBoxProvider {
@@ -318,6 +365,12 @@ impl Interner for BundleBoxProvider {
 
     fn solvable_name(&self, solvable: SolvableId) -> NameId {
         self.pool.resolve_solvable(solvable).name
+    }
+    fn version_sets_in_union(
+        &self,
+        version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId> {
+        self.pool.resolve_version_set_union(version_set_union)
     }
 }
 
@@ -371,7 +424,7 @@ impl DependencyProvider for BundleBoxProvider {
         let locked = self.locked.get(package_name);
         let excluded = self.excluded.get(package_name);
         for pack in package.keys() {
-            let solvable = self.pool.intern_solvable(name, *pack);
+            let solvable = self.intern_solvable(name, *pack);
             candidates.candidates.push(solvable);
             if Some(pack) == favor {
                 candidates.favored = Some(solvable);
@@ -436,9 +489,33 @@ impl DependencyProvider for BundleBoxProvider {
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
         for req in &deps.dependencies {
-            let dep_name = self.pool.intern_package_name(&req.name);
-            let dep_spec = self.pool.intern_version_set(dep_name, req.versions.clone());
-            result.requirements.push(dep_spec);
+            let mut remaining_req_specs = req.iter();
+
+            let first = remaining_req_specs
+                .next()
+                .expect("Dependency spec must have at least one constraint");
+
+            let first_name = self.pool.intern_package_name(&first.name);
+            let first_version_set = self
+                .pool
+                .intern_version_set(first_name, first.versions.clone());
+
+            let requirement = if remaining_req_specs.len() == 0 {
+                first_version_set.into()
+            } else {
+                let other_version_sets = remaining_req_specs.map(|spec| {
+                    self.pool.intern_version_set(
+                        self.pool.intern_package_name(&spec.name),
+                        spec.versions.clone(),
+                    )
+                });
+
+                self.pool
+                    .intern_version_set_union(first_version_set, other_version_sets)
+                    .into()
+            };
+
+            result.requirements.push(requirement);
         }
 
         for req in &deps.constrains {
@@ -475,15 +552,16 @@ fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) 
     buf
 }
 
-/// Unsat so that we can view the problem
+/// Unsat so that we can view the conflict
 fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider);
-    match solver.solve(requirements, Vec::new()) {
+    let problem = Problem::new().requirements(requirements);
+    match solver.solve(problem) {
         Ok(_) => panic!("expected unsat, but a solution was found"),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -492,7 +570,7 @@ fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -509,13 +587,14 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     provider.sleep_before_return = true;
 
-    let requirements = provider.requirements(specs);
+    let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    match solver.solve(requirements, Vec::new()) {
+    let problem = Problem::new().requirements(requirements);
+    match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -524,7 +603,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }
@@ -534,9 +613,10 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 #[test]
 fn test_unit_propagation_1() {
     let provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
-    let root_requirements = provider.requirements(&["asdf"]);
+    let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(root_requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -556,7 +636,8 @@ fn test_unit_propagation_nested() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 2);
@@ -583,7 +664,8 @@ fn test_resolve_multiple() {
     ]);
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 2);
@@ -641,7 +723,8 @@ fn test_resolve_with_nonexisting() {
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -675,7 +758,8 @@ fn test_resolve_with_nested_deps() {
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -699,7 +783,8 @@ fn test_resolve_with_unknown_deps() {
     provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -744,7 +829,8 @@ fn test_resolve_locked_top_level() {
     let requirements = provider.requirements(&["asdf"]);
 
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -766,7 +852,8 @@ fn test_resolve_ignored_locked_top_level() {
 
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 1);
@@ -824,12 +911,35 @@ fn test_resolve_cyclic() {
         BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
     let requirements = provider.requirements(&["a 0..100"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, Vec::new()).unwrap();
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
     insta::assert_snapshot!(result, @r###"
         a=2
         b=5
+        "###);
+}
+
+#[test]
+fn test_resolve_union_requirements() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec![]),
+        ("b", 1, vec![]),
+        ("c", 1, vec!["a"]),
+        ("d", 1, vec!["b"]),
+        ("e", 1, vec!["a | b"]),
+    ]);
+
+    // Make d conflict with a=1
+    provider.add_package("f", 1.into(), &["b"], &["a 2"]);
+
+    let result = solve_snapshot(provider, &["c | d", "e", "f"]);
+    assert_snapshot!(result, @r###"
+        b=1
+        d=1
+        e=1
+        f=1
         "###);
 }
 
@@ -1101,12 +1211,115 @@ fn test_constraints() {
     let requirements = provider.requirements(&["a 0..10"]);
     let constraints = provider.requirements(&["b 1..2", "c"]);
     let mut solver = Solver::new(provider);
-    let solved = solver.solve(requirements, constraints).unwrap();
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints);
+    let solved = solver.solve(problem).unwrap();
 
     let result = transaction_to_string(solver.provider(), &solved);
     insta::assert_snapshot!(result, @r###"
         a=1
         b=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec![]),
+        ("e", 1, vec!["d"]),
+        ("locked", 1, vec![]),
+        ("locked", 2, vec![]),
+    ]);
+
+    provider.set_locked("locked", 2);
+
+    let requirements = provider.requirements(&["a 0..10"]);
+    let constraints = provider.requirements(&["b 1..2", "c"]);
+
+    let extra_solvables = [
+        provider.solvable_id("b", 2),
+        provider.solvable_id("c", 1),
+        provider.solvable_id("e", 1),
+        // Does not obey the locked clause since it has not been requested
+        // in a version set by another solvable
+        provider.solvable_id("locked", 1),
+        provider.solvable_id("unknown-deps", Pack::new(1).with_unknown_deps()),
+    ];
+
+    let mut solver = Solver::new(provider);
+
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints)
+        .soft_requirements(extra_solvables);
+    let solved = solver.solve(problem).unwrap();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        d=1
+        e=1
+        locked=1
+        "###);
+}
+
+#[test]
+fn test_solve_with_additional_with_constrains() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("a", 1, vec!["b 0..10"]),
+        ("b", 1, vec![]),
+        ("b", 2, vec![]),
+        ("b", 3, vec![]),
+        ("c", 1, vec![]),
+        ("d", 1, vec!["f"]),
+        ("e", 1, vec!["c"]),
+    ]);
+
+    provider.add_package("f", 1.into(), &[], &["c 2..3"]);
+    provider.add_package("g", 1.into(), &[], &["b 2..3"]);
+    provider.add_package("h", 1.into(), &[], &["b 1..2"]);
+    provider.add_package("i", 1.into(), &[], &[]);
+    provider.add_package("j", 1.into(), &["i"], &[]);
+    provider.add_package("k", 1.into(), &["i"], &[]);
+    provider.add_package("l", 1.into(), &["j", "k"], &[]);
+
+    let requirements = provider.requirements(&["a 0..10", "e"]);
+    let constraints = provider.requirements(&["b 1..2", "c", "k 2..3"]);
+
+    let extra_solvables = [
+        provider.solvable_id("d", 1),
+        provider.solvable_id("g", 1),
+        provider.solvable_id("h", 1),
+        provider.solvable_id("j", 1),
+        provider.solvable_id("l", 1),
+        provider.solvable_id("k", 1),
+    ];
+
+    let mut solver = Solver::new(provider);
+
+    let problem = Problem::new()
+        .requirements(requirements)
+        .constraints(constraints)
+        .soft_requirements(extra_solvables);
+
+    let solved = solver.solve(problem).unwrap();
+
+    let result = transaction_to_string(solver.provider(), &solved);
+    assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        e=1
+        h=1
+        i=1
+        j=1
         "###);
 }
 
@@ -1137,6 +1350,32 @@ fn test_snapshot() {
     assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req]));
 }
 
+#[test]
+fn test_snapshot_union_requirements() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("icons", 2, vec![]),
+        ("icons", 1, vec![]),
+        ("intl", 5, vec![]),
+        ("intl", 3, vec![]),
+        ("union", 1, vec!["icons 2 | intl"]),
+    ]);
+
+    let intl_name_id = provider.package_name("intl");
+    let union_name_id = provider.package_name("union");
+
+    let snapshot = provider.into_snapshot();
+
+    let mut snapshot_provider = snapshot.provider();
+
+    let intl_req = snapshot_provider.add_package_requirement(intl_name_id);
+    let union_req = snapshot_provider.add_package_requirement(union_name_id);
+
+    assert_snapshot!(solve_for_snapshot(
+        snapshot_provider,
+        &[intl_req, union_req]
+    ));
+}
+
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
@@ -1145,11 +1384,12 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
 
 fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
     let mut solver = Solver::new(provider);
-    match solver.solve(root_reqs.to_vec(), Vec::new()) {
+    let problem = Problem::new().requirements(root_reqs.iter().copied().map(Into::into).collect());
+    match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
-        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-            // Write the problem graphviz to stderr
-            let graph = problem.graph(&solver);
+        Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+            // Write the conflict graphviz to stderr
+            let graph = conflict.graph(&solver);
             let mut output = stderr();
             writeln!(output, "UNSOLVABLE:").unwrap();
             graph
@@ -1158,7 +1398,7 @@ fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) ->
             writeln!(output, "\n").unwrap();
 
             // Format a user friendly error message
-            problem.display_user_friendly(&solver).to_string()
+            conflict.display_user_friendly(&solver).to_string()
         }
         Err(UnsolvableOrCancelled::Cancelled(reason)) => *reason.downcast().unwrap(),
     }

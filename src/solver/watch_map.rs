@@ -1,7 +1,6 @@
-use crate::internal::id::{ExpandedVar, VarId};
 use crate::{
     internal::{
-        id::{ClauseId, InternalSolvableId},
+        id::{ClauseId, ExpandedVar, InternalSolvableId, VarId},
         mapping::Mapping,
     },
     solver::clause::ClauseState,
@@ -9,8 +8,8 @@ use crate::{
 
 /// A map from solvables to the clauses that are watching them
 pub(crate) struct WatchMap {
-    /// Note: the map is to a single clause, but clauses form a linked list, so it is possible to go
-    /// from one to the next
+    /// Note: the map is to a single clause, but clauses form a linked list, so
+    /// it is possible to go from one to the next
     solvables: Mapping<InternalSolvableId, ClauseId>,
     variables: Mapping<u32, ClauseId>,
 }
@@ -67,7 +66,7 @@ impl WatchMap {
         clause.watched_literals[watch_index] = new_watch;
         clause.link_to_clause(
             watch_index,
-            *new_watch_clause.expect("linking to unknown variable"),
+            new_watch_clause.copied().unwrap_or(ClauseId::null()),
         );
         match new_watch.expand() {
             ExpandedVar::Solvable(s) => self.solvables.insert(s, clause_id),

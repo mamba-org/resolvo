@@ -196,7 +196,7 @@ impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {
         self.chunks
             .iter()
             .flatten()
-            .take(self.max())
+            .take(self.max() + 1)
             .collect::<Vec<_>>()
             .serialize(serializer)
     }
@@ -221,7 +221,7 @@ impl<'de, K: ArenaId, V: serde::Deserialize<'de>> serde::Deserialize<'de> for Ma
 
 #[cfg(test)]
 mod tests {
-    use crate::internal::arena::ArenaId;
+    use super::*;
 
     struct Id {
         id: usize,
@@ -240,9 +240,9 @@ mod tests {
     #[test]
     pub fn test_mapping() {
         // New mapping should have 128 slots per default
-        let mut mapping = super::Mapping::<Id, usize>::new();
+        let mut mapping = Mapping::<Id, usize>::new();
         assert_eq!(mapping.len(), 0);
-        assert_eq!(mapping.slots(), super::VALUES_PER_CHUNK);
+        assert_eq!(mapping.slots(), VALUES_PER_CHUNK);
 
         // Inserting a value should increase the length
         // and the number of slots should stay the same
@@ -251,20 +251,42 @@ mod tests {
 
         // Should be able to get it
         assert_eq!(*mapping.get(Id::from_usize(0)).unwrap(), 10usize);
-        assert_eq!(mapping.slots(), super::VALUES_PER_CHUNK);
+        assert_eq!(mapping.slots(), VALUES_PER_CHUNK);
 
         // Inserting higher than the slot size should trigger a resize
-        mapping.insert(Id::from_usize(super::VALUES_PER_CHUNK), 20usize);
+        mapping.insert(Id::from_usize(VALUES_PER_CHUNK), 20usize);
         assert_eq!(
-            *mapping
-                .get(Id::from_usize(super::VALUES_PER_CHUNK))
-                .unwrap(),
+            *mapping.get(Id::from_usize(VALUES_PER_CHUNK)).unwrap(),
             20usize
         );
 
         // Now contains 2 elements
         assert_eq!(mapping.len(), 2);
         // And double number of slots due to resize
-        assert_eq!(mapping.slots(), super::VALUES_PER_CHUNK * 2);
+        assert_eq!(mapping.slots(), VALUES_PER_CHUNK * 2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    pub fn test_serde() {
+        use serde_json::{from_value, to_value};
+
+        let values = [1, 3, 6, 9, 2, 4, 6, 1, 2, 3];
+        let json = to_value(values).unwrap();
+        let mapping =
+            values
+                .iter()
+                .copied()
+                .enumerate()
+                .fold(Mapping::new(), |mut mapping, (i, v)| {
+                    mapping.insert(Id::from_usize(i), v);
+                    mapping
+                });
+
+        assert_eq!(json, to_value(&mapping).unwrap());
+        itertools::assert_equal(
+            mapping.iter().map(|(_, &v)| v),
+            from_value::<Vec<i32>>(json).unwrap(),
+        );
     }
 }
