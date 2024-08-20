@@ -34,7 +34,8 @@ impl From<VersionSetUnionId> for Requirement {
 }
 
 impl Requirement {
-    pub(crate) fn display<'i>(&'i self, interner: &'i impl Interner) -> impl Display + '_ {
+    /// Returns an object that implements `Display` for the requirement.
+    pub fn display<'i>(&'i self, interner: &'i impl Interner) -> impl Display + '_ {
         DisplayRequirement {
             interner,
             requirement: self,
