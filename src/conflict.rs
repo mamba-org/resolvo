@@ -11,8 +11,9 @@ use petgraph::{
     Direction,
 };
 
+use crate::internal::id::VarId;
 use crate::{
-    internal::id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
+    internal::id::{ClauseId, ExpandedVar, InternalSolvableId, SolvableId, StringId, VersionSetId},
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
     DependencyProvider, Interner, Requirement,
@@ -45,10 +46,10 @@ impl Conflict {
         solver: &Solver<D, RT>,
     ) -> ConflictGraph {
         let mut graph = DiGraph::<ConflictNode, ConflictEdge>::default();
-        let mut nodes: HashMap<InternalSolvableId, NodeIndex> = HashMap::default();
+        let mut nodes: HashMap<VarId, NodeIndex> = HashMap::default();
         let mut excluded_nodes: HashMap<StringId, NodeIndex> = HashMap::default();
 
-        let root_node = Self::add_node(&mut graph, &mut nodes, InternalSolvableId::root());
+        let root_node = Self::add_node(&mut graph, &mut nodes, InternalSolvableId::root().into());
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
 
         for clause_id in &self.clauses {
@@ -57,7 +58,7 @@ impl Conflict {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
                     tracing::info!("{solvable:?} is excluded");
-                    let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, (*solvable).into());
                     let excluded_node = excluded_nodes
                         .entry(*reason)
                         .or_insert_with(|| graph.add_node(ConflictNode::Excluded(*reason)));
@@ -70,7 +71,7 @@ impl Conflict {
                 }
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id.into());
 
                     let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(version_set_id)).unwrap_or_else(|_| {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
@@ -99,20 +100,20 @@ impl Conflict {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden);
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden.into());
                     let conflict = ConflictCause::Locked(locked);
                     graph.add_edge(root_node, node2_id, ConflictEdge::Conflict(conflict));
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id, _) => {
-                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id);
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id);
+                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id.into());
+                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id.var_id);
 
                     let conflict = ConflictCause::ForbidMultipleInstances;
                     graph.add_edge(node1_id, node2_id, ConflictEdge::Conflict(conflict));
                 }
                 &Clause::Constrains(package_id, dep_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
-                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id);
+                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id.into());
+                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id.into());
 
                     graph.add_edge(
                         package_node,
@@ -142,6 +143,8 @@ impl Conflict {
         }
         assert_eq!(graph.node_count(), visited_nodes.len());
 
+        collapse_variable_nodes(&mut graph);
+
         ConflictGraph {
             graph,
             root_node,
@@ -151,12 +154,15 @@ impl Conflict {
 
     fn add_node(
         graph: &mut DiGraph<ConflictNode, ConflictEdge>,
-        nodes: &mut HashMap<InternalSolvableId, NodeIndex>,
-        solvable_id: InternalSolvableId,
+        nodes: &mut HashMap<VarId, NodeIndex>,
+        var_id: VarId,
     ) -> NodeIndex {
-        *nodes
-            .entry(solvable_id)
-            .or_insert_with(|| graph.add_node(ConflictNode::Solvable(solvable_id)))
+        *nodes.entry(var_id).or_insert_with(|| {
+            graph.add_node(match var_id.expand() {
+                ExpandedVar::Solvable(s) => ConflictNode::Solvable(s),
+                ExpandedVar::Variable(v) => ConflictNode::Variable(v),
+            })
+        })
     }
 
     /// Display a user-friendly error explaining the conflict
@@ -169,11 +175,74 @@ impl Conflict {
     }
 }
 
+/// [`ConflictCause::ForbidMultipleInstances`] might reference variable nodes.
+/// These nodes are nonsensical to the user. This function removes these nodes
+/// by rewriting the problem.
+fn collapse_variable_nodes(graph: &mut DiGraph<ConflictNode, ConflictEdge>) {
+    // Find all variables that are involved in a forbid multiple instances clause
+    // and interconnect all incoming edges together. If we have two nodes `a` and
+    // `b` that are connected through a variable node (e.g. `a -> v <- b`) we create
+    // new edges between `a` and `b` (e.g. `a -> b` and `b -> a`).
+    for node_id in graph.node_indices() {
+        let ConflictNode::Variable(..) = graph[node_id] else {
+            continue;
+        };
+
+        // Find all solvable nodes that are connected to this variable node.
+        let nodes = graph
+            .edges_directed(node_id, Direction::Incoming)
+            .filter(|edge| graph[edge.source()].is_solvable())
+            .filter(|edge| edge.weight().is_forbid_multiple())
+            .map(|edge| edge.source())
+            .collect_vec();
+
+        // Create edge to connect them all together
+        for (i, &node) in nodes.iter().enumerate() {
+            for &other_node in nodes.iter().skip(i + 1) {
+                graph.add_edge(
+                    node,
+                    other_node,
+                    ConflictEdge::Conflict(ConflictCause::ForbidMultipleInstances),
+                );
+            }
+        }
+    }
+
+    // Remove all variable nodes. This will also remove all edges to the variable
+    // nodes.
+    graph.retain_nodes(|graph, node| !matches!(graph[node], ConflictNode::Variable(..)));
+
+    // Iterate over all already installed edge and remove those where the nodes
+    // share the same predecessor edges.
+    graph.retain_edges(|graph, edge| {
+        if !graph.edge_weight(edge).unwrap().is_forbid_multiple() {
+            return true;
+        }
+
+        let (source, target) = graph.edge_endpoints(edge).unwrap();
+
+        let source_predecessors: HashSet<_> = graph
+            .edges_directed(source, Direction::Incoming)
+            .filter_map(|edge| edge.weight().try_requires())
+            .collect::<HashSet<_>>();
+        let target_predecessors: HashSet<_> = graph
+            .edges_directed(target, Direction::Incoming)
+            .filter_map(|edge| edge.weight().try_requires())
+            .collect::<HashSet<_>>();
+
+        !source_predecessors
+            .iter()
+            .any(|p| target_predecessors.contains(p))
+    })
+}
+
 /// A node in the graph representation of a [`Conflict`]
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum ConflictNode {
     /// Node corresponding to a solvable
     Solvable(InternalSolvableId),
+    /// Node corresponding to a solvable
+    Variable(u32),
     /// Node representing a dependency without candidates
     UnresolvedDependency,
     /// Node representing an exclude reason
@@ -184,6 +253,9 @@ impl ConflictNode {
     fn solvable_id(self) -> InternalSolvableId {
         match self {
             ConflictNode::Solvable(solvable_id) => solvable_id,
+            ConflictNode::Variable(_) => {
+                panic!("expected solvable node, found variable node")
+            }
             ConflictNode::UnresolvedDependency => {
                 panic!("expected solvable node, found unresolved dependency")
             }
@@ -191,6 +263,10 @@ impl ConflictNode {
                 panic!("expected solvable node, found excluded node")
             }
         }
+    }
+
+    fn is_solvable(self) -> bool {
+        matches!(self, ConflictNode::Solvable(_))
     }
 }
 
@@ -217,6 +293,13 @@ impl ConflictEdge {
             ConflictEdge::Requires(match_spec_id) => match_spec_id,
             ConflictEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
         }
+    }
+
+    fn is_forbid_multiple(self) -> bool {
+        matches!(
+            self,
+            ConflictEdge::Conflict(ConflictCause::ForbidMultipleInstances)
+        )
     }
 }
 
@@ -335,6 +418,7 @@ impl ConflictGraph {
                     ConflictNode::Excluded(reason) => {
                         format!("reason: {}", interner.display_string(reason))
                     }
+                    ConflictNode::Variable(var) => format!("var#{var}"),
                 };
 
                 write!(
@@ -365,6 +449,7 @@ impl ConflictGraph {
                         solvable_id
                     }
                 }
+                ConflictNode::Variable(_) => continue,
             };
 
             let predecessors: Vec<_> = graph
@@ -906,9 +991,9 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                             }
                             let indent = indenter.get_indent();
                             writeln!(
-                                f,
-                                "{indent}{name} {version_set} , which conflicts with any installable versions previously reported",
-                            )?;
+                                    f,
+                                    "{indent}{name} {version_set} , which conflicts with any installable versions previously reported",
+                                )?;
                         }
                     } else {
                         writeln!(f, "{indent}{version} would require",)?;
@@ -986,10 +1071,10 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                     }
                     &ConflictCause::Locked(solvable_id) => {
                         writeln!(
-                            f,
-                            "{indent}{} is locked, but another version is required as reported above",
-                            self.interner.display_merged_solvables(&[solvable_id.as_solvable().expect("root is never locked")]),
-                        )?;
+                                f,
+                                "{indent}{} is locked, but another version is required as reported above",
+                                self.interner.display_merged_solvables(&[solvable_id.as_solvable().expect("root is never locked")]),
+                            )?;
                     }
                     ConflictCause::Excluded => continue,
                 };

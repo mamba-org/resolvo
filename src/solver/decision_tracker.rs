@@ -1,11 +1,10 @@
-use crate::internal::id::ClauseId;
 use crate::{
-    internal::id::InternalSolvableId,
+    internal::id::{ClauseId, VarId},
     solver::{decision::Decision, decision_map::DecisionMap},
 };
 
-/// Tracks the assignments to solvables, keeping a log that can be used to backtrack, and a map that
-/// can be used to query the current value assigned
+/// Tracks the assignments to solvables, keeping a log that can be used to
+/// backtrack, and a map that can be used to query the current value assigned
 pub(crate) struct DecisionTracker {
     map: DecisionMap,
     stack: Vec<Decision>,
@@ -27,8 +26,8 @@ impl DecisionTracker {
         self.propagate_index = 0;
     }
 
-    pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
-        self.map.value(solvable_id)
+    pub(crate) fn assigned_value(&self, var_id: VarId) -> Option<bool> {
+        self.map.value(var_id)
     }
 
     pub(crate) fn map(&self) -> &DecisionMap {
@@ -39,31 +38,30 @@ impl DecisionTracker {
         self.stack.iter().copied()
     }
 
-    pub(crate) fn level(&self, solvable_id: InternalSolvableId) -> u32 {
-        self.map.level(solvable_id)
+    pub(crate) fn level(&self, var_id: VarId) -> u32 {
+        self.map.level(var_id)
     }
 
-    // Find the clause that caused the assignment of the specified solvable. If no assignment has
-    // been made to the solvable than `None` is returned.
-    pub(crate) fn find_clause_for_assignment(
-        &self,
-        solvable_id: InternalSolvableId,
-    ) -> Option<ClauseId> {
+    // Find the clause that caused the assignment of the specified solvable. If no
+    // assignment has been made to the solvable than `None` is returned.
+    pub(crate) fn find_clause_for_assignment(&self, var_id: VarId) -> Option<ClauseId> {
         self.stack
             .iter()
-            .find(|d| d.solvable_id == solvable_id)
+            .find(|d| d.var_id == var_id)
             .map(|d| d.derived_from)
     }
 
     /// Attempts to add a decision
     ///
-    /// Returns true if the solvable was undecided, false if it was already decided to the same value
+    /// Returns true if the solvable was undecided, false if it was already
+    /// decided to the same value
     ///
-    /// Returns an error if the solvable was decided to a different value (which means there is a conflict)
+    /// Returns an error if the solvable was decided to a different value (which
+    /// means there is a conflict)
     pub(crate) fn try_add_decision(&mut self, decision: Decision, level: u32) -> Result<bool, ()> {
-        match self.map.value(decision.solvable_id) {
+        match self.map.value(decision.var_id) {
             None => {
-                self.map.set(decision.solvable_id, decision.value, level);
+                self.map.set(decision.var_id, decision.value, level);
                 self.stack.push(decision);
                 Ok(true)
             }
@@ -79,7 +77,7 @@ impl DecisionTracker {
         }
 
         while let Some(decision) = self.stack.last() {
-            if self.level(decision.solvable_id) <= level {
+            if self.level(decision.var_id) <= level {
                 break;
             }
 
@@ -89,15 +87,16 @@ impl DecisionTracker {
 
     pub(crate) fn undo_last(&mut self) -> (Decision, u32) {
         let decision = self.stack.pop().unwrap();
-        self.map.reset(decision.solvable_id);
+        self.map.reset(decision.var_id);
 
         self.propagate_index = self.stack.len();
 
         let top_decision = self.stack.last().unwrap();
-        (decision, self.map.level(top_decision.solvable_id))
+        (decision, self.map.level(top_decision.var_id))
     }
 
-    /// Returns the next decision in the log for which unit propagation still needs to run
+    /// Returns the next decision in the log for which unit propagation still
+    /// needs to run
     ///
     /// Side-effect: the decision will be marked as propagated
     pub(crate) fn next_unpropagated(&mut self) -> Option<Decision> {
