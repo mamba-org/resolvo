@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/mamba-org/resolvo/compare/resolvo-v0.7.0...resolvo-v0.8.0) - 2024-09-09
+
+### Added
+
+- [**breaking**] decide on explicit requirements first ([#61](https://github.com/mamba-org/resolvo/pull/61))
+- add better timing notebook and measuring ([#64](https://github.com/mamba-org/resolvo/pull/64))
+- *(solver)* [**breaking**] Make `Problem` use builder pattern ([#62](https://github.com/mamba-org/resolvo/pull/62))
+
 ## [0.7.0](https://github.com/mamba-org/resolvo/compare/resolvo-v0.6.2...resolvo-v0.7.0) - 2024-08-06
 
 ### Added
