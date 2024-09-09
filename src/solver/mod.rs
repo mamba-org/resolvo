@@ -1,11 +1,13 @@
+use std::{
+    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
+};
+
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use itertools::Itertools;
-use std::fmt::Display;
-use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
 
 use crate::{
@@ -36,11 +38,12 @@ struct AddClauseOutput {
 
 /// Describes the problem that is to be solved by the solver.
 ///
-/// This struct is generic over the type `S` of the collection of soft requirements passed
-/// to the solver, typically expected to be a type implementing [`IntoIterator`].
+/// This struct is generic over the type `S` of the collection of soft
+/// requirements passed to the solver, typically expected to be a type
+/// implementing [`IntoIterator`].
 ///
-/// This struct follows the builder pattern and can have its fields set by one of the available
-/// setter methods.
+/// This struct follows the builder pattern and can have its fields set by one
+/// of the available setter methods.
 pub struct Problem<S> {
     requirements: Vec<Requirement>,
     constraints: Vec<VersionSetId>,
@@ -54,8 +57,8 @@ impl Default for Problem<std::iter::Empty<SolvableId>> {
 }
 
 impl Problem<std::iter::Empty<SolvableId>> {
-    /// Creates a new empty [`Problem`]. Use the setter methods to build the problem
-    /// before passing it to the solver to be solved.
+    /// Creates a new empty [`Problem`]. Use the setter methods to build the
+    /// problem before passing it to the solver to be solved.
     pub fn new() -> Self {
         Self {
             requirements: Default::default(),
@@ -66,10 +69,11 @@ impl Problem<std::iter::Empty<SolvableId>> {
 }
 
 impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
-    /// Sets the requirements that _must_ have one candidate solvable be included in the
-    /// solution.
+    /// Sets the requirements that _must_ have one candidate solvable be
+    /// included in the solution.
     ///
-    /// Returns the [`Problem`] for further mutation or to pass to [`Solver::solve`].
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
     pub fn requirements(self, requirements: Vec<Requirement>) -> Self {
         Self {
             requirements,
@@ -77,10 +81,11 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
         }
     }
 
-    /// Sets the additional constraints imposed on individual packages that the solvable (if any)
-    /// chosen for that package _must_ adhere to.
+    /// Sets the additional constraints imposed on individual packages that the
+    /// solvable (if any) chosen for that package _must_ adhere to.
     ///
-    /// Returns the [`Problem`] for further mutation or to pass to [`Solver::solve`].
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
     pub fn constraints(self, constraints: Vec<VersionSetId>) -> Self {
         Self {
             constraints,
@@ -88,19 +93,21 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
         }
     }
 
-    /// Sets the additional requirements that the solver should _try_ and fulfill once it has
-    /// found a solution to the main problem.
+    /// Sets the additional requirements that the solver should _try_ and
+    /// fulfill once it has found a solution to the main problem.
     ///
-    /// An unsatisfiable soft requirement does not cause a conflict; the solver will try
-    /// and fulfill as many soft requirements as possible and skip the unsatisfiable ones.
+    /// An unsatisfiable soft requirement does not cause a conflict; the solver
+    /// will try and fulfill as many soft requirements as possible and skip
+    /// the unsatisfiable ones.
     ///
-    /// Soft requirements are currently only specified as individual solvables to be
-    /// included in the solution, however in the future they will be able to be specified
-    /// as version sets.
+    /// Soft requirements are currently only specified as individual solvables
+    /// to be included in the solution, however in the future they will be
+    /// able to be specified as version sets.
     ///
     /// # Returns
     ///
-    /// Returns the [`Problem`] for further mutation or to pass to [`Solver::solve`].
+    /// Returns the [`Problem`] for further mutation or to pass to
+    /// [`Solver::solve`].
     pub fn soft_requirements<I: IntoIterator<Item = SolvableId>>(
         self,
         soft_requirements: I,
@@ -236,27 +243,32 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
     /// Solves the given [`Problem`].
     ///
-    /// The solver first solves for the root requirements and constraints, and then
-    /// tries to include in the solution as many of the soft requirements as it can.
-    /// Each soft requirement is subject to all the clauses and decisions introduced
-    /// for all the previously decided solvables in the solution.
+    /// The solver first solves for the root requirements and constraints, and
+    /// then tries to include in the solution as many of the soft
+    /// requirements as it can. Each soft requirement is subject to all the
+    /// clauses and decisions introduced for all the previously decided
+    /// solvables in the solution.
     ///
-    /// Unless the corresponding package has been requested by a version set in another
-    /// solvable's clauses, each soft requirement is _not_ subject to the
-    /// package-level clauses introduced in [`DependencyProvider::get_candidates`] since the
-    /// solvables have been requested specifically (not through a version set) in the solution.
+    /// Unless the corresponding package has been requested by a version set in
+    /// another solvable's clauses, each soft requirement is _not_ subject
+    /// to the package-level clauses introduced in
+    /// [`DependencyProvider::get_candidates`] since the solvables have been
+    /// requested specifically (not through a version set) in the solution.
     ///
     /// # Returns
     ///
-    /// If a solution was found, returns a [`Vec`] of the solvables included in the solution.
+    /// If a solution was found, returns a [`Vec`] of the solvables included in
+    /// the solution.
     ///
-    /// If no solution to the _root_ requirements and constraints was found, returns a
-    /// [`Conflict`] wrapped in a [`UnsolvableOrCancelled::Unsolvable`], which provides ways to
-    /// inspect the causes and report them to the user. If a soft requirement is unsolvable,
-    /// it is simply not included in the solution.
+    /// If no solution to the _root_ requirements and constraints was found,
+    /// returns a [`Conflict`] wrapped in a
+    /// [`UnsolvableOrCancelled::Unsolvable`], which provides ways to
+    /// inspect the causes and report them to the user. If a soft requirement is
+    /// unsolvable, it is simply not included in the solution.
     ///
-    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
-    /// returns an [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
+    /// If the solution process is cancelled (see
+    /// [`DependencyProvider::should_cancel_with_value`]), returns an
+    /// [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
     pub fn solve(
         &mut self,
         problem: Problem<impl IntoIterator<Item = SolvableId>>,
@@ -291,7 +303,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         Ok(self.chosen_solvables().collect())
     }
 
-    /// Returns the solvables that the solver has chosen to include in the solution so far.
+    /// Returns the solvables that the solver has chosen to include in the
+    /// solution so far.
     fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
         self.decision_tracker.stack().filter_map(|d| {
             if d.value {
@@ -668,12 +681,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ///
     /// The solver loop can be found in [`Solver::resolve_dependencies`].
     ///
-    /// Returns `Ok(true)` if a solution was found for `solvable`. If a solution was not
-    /// found, returns `Ok(false)` if some decisions have already been made by the solver
-    /// (i.e. the decision tracker stack is not empty). Otherwise, returns
-    /// [`UnsolvableOrCancelled::Unsolvable`] as an `Err` on no solution.
+    /// Returns `Ok(true)` if a solution was found for `solvable`. If a solution
+    /// was not found, returns `Ok(false)` if some decisions have already
+    /// been made by the solver (i.e. the decision tracker stack is not
+    /// empty). Otherwise, returns [`UnsolvableOrCancelled::Unsolvable`] as
+    /// an `Err` on no solution.
     ///
-    /// If the solution process is cancelled (see [`DependencyProvider::should_cancel_with_value`]),
+    /// If the solution process is cancelled (see
+    /// [`DependencyProvider::should_cancel_with_value`]),
     /// returns [`UnsolvableOrCancelled::Cancelled`] as an `Err`.
     fn run_sat(&mut self, solvable: InternalSolvableId) -> Result<bool, UnsolvableOrCancelled> {
         let starting_level = self
@@ -824,12 +839,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
     }
 
-    /// Decides how to terminate the solver algorithm when the given `solvable` was
-    /// deemed unsolvable by [`Solver::run_sat`].
+    /// Decides how to terminate the solver algorithm when the given `solvable`
+    /// was deemed unsolvable by [`Solver::run_sat`].
     ///
-    /// Returns an `Err` value of [`UnsolvableOrCancelled::Unsolvable`] only if `solvable` is
-    /// the very first solvable we are solving for. Otherwise, undoes all the decisions made
-    /// when trying to solve for `solvable`, sets it to `false` and returns `Ok(false)`.
+    /// Returns an `Err` value of [`UnsolvableOrCancelled::Unsolvable`] only if
+    /// `solvable` is the very first solvable we are solving for. Otherwise,
+    /// undoes all the decisions made when trying to solve for `solvable`,
+    /// sets it to `false` and returns `Ok(false)`.
     fn run_sat_process_unsolvable(
         &mut self,
         solvable: InternalSolvableId,
@@ -912,8 +928,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// ensures that if there are conflicts they are delt with as early as
     /// possible.
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
-        let mut best_decision = None;
+        let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
+            None;
         for &(solvable_id, deps, clause_id) in &self.requires_clauses {
+            let is_explicit_requirement = solvable_id == InternalSolvableId::root();
+            if !is_explicit_requirement && matches!(best_decision, Some((true, _, _))) {
+                // If we already have an explicit requirement, there is no need to evaluate
+                // non-explicit requirements.
+                continue;
+            }
+
             // Consider only clauses in which we have decided to install the solvable
             if self.decision_tracker.assigned_value(solvable_id) != Some(true) {
                 continue;
@@ -947,9 +971,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 ControlFlow::Continue((Some(candidate), count)) => {
                     let possible_decision = (candidate, solvable_id, clause_id);
                     best_decision = Some(match best_decision {
-                        None => (count, possible_decision),
-                        Some((best_count, _)) if count < best_count => {
-                            (count, possible_decision)
+                        None => (is_explicit_requirement, count, possible_decision),
+                        Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
+                        Some((_, best_count, _)) if count < best_count => {
+                            (is_explicit_requirement, count, possible_decision)
                         }
                         Some(best_decision) => best_decision,
                     })
@@ -959,7 +984,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
         }
 
-        if let Some((count, (candidate, _solvable_id, clause_id))) = best_decision {
+        if let Some((_is_explicit_requirement, count, (candidate, _solvable_id, clause_id))) =
+            best_decision
+        {
             tracing::trace!(
                 "deciding to assign {}, ({}, {} possible candidates)",
                 self.provider().display_solvable(candidate),
@@ -969,9 +996,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
 
         // Could not find a requirement that needs satisfying.
-        best_decision.map(|(_best_count, (candidate, required_by, via))| {
-            (candidate.into(), required_by, via)
-        })
+        best_decision.map(
+            |(_is_explicit_dependency, _best_count, (candidate, required_by, via))| {
+                (candidate.into(), required_by, via)
+            },
+        )
     }
 
     /// Executes one iteration of the CDCL loop

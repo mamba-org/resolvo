@@ -58,14 +58,14 @@ fn main() {
 
     // Generate a range of problems.
     let mut rng = StdRng::seed_from_u64(0);
-    let requirement_dist = WeightedIndex::new(&[
+    let requirement_dist = WeightedIndex::new([
         10, // 10 times more likely to pick a package
-        if snapshot.version_sets.len() > 0 {
+        if !snapshot.version_sets.is_empty() {
             1
         } else {
             0
         },
-        if snapshot.version_set_unions.len() > 0 {
+        if !snapshot.version_set_unions.is_empty() {
             1
         } else {
             0

@@ -387,7 +387,7 @@ impl<'d> resolvo::Interner for &'d DependencyProvider {
     ) -> impl Iterator<Item = resolvo::VersionSetId> {
         unsafe { (self.version_sets_in_union)(self.data, version_set_union.into()) }
             .as_slice()
-            .into_iter()
+            .iter()
             .copied()
             .map(Into::into)
     }
@@ -435,7 +435,7 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
                     .collect(),
                 excluded: candidates
                     .excluded
-                    .into_iter()
+                    .iter()
                     .map(|excluded| (excluded.solvable.into(), excluded.reason.into()))
                     .collect(),
             })
@@ -494,7 +494,7 @@ pub extern "C" fn resolvo_solve(
         .requirements(
             problem
                 .requirements
-                .into_iter()
+                .iter()
                 .copied()
                 .map(Into::into)
                 .collect(),
@@ -502,18 +502,12 @@ pub extern "C" fn resolvo_solve(
         .constraints(
             problem
                 .constraints
-                .into_iter()
+                .iter()
                 .copied()
                 .map(Into::into)
                 .collect(),
         )
-        .soft_requirements(
-            problem
-                .soft_requirements
-                .into_iter()
-                .copied()
-                .map(Into::into),
-        );
+        .soft_requirements(problem.soft_requirements.iter().copied().map(Into::into));
 
     match solver.solve(problem) {
         Ok(solution) => {
