@@ -1,13 +1,13 @@
-use std::{
-    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
-};
-
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use itertools::Itertools;
+use std::collections::HashMap;
+use std::{
+    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
+};
 use watch_map::WatchMap;
 
 use crate::{
@@ -68,7 +68,7 @@ impl Problem<std::iter::Empty<SolvableId>> {
     }
 }
 
-impl<S: IntoIterator<Item=SolvableId>> Problem<S> {
+impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
     /// Sets the requirements that _must_ have one candidate solvable be
     /// included in the solution.
     ///
@@ -108,7 +108,7 @@ impl<S: IntoIterator<Item=SolvableId>> Problem<S> {
     ///
     /// Returns the [`Problem`] for further mutation or to pass to
     /// [`Solver::solve`].
-    pub fn soft_requirements<I: IntoIterator<Item=SolvableId>>(
+    pub fn soft_requirements<I: IntoIterator<Item = SolvableId>>(
         self,
         soft_requirements: I,
     ) -> Problem<I> {
@@ -137,6 +137,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     clauses_added_for_package: RefCell<HashSet<NameId>>,
     clauses_added_for_solvable: RefCell<HashSet<InternalSolvableId>>,
+    forbidden_clauses_added: RefCell<HashMap<NameId, HashSet<InternalSolvableId>>>,
 
     decision_tracker: DecisionTracker,
 
@@ -166,6 +167,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             root_constraints: Default::default(),
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
+            forbidden_clauses_added: Default::default(),
         }
     }
 }
@@ -235,6 +237,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             learnt_clause_ids: self.learnt_clause_ids,
             clauses_added_for_package: self.clauses_added_for_package,
             clauses_added_for_solvable: self.clauses_added_for_solvable,
+            forbidden_clauses_added: self.forbidden_clauses_added,
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
             root_constraints: self.root_constraints,
@@ -271,7 +274,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// [`UnsolvableOrCancelled::Cancelled`] containing the cancellation value.
     pub fn solve(
         &mut self,
-        problem: Problem<impl IntoIterator<Item=SolvableId>>,
+        problem: Problem<impl IntoIterator<Item = SolvableId>>,
     ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
         self.decision_tracker.clear();
         self.negative_assertions.clear();
@@ -305,7 +308,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
     /// Returns the solvables that the solver has chosen to include in the
     /// solution so far.
-    fn chosen_solvables(&self) -> impl Iterator<Item=SolvableId> + '_ {
+    fn chosen_solvables(&self) -> impl Iterator<Item = SolvableId> + '_ {
         self.decision_tracker.stack().filter_map(|d| {
             if d.value {
                 d.solvable_id.as_solvable()
@@ -326,7 +329,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// cancellation value will be returned as an `Err(...)`.
     async fn add_clauses_for_solvables(
         &self,
-        solvable_ids: impl IntoIterator<Item=InternalSolvableId>,
+        solvable_ids: impl IntoIterator<Item = InternalSolvableId>,
     ) -> Result<AddClauseOutput, Box<dyn Any>> {
         let mut output = AddClauseOutput::default();
 
@@ -386,7 +389,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                 dependencies: deps.clone(),
                             })
                         }
-                            .left_future()
+                        .left_future()
                     } else {
                         ready(Ok(TaskResult::Dependencies {
                             solvable_id: internal_solvable_id,
@@ -395,7 +398,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                 constrains: self.root_constraints.clone(),
                             }),
                         }))
-                            .right_future()
+                        .right_future()
                     };
 
                 pending_futures.push(get_dependencies_fut.boxed_local());
@@ -464,7 +467,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                         package_candidates,
                                     })
                                 }
-                                    .boxed_local(),
+                                .boxed_local(),
                             );
                         }
                     }
@@ -483,7 +486,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                     candidates,
                                 })
                             }
-                                .boxed_local(),
+                            .boxed_local(),
                         );
                     }
 
@@ -501,7 +504,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                     non_matching_candidates,
                                 })
                             }
-                                .boxed_local(),
+                            .boxed_local(),
                         )
                     }
                 }
@@ -517,23 +520,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
-
-                    // Each candidate gets a clause to disallow other candidates.
-                    for (i, &candidate) in candidates.iter().enumerate() {
-                        for &other_candidate in &candidates[i + 1..] {
-                            let clause_id =
-                                self.clauses
-                                    .borrow_mut()
-                                    .alloc(ClauseState::forbid_multiple(
-                                        candidate.into(),
-                                        other_candidate.into(),
-                                        name_id,
-                                    ));
-
-                            debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
-                            output.clauses_to_watch.push(clause_id);
-                        }
-                    }
 
                     // If there is a locked solvable, forbid other solvables.
                     if let Some(locked_solvable_id) = locked_solvable_id {
@@ -581,11 +567,43 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // Queue requesting the dependencies of the candidates as well if they are
                     // cheaply available from the dependency provider.
                     for &candidate in candidates {
-                        if seen.insert(candidate.into())
-                            && self.cache.are_dependencies_available_for(candidate)
+                        if !seen.insert(candidate.into()) {
+                            continue;
+                        }
+
+                        // If the dependencies are already available for the
+                        // candidate, queue the candidate for processing.
+                        if self.cache.are_dependencies_available_for(candidate)
                             && clauses_added_for_solvable.insert(candidate.into())
                         {
                             pending_solvables.push(candidate.into());
+                        }
+
+                        // Add forbid constraints for this solvable on all other
+                        // solvables that have been visited already for the same
+                        // version set name.
+                        let name_id = self.provider().solvable_name(candidate);
+                        let mut forbidden_clauses_added = self.forbidden_clauses_added.borrow_mut();
+                        let other_solvables = forbidden_clauses_added.entry(name_id).or_default();
+                        let candidate = InternalSolvableId::from(candidate);
+                        if other_solvables.insert(candidate) {
+                            for &other_candidate in other_solvables.iter() {
+                                if candidate == other_candidate {
+                                    continue;
+                                }
+
+                                let clause_id =
+                                    self.clauses
+                                        .borrow_mut()
+                                        .alloc(ClauseState::forbid_multiple(
+                                            candidate,
+                                            other_candidate,
+                                            name_id,
+                                        ));
+
+                                debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
+                                output.clauses_to_watch.push(clause_id);
+                            }
                         }
                     }
 
@@ -990,7 +1008,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     best_decision = Some(match best_decision {
                         None => (is_explicit_requirement, count, possible_decision),
                         Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
-                        Some((_, best_count, _)) if count < best_count => {
+                        Some((_, best_count, _)) if count <= best_count => {
                             (is_explicit_requirement, count, possible_decision)
                         }
                         Some(best_decision) => best_decision,
@@ -1060,10 +1078,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     return Err(UnsolvableOrCancelled::Cancelled(value));
                 }
                 Err(PropagationError::Conflict(
-                        conflicting_solvable,
-                        attempted_value,
-                        conflicting_clause,
-                    )) => {
+                    conflicting_solvable,
+                    attempted_value,
+                    conflicting_clause,
+                )) => {
                     level = self.learn_from_conflict(
                         level,
                         conflicting_solvable,

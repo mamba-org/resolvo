@@ -1167,6 +1167,7 @@ fn test_merge_excluded() {
 }
 
 #[test]
+#[traced_test]
 fn test_merge_installable() {
     let provider = BundleBoxProvider::from_packages(&[
         ("a", 1, vec![]),
