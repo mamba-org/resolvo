@@ -11,6 +11,7 @@ use petgraph::{
     Direction,
 };
 
+use crate::internal::arena::ArenaId;
 use crate::{
     internal::id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
     runtime::AsyncRuntime,
@@ -52,7 +53,7 @@ impl Conflict {
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
 
         for clause_id in &self.clauses {
-            let clause = &solver.clauses.borrow()[*clause_id].kind;
+            let clause = &solver.clauses.kinds.borrow()[clause_id.to_usize()];
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {

@@ -81,8 +81,6 @@ pub struct SolvableId(pub u32);
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 pub(crate) struct InternalSolvableId(pub u32);
-
-const INTERNAL_SOLVABLE_NULL: u32 = u32::MAX;
 const INTERNAL_SOLVABLE_ROOT: u32 = 0;
 
 impl InternalSolvableId {
@@ -97,17 +95,9 @@ impl InternalSolvableId {
         self.0 == 0
     }
 
-    pub const fn null() -> Self {
-        Self(u32::MAX)
-    }
-
-    pub const fn is_null(self) -> bool {
-        self.0 == u32::MAX
-    }
-
     pub const fn as_solvable(self) -> Option<SolvableId> {
         match self.0 {
-            INTERNAL_SOLVABLE_NULL | INTERNAL_SOLVABLE_ROOT => None,
+            INTERNAL_SOLVABLE_ROOT => None,
             x => Some(SolvableId(x - 1)),
         }
     }
@@ -126,7 +116,6 @@ impl<'i, I: Interner> Display for DisplayInternalSolvable<'i, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.id.0 {
             INTERNAL_SOLVABLE_ROOT => write!(f, "<root>"),
-            INTERNAL_SOLVABLE_NULL => write!(f, "<null>"),
             x => {
                 write!(f, "{}", self.interner.display_solvable(SolvableId(x - 1)))
             }
