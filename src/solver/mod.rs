@@ -4,7 +4,7 @@ use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use std::{any::Any, cell::RefCell, fmt::Display, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
@@ -125,7 +125,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) cache: SolverCache<D>,
 
     pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
-    requires_clauses: Vec<(InternalSolvableId, Requirement, ClauseId)>,
+    requires_clauses:
+        IndexMap<InternalSolvableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
@@ -898,8 +899,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .start_watching(&mut clauses[clause_id], clause_id);
         }
 
-        self.requires_clauses
-            .append(&mut output.new_requires_clauses);
+        for (solvable_id, requirement, clause_id) in output.new_requires_clauses {
+            self.requires_clauses
+                .entry(solvable_id)
+                .or_default()
+                .push((requirement, clause_id));
+        }
         self.negative_assertions
             .append(&mut output.negative_assertions);
 
@@ -965,7 +970,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
         let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
             None;
-        for &(solvable_id, deps, clause_id) in &self.requires_clauses {
+        for (&solvable_id, requirements) in self.requires_clauses.iter() {
             let is_explicit_requirement = solvable_id == InternalSolvableId::root();
             if !is_explicit_requirement && matches!(best_decision, Some((true, _, _))) {
                 // If we already have an explicit requirement, there is no need to evaluate
@@ -978,44 +983,46 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 continue;
             }
 
-            // Consider only clauses in which no candidates have been installed
-            let candidates = &self.cache.requirement_to_sorted_candidates[&deps];
+            for (deps, clause_id) in requirements.iter() {
+                // Consider only clauses in which no candidates have been installed
+                let candidates = &self.cache.requirement_to_sorted_candidates[deps];
 
-            // Either find the first assignable candidate or determine that one of the
-            // candidates is already assigned in which case the clause has
-            // already been satisfied.
-            let candidate = candidates.iter().try_fold(
-                (None, 0),
-                |(first_selectable_candidate, selectable_candidates), &candidate| {
-                    let assigned_value = self.decision_tracker.assigned_value(candidate.into());
-                    match assigned_value {
-                        Some(true) => ControlFlow::Break(()),
-                        Some(false) => ControlFlow::Continue((
-                            first_selectable_candidate,
-                            selectable_candidates,
-                        )),
-                        None => ControlFlow::Continue((
-                            first_selectable_candidate.or(Some(candidate)),
-                            selectable_candidates + 1,
-                        )),
-                    }
-                },
-            );
-
-            match candidate {
-                ControlFlow::Continue((Some(candidate), count)) => {
-                    let possible_decision = (candidate, solvable_id, clause_id);
-                    best_decision = Some(match best_decision {
-                        None => (is_explicit_requirement, count, possible_decision),
-                        Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
-                        Some((_, best_count, _)) if count > best_count => {
-                            (is_explicit_requirement, count, possible_decision)
+                // Either find the first assignable candidate or determine that one of the
+                // candidates is already assigned in which case the clause has
+                // already been satisfied.
+                let candidate = candidates.iter().try_fold(
+                    (None, 0),
+                    |(first_selectable_candidate, selectable_candidates), &candidate| {
+                        let assigned_value = self.decision_tracker.assigned_value(candidate.into());
+                        match assigned_value {
+                            Some(true) => ControlFlow::Break(()),
+                            Some(false) => ControlFlow::Continue((
+                                first_selectable_candidate,
+                                selectable_candidates,
+                            )),
+                            None => ControlFlow::Continue((
+                                first_selectable_candidate.or(Some(candidate)),
+                                selectable_candidates + 1,
+                            )),
                         }
-                        Some(best_decision) => best_decision,
-                    })
+                    },
+                );
+
+                match candidate {
+                    ControlFlow::Continue((Some(candidate), count)) => {
+                        let possible_decision = (candidate, solvable_id, *clause_id);
+                        best_decision = Some(match best_decision {
+                            None => (is_explicit_requirement, count, possible_decision),
+                            Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
+                            Some((_, best_count, _)) if count < best_count => {
+                                (is_explicit_requirement, count, possible_decision)
+                            }
+                            Some(best_decision) => best_decision,
+                        })
+                    }
+                    ControlFlow::Break(_) => continue,
+                    ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
                 }
-                ControlFlow::Break(_) => continue,
-                ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
             }
         }
 
