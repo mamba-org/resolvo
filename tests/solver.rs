@@ -665,10 +665,11 @@ fn test_resolve_multiple() {
     let requirements = provider.requirements(&["asdf", "efgh"]);
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
-    let solved = solver.solve(problem).unwrap();
+    let mut solved = solver.solve(problem).unwrap();
     let pool = &solver.provider().pool;
 
     assert_eq!(solved.len(), 2);
+    solved.sort_by_key(|&s| pool.resolve_package_name(pool.resolve_solvable(s).name));
 
     let solvable = pool.resolve_solvable(solved[0]);
 

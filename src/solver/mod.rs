@@ -1,13 +1,12 @@
+use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use indexmap::IndexSet;
 use itertools::Itertools;
-use std::collections::HashMap;
-use std::{
-    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
-};
+use std::{any::Any, cell::RefCell, fmt::Display, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
 
 use crate::{
@@ -137,7 +136,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     clauses_added_for_package: RefCell<HashSet<NameId>>,
     clauses_added_for_solvable: RefCell<HashSet<InternalSolvableId>>,
-    forbidden_clauses_added: RefCell<HashMap<NameId, HashSet<InternalSolvableId>>>,
+    forbidden_clauses_added:
+        RefCell<HashMap<NameId, IndexSet<InternalSolvableId, ahash::RandomState>>>,
 
     decision_tracker: DecisionTracker,
 
@@ -1385,7 +1385,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
-        let mut involved = HashSet::new();
+        let mut involved = HashSet::default();
         self.clauses.borrow()[clause_id].kind.visit_literals(
             &self.learnt_clauses,
             &self.cache.requirement_to_sorted_candidates,
@@ -1394,7 +1394,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             },
         );
 
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         Self::analyze_unsolvable_clause(
             &self.clauses.borrow(),
             &self.learnt_why,
@@ -1459,7 +1459,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         mut conflicting_solvable: InternalSolvableId,
         mut clause_id: ClauseId,
     ) -> (u32, ClauseId, Literal) {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut causes_at_current_level = 0u32;
         let mut learnt = Vec::new();
         let mut back_track_to = 0;
