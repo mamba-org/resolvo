@@ -545,6 +545,7 @@ impl Literal {
 
     /// Evaluates the literal, or returns `None` if no value has been assigned
     /// to the solvable
+    #[inline(always)]
     pub(crate) fn eval(self, decision_map: &DecisionMap) -> Option<bool> {
         decision_map
             .value(self.solvable_id())
