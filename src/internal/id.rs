@@ -80,7 +80,7 @@ pub struct SolvableId(pub u32);
 /// Internally used id for solvables that can also represent root and null.
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-pub(crate) struct InternalSolvableId(u32);
+pub(crate) struct InternalSolvableId(pub u32);
 
 const INTERNAL_SOLVABLE_NULL: u32 = u32::MAX;
 const INTERNAL_SOLVABLE_ROOT: u32 = 0;
@@ -176,7 +176,7 @@ impl From<SolvableId> for u32 {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
-pub(crate) struct ClauseId(u32);
+pub(crate) struct ClauseId(pub(crate) u32);
 
 impl ClauseId {
     /// There is a guarentee that ClauseId(0) will always be

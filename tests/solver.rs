@@ -1147,6 +1147,7 @@ fn test_incremental_crash() {
 }
 
 #[test]
+#[traced_test]
 fn test_excluded() {
     let mut provider = BundleBoxProvider::from_packages(&[
         ("a", 2, vec!["b"]),

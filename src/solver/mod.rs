@@ -1008,7 +1008,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     best_decision = Some(match best_decision {
                         None => (is_explicit_requirement, count, possible_decision),
                         Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
-                        Some((_, best_count, _)) if count <= best_count => {
+                        Some((_, best_count, _)) if count > best_count => {
                             (is_explicit_requirement, count, possible_decision)
                         }
                         Some(best_decision) => best_decision,
@@ -1237,13 +1237,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         // Watched solvables
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
-            let pkg = decision.solvable_id;
+            let watched_literal = Literal {
+                solvable_id: decision.solvable_id,
+                negate: decision.value,
+            };
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
             let mut old_predecessor_clause_id: Option<ClauseId>;
             let mut predecessor_clause_id: Option<ClauseId> = None;
-            let mut clause_id = self.watches.first_clause_watching_solvable(pkg);
+            let mut clause_id = self
+                .watches
+                .first_clause_watching_literal(watched_literal)
+                .unwrap_or(ClauseId::null());
             while !clause_id.is_null() {
                 debug_assert!(
                     predecessor_clause_id != Some(clause_id),
@@ -1267,74 +1273,84 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                 // Configure the next clause to visit
                 let this_clause_id = clause_id;
-                clause_id = clause.next_watched_clause(pkg);
+                clause_id = clause.next_watched_clause(watched_literal.solvable_id);
 
-                if let Some((watched_literals, watch_index)) = clause.watch_turned_false(
-                    pkg,
-                    self.decision_tracker.map(),
-                    &self.learnt_clauses,
-                ) {
-                    // One of the watched literals is now false
-                    if let Some(variable) = clause.next_unwatched_variable(
-                        &self.learnt_clauses,
-                        &self.cache.requirement_to_sorted_candidates,
-                        self.decision_tracker.map(),
-                    ) {
-                        debug_assert!(!clause.watched_literals.contains(&variable));
-
-                        self.watches.update_watched(
-                            predecessor_clause,
-                            clause,
-                            this_clause_id,
-                            watch_index,
-                            pkg,
-                            variable,
-                        );
-
-                        // Make sure the right predecessor is kept for the next iteration (i.e. the
-                        // current clause is no longer a predecessor of the next one; the current
-                        // clause's predecessor is)
-                        predecessor_clause_id = old_predecessor_clause_id;
+                // Determine which watch turned false.
+                let (watch_index, other_watch_index) =
+                    if clause.watched_literals[0].solvable_id == watched_literal.solvable_id {
+                        (0, 1)
                     } else {
-                        // We could not find another literal to watch, which means the remaining
-                        // watched literal can be set to true
-                        let remaining_watch_index = match watch_index {
-                            0 => 1,
-                            1 => 0,
-                            _ => unreachable!(),
-                        };
+                        (1, 0)
+                    };
+                debug_assert!(
+                    clause.watched_literals[watch_index].eval(self.decision_tracker.map())
+                        == Some(false)
+                );
 
-                        let remaining_watch = watched_literals[remaining_watch_index];
-                        let decided = self
-                            .decision_tracker
-                            .try_add_decision(
-                                Decision::new(
-                                    remaining_watch.solvable_id,
-                                    remaining_watch.satisfying_value(),
-                                    this_clause_id,
-                                ),
-                                level,
+                // Find another literal to watch. If we can't find one, the other literal must be
+                // set to true for the clause to still hold.
+                if clause.watched_literals[other_watch_index].eval(self.decision_tracker.map())
+                    == Some(true)
+                {
+                    // If the other watch is already true, we can simply skip this clause.
+                } else if let Some(variable) = clause.next_unwatched_literal(
+                    &self.learnt_clauses,
+                    &self.cache.requirement_to_sorted_candidates,
+                    self.decision_tracker.map(),
+                    watch_index,
+                ) {
+                    self.watches.update_watched(
+                        predecessor_clause,
+                        clause,
+                        this_clause_id,
+                        watch_index,
+                        watched_literal,
+                        variable,
+                    );
+
+                    // Make sure the right predecessor is kept for the next iteration (i.e. the
+                    // current clause is no longer a predecessor of the next one; the current
+                    // clause's predecessor is)
+                    predecessor_clause_id = old_predecessor_clause_id;
+                } else {
+                    // We could not find another literal to watch, which means the remaining
+                    // watched literal can be set to true
+                    let remaining_watch_index = match watch_index {
+                        0 => 1,
+                        1 => 0,
+                        _ => unreachable!(),
+                    };
+
+                    let remaining_watch = clause.watched_literals[remaining_watch_index];
+                    let decided = self
+                        .decision_tracker
+                        .try_add_decision(
+                            Decision::new(
+                                remaining_watch.solvable_id,
+                                remaining_watch.satisfying_value(),
+                                this_clause_id,
+                            ),
+                            level,
+                        )
+                        .map_err(|_| {
+                            PropagationError::Conflict(
+                                remaining_watch.solvable_id,
+                                true,
+                                this_clause_id,
                             )
-                            .map_err(|_| {
-                                PropagationError::Conflict(
-                                    remaining_watch.solvable_id,
-                                    true,
-                                    this_clause_id,
-                                )
-                            })?;
+                        })?;
 
-                        if decided {
-                            match clause.kind {
-                                // Skip logging for ForbidMultipleInstances, which is so noisy
-                                Clause::ForbidMultipleInstances(..) => {}
-                                _ => {
-                                    tracing::debug!(
-                                        "├ Propagate {} = {}. {}",
-                                        remaining_watch.solvable_id.display(self.provider()),
-                                        remaining_watch.satisfying_value(),
-                                        clause.display(self.provider()),
-                                    );
-                                }
+                    if decided {
+                        match clause.kind {
+                            // Skip logging for ForbidMultipleInstances, which is so noisy
+                            Clause::ForbidMultipleInstances(..) => {}
+                            _ => {
+                                tracing::debug!(
+                                    "├ Propagate {} = {}. {}",
+                                    remaining_watch.solvable_id.display(self.provider()),
+                                    remaining_watch.satisfying_value(),
+                                    clause.display(self.provider()),
+                                );
                             }
                         }
                     }

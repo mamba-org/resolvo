@@ -50,7 +50,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     }
 
     /// Insert into the mapping with the specific value
-    pub fn insert(&mut self, id: TId, value: TValue) {
+    pub fn insert(&mut self, id: TId, value: TValue) -> Option<TValue> {
         let idx = id.to_usize();
         let (chunk, offset) = Self::chunk_and_offset(idx);
 
@@ -59,9 +59,10 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
             self.chunks
                 .resize_with(chunk + 1, || std::array::from_fn(|_| None));
         }
-        self.chunks[chunk][offset] = Some(value);
+        let previous_value = self.chunks[chunk][offset].replace(value);
         self.len += 1;
         self.max = self.max.max(idx);
+        previous_value
     }
 
     /// Get a specific value in the mapping with bound checks
