@@ -1207,7 +1207,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             ..
         }) = &best_decision
         {
-            tracing::info!(
+            tracing::trace!(
                 "deciding to assign {}, ({}, {} activity score, {} possible candidates)",
                 self.provider().display_solvable(*candidate),
                 self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider()),
