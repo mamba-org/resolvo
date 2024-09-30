@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.0...resolvo-v0.8.1) - 2024-09-30
+
+### Other
+
+- implement a form of VSIDS ([#67](https://github.com/mamba-org/resolvo/pull/67))
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.13 to 0.2.14 ([#65](https://github.com/mamba-org/resolvo/pull/65))
+- visit fewer clauses during propagation ([#66](https://github.com/mamba-org/resolvo/pull/66))
+
 ## [0.8.0](https://github.com/mamba-org/resolvo/compare/resolvo-v0.7.0...resolvo-v0.8.0) - 2024-09-09
 
 ### Added
