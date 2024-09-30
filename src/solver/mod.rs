@@ -1,3 +1,5 @@
+use std::{any::Any, cell::RefCell, fmt::Display, future::ready, ops::ControlFlow};
+
 use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
@@ -6,14 +8,12 @@ use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
-use std::{any::Any, cell::RefCell, fmt::Display, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
 
-use crate::internal::arena::ArenaId;
 use crate::{
     conflict::Conflict,
     internal::{
-        arena::Arena,
+        arena::{Arena, ArenaId},
         id::{ClauseId, InternalSolvableId, LearntClauseId, NameId, SolvableId},
         mapping::Mapping,
     },
@@ -34,6 +34,7 @@ struct AddClauseOutput {
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
+    new_names: Vec<NameId>,
 }
 
 /// Describes the problem that is to be solved by the solver.
@@ -155,8 +156,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     clauses_added_for_package: RefCell<HashSet<NameId>>,
     clauses_added_for_solvable: RefCell<HashSet<InternalSolvableId>>,
-    forbidden_clauses_added:
-        RefCell<HashMap<NameId, IndexSet<InternalSolvableId, ahash::RandomState>>>,
+    forbidden_clauses_added: RefCell<HashMap<NameId, IndexSet<InternalSolvableId>>>,
 
     decision_tracker: DecisionTracker,
 
@@ -165,6 +165,18 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     /// Additional constraints imposed by the root.
     root_constraints: Vec<VersionSetId>,
+
+    /// Activity score per package.
+    name_activity: Vec<f32>,
+
+    /// The activity add factor. This is a value that is added to the activity
+    /// score of each package that is part of a conflict.
+    activity_add: f32,
+
+    /// The activity decay factor. This is a value between 0 and 1 with which
+    /// the activity scores of each package are multiplied when a conflict is
+    /// detected.
+    activity_decay: f32,
 }
 
 impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
@@ -187,6 +199,10 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
             forbidden_clauses_added: Default::default(),
+            name_activity: Default::default(),
+
+            activity_add: 1.0,
+            activity_decay: 0.95,
         }
     }
 }
@@ -243,6 +259,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     }
 
     /// Set the runtime of the solver to `runtime`.
+    #[must_use]
     pub fn with_runtime<RT2: AsyncRuntime>(self, runtime: RT2) -> Solver<D, RT2> {
         Solver {
             async_runtime: runtime,
@@ -260,6 +277,20 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
             root_constraints: self.root_constraints,
+            name_activity: self.name_activity,
+            activity_add: self.activity_add,
+            activity_decay: self.activity_decay,
+        }
+    }
+
+    /// Configure activity andd and decay parameters. This enables tweaking
+    /// these parameters.
+    #[must_use]
+    pub fn with_activity_params(self, add: f32, decay: f32) -> Self {
+        Self {
+            activity_add: add,
+            activity_decay: decay,
+            ..self
         }
     }
 
@@ -538,6 +569,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         "Package candidates available for {}",
                         self.provider().display_name(name_id)
                     );
+
+                    output.new_names.push(name_id);
 
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
@@ -929,6 +962,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             return Err(clause_id);
         }
 
+        if let Some(max_name_idx) = output
+            .new_names
+            .into_iter()
+            .map(|name_id| name_id.to_usize())
+            .max()
+        {
+            if self.name_activity.len() <= max_name_idx {
+                self.name_activity.resize(max_name_idx + 1, 0.0);
+            }
+        }
+
         Ok(())
     }
 
@@ -978,21 +1022,53 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         Ok(level)
     }
 
-    /// Pick a solvable that we are going to assign true. This function uses a
-    /// heuristic to determine to best decision to make. The function
-    /// selects the requirement that has the least amount of working
-    /// available candidates and selects the best candidate from that list. This
-    /// ensures that if there are conflicts they are delt with as early as
-    /// possible.
+    /// This function is responsible for selecting the next solvable to assign
+    /// after all logical decisions have been propagated. Once this situation
+    /// happens we need to take a guess to make progress in the solving process.
+    /// This function tries to find the best guess to make based on several
+    /// heuristics. These heuristics are tuned to find a solution that also
+    /// maximizes the user's requirements.
+    ///
+    /// The heuristics are (in order of importance):
+    /// 1. Prefer decisions on explicit requirements over non-explicit
+    ///    requirements. This ensures that direct dependencies are maximized
+    ///    over transitive dependencies.
+    /// 2. Prefer decisions with a higher "package activity score". This score
+    ///    is incremented everytime a package is involved in a conflict and the
+    ///    score of all package is decreases on each conflict. This is similar
+    ///    to the "activity score" of the VSIDS algorithm used in many modern
+    ///    solvers.
+    /// 3. Prefer decisions with the least amount of possible candidates. If
+    ///    there are multiple requirements for the same package the requirement
+    ///    with the least amount of possible candidates requires less
+    ///    backtracking to determine unsatisfiability than a requirement with
+    ///    more possible candidates.
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
-        let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
-            None;
+        struct PossibleDecision {
+            /// The activity of the package that is selected
+            package_activity: f32,
+
+            /// If this decision is based on a requirement that is explicitly
+            /// requested by the user.
+            is_explicit_requirement: bool,
+
+            /// The total number of possible candidates that are available for
+            /// this requirement.
+            candidate_count: u32,
+
+            /// The decision to make.
+            decision: (SolvableId, InternalSolvableId, ClauseId),
+        }
+
+        let mut best_decision: Option<PossibleDecision> = None;
         for (&solvable_id, requirements) in self.requires_clauses.iter() {
             let is_explicit_requirement = solvable_id == InternalSolvableId::root();
-            if !is_explicit_requirement && matches!(best_decision, Some((true, _, _))) {
+            if let Some(best_decision) = &best_decision {
                 // If we already have an explicit requirement, there is no need to evaluate
                 // non-explicit requirements.
-                continue;
+                if best_decision.is_explicit_requirement && !is_explicit_requirement {
+                    continue;
+                }
             }
 
             // Consider only clauses in which we have decided to install the solvable
@@ -1001,64 +1077,151 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
 
             for (deps, clause_id) in requirements.iter() {
-                // Consider only clauses in which no candidates have been installed
-                let candidates = &self.cache.requirement_to_sorted_candidates[deps];
+                let mut candidate = ControlFlow::Break(());
 
-                // Either find the first assignable candidate or determine that one of the
-                // candidates is already assigned in which case the clause has
-                // already been satisfied.
-                let candidate = candidates.iter().try_fold(
-                    (None, 0),
-                    |(first_selectable_candidate, selectable_candidates), &candidate| {
-                        let assigned_value = self.decision_tracker.assigned_value(candidate.into());
-                        match assigned_value {
-                            Some(true) => ControlFlow::Break(()),
-                            Some(false) => ControlFlow::Continue((
-                                first_selectable_candidate,
-                                selectable_candidates,
-                            )),
-                            None => ControlFlow::Continue((
-                                first_selectable_candidate.or(Some(candidate)),
-                                selectable_candidates + 1,
-                            )),
-                        }
-                    },
-                );
+                // Iterate over all version sets in the requirement and find the first version
+                // set that we can act on, or if a single candidate (from any version set) makes
+                // the clause true.
+                for version_set in deps.version_sets(self.provider()) {
+                    // Consider only clauses in which no candidates have been installed
+                    let candidates = &self.cache.requirement_to_sorted_candidates
+                        [&Requirement::Single(version_set)];
+
+                    // Find the first candidate that is not yet assigned a value or find the first
+                    // value that makes this clause true.
+                    candidate = candidates
+                        .iter()
+                        .try_fold(None, |first_candidate, &candidate| {
+                            let assigned_value =
+                                self.decision_tracker.assigned_value(candidate.into());
+                            ControlFlow::Continue(match assigned_value {
+                                Some(true) => {
+                                    // This candidate has already been assigned so the clause is
+                                    // already true. Skip it.
+                                    return ControlFlow::Break(());
+                                }
+                                Some(false) => {
+                                    // This candidate has already been assigned false, continue the
+                                    // search.
+                                    first_candidate
+                                }
+                                None => match first_candidate {
+                                    Some((
+                                        first_candidate,
+                                        candidate_version_set,
+                                        mut candidate_count,
+                                        package_activity,
+                                    )) => {
+                                        // We found a candidate that has not been assigned yet, but
+                                        // it is not the first candidate.
+                                        if candidate_version_set == version_set {
+                                            // Increment the candidate count if this is a candidate
+                                            // in the same version set.
+                                            candidate_count += 1u32;
+                                        }
+                                        Some((
+                                            first_candidate,
+                                            candidate_version_set,
+                                            candidate_count,
+                                            package_activity,
+                                        ))
+                                    }
+                                    None => {
+                                        // We found the first candidate that has not been assigned
+                                        // yet.
+                                        let package_activity = self.name_activity[self
+                                            .provider()
+                                            .version_set_name(version_set)
+                                            .to_usize()];
+                                        Some((candidate, version_set, 1, package_activity))
+                                    }
+                                },
+                            })
+                        });
+
+                    // Stop searching if we found a candidate that makes the clause true.
+                    if candidate.is_break() {
+                        break;
+                    }
+                }
 
                 match candidate {
-                    ControlFlow::Continue((Some(candidate), count)) => {
-                        let possible_decision = (candidate, solvable_id, *clause_id);
-                        best_decision = Some(match best_decision {
-                            None => (is_explicit_requirement, count, possible_decision),
-                            Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
-                            Some((_, best_count, _)) if count < best_count => {
-                                (is_explicit_requirement, count, possible_decision)
+                    ControlFlow::Break(_) => {
+                        // A candidate has been assigned true which means the clause is already
+                        // true, and we can skip it.
+                        continue;
+                    }
+                    ControlFlow::Continue(None) => {
+                        unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well.")
+                    }
+                    ControlFlow::Continue(Some((
+                        candidate,
+                        _version_set_id,
+                        candidate_count,
+                        package_activity,
+                    ))) => {
+                        let decision = (candidate, solvable_id, *clause_id);
+                        best_decision = Some(match &best_decision {
+                            None => PossibleDecision {
+                                is_explicit_requirement,
+                                package_activity,
+                                candidate_count,
+                                decision,
+                            },
+                            Some(best_decision) => {
+                                // Prefer decisions on explicit requirements over non-explicit
+                                // requirements. This optimizes direct dependencies over transitive
+                                // dependencies.
+                                if best_decision.is_explicit_requirement && !is_explicit_requirement
+                                {
+                                    continue;
+                                }
+
+                                // Prefer decisions with a higher package activity score to root out
+                                // conflicts faster.
+                                if best_decision.package_activity >= package_activity {
+                                    continue;
+                                }
+
+                                if best_decision.candidate_count <= candidate_count {
+                                    continue;
+                                }
+
+                                PossibleDecision {
+                                    is_explicit_requirement,
+                                    package_activity,
+                                    candidate_count,
+                                    decision,
+                                }
                             }
-                            Some(best_decision) => best_decision,
                         })
                     }
-                    ControlFlow::Break(_) => continue,
-                    ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
                 }
             }
         }
 
-        if let Some((_is_explicit_requirement, count, (candidate, _solvable_id, clause_id))) =
-            best_decision
+        if let Some(PossibleDecision {
+            candidate_count,
+            package_activity,
+            decision: (candidate, _solvable_id, clause_id),
+            ..
+        }) = &best_decision
         {
-            tracing::trace!(
-                "deciding to assign {}, ({}, {} possible candidates)",
-                self.provider().display_solvable(candidate),
+            tracing::info!(
+                "deciding to assign {}, ({}, {} activity score, {} possible candidates)",
+                self.provider().display_solvable(*candidate),
                 self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider()),
-                count,
+                package_activity,
+                candidate_count,
             );
         }
 
         // Could not find a requirement that needs satisfying.
         best_decision.map(
-            |(_is_explicit_dependency, _best_count, (candidate, required_by, via))| {
-                (candidate.into(), required_by, via)
-            },
+            |PossibleDecision {
+                 decision: (candidate, required_by, via),
+                 ..
+             }| { (candidate.into(), required_by, via) },
         )
     }
 
@@ -1320,13 +1483,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         == Some(false)
                 );
 
-                // Find another literal to watch. If we can't find one, the other literal must be
-                // set to true for the clause to still hold.
+                // Find another literal to watch. If we can't find one, the other literal must
+                // be set to true for the clause to still hold.
                 if clause_state.watched_literals[other_watch_index]
                     .eval(self.decision_tracker.map())
                     == Some(true)
                 {
-                    // If the other watch is already true, we can simply skip this clause.
+                    // If the other watch is already true, we can simply skip
+                    // this clause.
                 } else if let Some(variable) = clause_state.next_unwatched_literal(
                     &clauses[this_clause_id.to_usize()],
                     &self.learnt_clauses,
@@ -1587,6 +1751,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let last_literal = Literal::new(conflicting_solvable, s_value);
         learnt.push(last_literal);
 
+        // Increase the activity of the packages in the learned clause
+        for literal in &learnt {
+            let name_id = literal
+                .solvable_id()
+                .as_solvable()
+                .map(|s| self.provider().solvable_name(s));
+            if let Some(name_id) = name_id {
+                self.name_activity[name_id.to_usize()] += self.activity_add;
+            }
+        }
+
         // Add the clause
         let learnt_id = self.learnt_clauses.alloc(learnt.clone());
         self.learnt_why.insert(learnt_id, learnt_why);
@@ -1615,6 +1790,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let target_level = back_track_to.max(1);
         self.decision_tracker.undo_until(target_level);
 
+        self.decay_activity_scores();
+
         (target_level, clause_id, last_literal)
+    }
+
+    /// Decays the activity scores of all packages in the solver. This function
+    /// is caleld after each conflict.
+    fn decay_activity_scores(&mut self) {
+        for activity in &mut self.name_activity {
+            *activity *= self.activity_decay;
+        }
     }
 }
