@@ -1,14 +1,14 @@
-use elsa::FrozenMap;
-use std::ops::ControlFlow;
 use std::{
     fmt::{Debug, Display, Formatter},
     iter,
+    ops::ControlFlow,
 };
 
-use crate::internal::arena::ArenaId;
+use elsa::FrozenMap;
+
 use crate::{
     internal::{
-        arena::Arena,
+        arena::{Arena, ArenaId},
         id::{ClauseId, InternalSolvableId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{decision_map::DecisionMap, decision_tracker::DecisionTracker},
@@ -48,7 +48,8 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (root)
     InstallRoot,
-    /// Makes the solvable require the candidates associated with the [`Requirement`].
+    /// Makes the solvable require the candidates associated with the
+    /// [`Requirement`].
     ///
     /// In SAT terms: (¬A ∨ B1 ∨ B2 ∨ ... ∨ B99), where B1 to B99 represent the
     /// possible candidates for the provided [`Requirement`].
@@ -234,7 +235,11 @@ impl Clause {
         )
     }
 
-    pub fn try_fold_literals<B, C>(
+    /// Tries to fold over all the literals in the clause.
+    ///
+    /// This function is useful to iterate, find, or filter the literals in a
+    /// clause.
+    pub fn try_fold_literals<B, C, F>(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         requirements_to_sorted_candidates: &FrozenMap<
@@ -243,8 +248,11 @@ impl Clause {
             ahash::RandomState,
         >,
         init: C,
-        mut visit: impl FnMut(C, Literal) -> ControlFlow<B, C>,
-    ) -> ControlFlow<B, C> {
+        mut visit: F,
+    ) -> ControlFlow<B, C>
+    where
+        F: FnMut(C, Literal) -> ControlFlow<B, C>,
+    {
         match *self {
             Clause::InstallRoot => unreachable!(),
             Clause::Excluded(solvable, _) => visit(init, solvable.negative()),
@@ -270,7 +278,9 @@ impl Clause {
         }
     }
 
-    /// Visits each literal in the clause
+    /// Visits each literal in the clause.
+    ///
+    /// If you need to exit early or return a value, use [`try_fold_literals`].
     pub fn visit_literals(
         &self,
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
@@ -292,6 +302,7 @@ impl Clause {
         );
     }
 
+    /// Construct a [`ClauseDisplay`] to display the clause.
     pub fn display<'i, I: Interner>(&self, interner: &'i I) -> ClauseDisplay<'i, I> {
         ClauseDisplay {
             kind: *self,
@@ -501,6 +512,8 @@ impl ClauseState {
 pub(crate) struct Literal(u32);
 
 impl Literal {
+    /// Constructs a new [`Literal`] from a [`InternalSolvableId`] and a boolean
+    /// indicating whether the literal should be negated.
     pub fn new(solvable_id: InternalSolvableId, negate: bool) -> Self {
         assert!(solvable_id.0 < (u32::MAX >> 1) - 1, "solvable id too big");
         Self(solvable_id.0 << 1 | negate as u32)
@@ -554,10 +567,14 @@ impl Literal {
 }
 
 impl InternalSolvableId {
+    /// Constructs a [`Literal`] that indicates this solvable should be assigned
+    /// a positive value.
     pub fn positive(self) -> Literal {
         Literal::new(self, false)
     }
 
+    /// Constructs a [`Literal`] that indicates this solvable should be assigned
+    /// a negative value.
     pub fn negative(self) -> Literal {
         Literal::new(self, true)
     }

@@ -77,7 +77,7 @@ impl ArenaId for VersionSetUnionId {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SolvableId(pub u32);
 
-/// Internally used id for solvables that can also represent root and null.
+/// Internally used id for solvables that can also represent the root.
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 pub(crate) struct InternalSolvableId(pub u32);
@@ -165,7 +165,7 @@ impl From<SolvableId> for u32 {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
-pub(crate) struct ClauseId(pub(crate) u32);
+pub(crate) struct ClauseId(u32);
 
 impl ClauseId {
     /// There is a guarentee that ClauseId(0) will always be
