@@ -1,7 +1,7 @@
 [package]
 name = "resolvo_cpp"
 description = "Resolvo C++ integration"
-version = "0.1.0"
+version = "0.2.0"
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -20,5 +20,5 @@ resolvo = { version = "0.8.1", path = "../" }
 
 [build-dependencies]
 anyhow = "1"
-cbindgen = "0.26.0"
+cbindgen = "0.27.0"
 
