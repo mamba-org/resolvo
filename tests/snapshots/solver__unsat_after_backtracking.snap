@@ -11,4 +11,3 @@ The following packages are incompatible
    └─ c 1 | 2 would require
       └─ d >=2, <3, which cannot be installed because there are no viable options:
          └─ d 2, which conflicts with the versions reported above.
-

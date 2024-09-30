@@ -3,10 +3,9 @@ source: tests/solver.rs
 expression: error
 ---
 The following packages are incompatible
-├─ bluesky-widgets >=0, <100 can be installed with any of the following options:
-│  └─ bluesky-widgets 42 would require
-│     └─ suitcase-utils >=0, <54, which can be installed with any of the following options:
-│        └─ suitcase-utils 53
-└─ suitcase-utils >=54, <100 cannot be installed because there are no viable options:
-   └─ suitcase-utils 54, which conflicts with the versions reported above.
-
+├─ suitcase-utils >=54, <100 can be installed with any of the following options:
+│  └─ suitcase-utils 54
+└─ bluesky-widgets >=0, <100 cannot be installed because there are no viable options:
+   └─ bluesky-widgets 42 would require
+      └─ suitcase-utils >=0, <54, which cannot be installed because there are no viable options:
+         └─ suitcase-utils 53, which conflicts with the versions reported above.

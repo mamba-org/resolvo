@@ -1,15 +1,15 @@
-use std::{
-    any::Any, cell::RefCell, collections::HashSet, fmt::Display, future::ready, ops::ControlFlow,
-};
-
+use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
+use std::{any::Any, cell::RefCell, fmt::Display, future::ready, ops::ControlFlow};
 use watch_map::WatchMap;
 
+use crate::internal::arena::ArenaId;
 use crate::{
     conflict::Conflict,
     internal::{
@@ -120,13 +120,31 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct Clauses {
+    pub(crate) kinds: RefCell<Vec<Clause>>,
+    states: RefCell<Vec<ClauseState>>,
+}
+
+impl Clauses {
+    pub fn alloc(&self, state: ClauseState, kind: Clause) -> ClauseId {
+        let mut kinds = self.kinds.borrow_mut();
+        let mut states = self.states.borrow_mut();
+        let id = ClauseId::from_usize(kinds.len());
+        kinds.push(kind);
+        states.push(state);
+        id
+    }
+}
+
 /// Drives the SAT solving process.
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) async_runtime: RT,
     pub(crate) cache: SolverCache<D>,
 
-    pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
-    requires_clauses: Vec<(InternalSolvableId, Requirement, ClauseId)>,
+    pub(crate) clauses: Clauses,
+    requires_clauses:
+        IndexMap<InternalSolvableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
@@ -137,6 +155,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     clauses_added_for_package: RefCell<HashSet<NameId>>,
     clauses_added_for_solvable: RefCell<HashSet<InternalSolvableId>>,
+    forbidden_clauses_added:
+        RefCell<HashMap<NameId, IndexSet<InternalSolvableId, ahash::RandomState>>>,
 
     decision_tracker: DecisionTracker,
 
@@ -154,7 +174,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
         Self {
             cache: SolverCache::new(provider),
             async_runtime: NowOrNeverRuntime,
-            clauses: RefCell::new(Arena::new()),
+            clauses: Clauses::default(),
             requires_clauses: Default::default(),
             watches: WatchMap::new(),
             negative_assertions: Default::default(),
@@ -166,6 +186,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             root_constraints: Default::default(),
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
+            forbidden_clauses_added: Default::default(),
         }
     }
 }
@@ -235,6 +256,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             learnt_clause_ids: self.learnt_clause_ids,
             clauses_added_for_package: self.clauses_added_for_package,
             clauses_added_for_solvable: self.clauses_added_for_solvable,
+            forbidden_clauses_added: self.forbidden_clauses_added,
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
             root_constraints: self.root_constraints,
@@ -277,13 +299,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.negative_assertions.clear();
         self.learnt_clauses.clear();
         self.learnt_why = Mapping::new();
-        self.clauses = Default::default();
+        self.clauses = Clauses::default();
         self.root_requirements = problem.requirements;
         self.root_constraints = problem.constraints;
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
-        let root_clause = self.clauses.borrow_mut().alloc(ClauseState::root());
+        let root_clause = {
+            let (state, kind) = ClauseState::root();
+            self.clauses.alloc(state, kind)
+        };
         assert_eq!(root_clause, ClauseId::install_root());
 
         assert!(
@@ -425,10 +450,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         Dependencies::Unknown(reason) => {
                             // There is no information about the solvable's dependencies, so we add
                             // an exclusion clause for it
-                            let clause_id = self
-                                .clauses
-                                .borrow_mut()
-                                .alloc(ClauseState::exclude(solvable_id, reason));
+
+                            let (state, kind) = ClauseState::exclude(solvable_id, reason);
+                            let clause_id = self.clauses.alloc(state, kind);
 
                             // Exclusions are negative assertions, tracked outside of the watcher
                             // system
@@ -518,33 +542,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     let locked_solvable_id = package_candidates.locked;
                     let candidates = &package_candidates.candidates;
 
-                    // Each candidate gets a clause to disallow other candidates.
-                    for (i, &candidate) in candidates.iter().enumerate() {
-                        for &other_candidate in &candidates[i + 1..] {
-                            let clause_id =
-                                self.clauses
-                                    .borrow_mut()
-                                    .alloc(ClauseState::forbid_multiple(
-                                        candidate.into(),
-                                        other_candidate.into(),
-                                        name_id,
-                                    ));
-
-                            debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
-                            output.clauses_to_watch.push(clause_id);
-                        }
-                    }
-
                     // If there is a locked solvable, forbid other solvables.
                     if let Some(locked_solvable_id) = locked_solvable_id {
                         for &other_candidate in candidates {
                             if other_candidate != locked_solvable_id {
-                                let clause_id = self.clauses.borrow_mut().alloc(ClauseState::lock(
+                                let (state, kind) = ClauseState::lock(
                                     locked_solvable_id.into(),
                                     other_candidate.into(),
-                                ));
+                                );
+                                let clause_id = self.clauses.alloc(state, kind);
 
-                                debug_assert!(self.clauses.borrow_mut()[clause_id].has_watches());
+                                debug_assert!(self.clauses.states.borrow_mut()
+                                    [clause_id.to_usize()]
+                                .has_watches());
                                 output.clauses_to_watch.push(clause_id);
                             }
                         }
@@ -552,10 +562,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                     // Add a clause for solvables that are externally excluded.
                     for (solvable, reason) in package_candidates.excluded.iter().copied() {
-                        let clause_id = self
-                            .clauses
-                            .borrow_mut()
-                            .alloc(ClauseState::exclude(solvable.into(), reason));
+                        let (state, kind) = ClauseState::exclude(solvable.into(), reason);
+                        let clause_id = self.clauses.alloc(state, kind);
 
                         // Exclusions are negative assertions, tracked outside of the watcher system
                         output
@@ -581,31 +589,58 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // Queue requesting the dependencies of the candidates as well if they are
                     // cheaply available from the dependency provider.
                     for &candidate in candidates {
-                        if seen.insert(candidate.into())
-                            && self.cache.are_dependencies_available_for(candidate)
+                        if !seen.insert(candidate.into()) {
+                            continue;
+                        }
+
+                        // If the dependencies are already available for the
+                        // candidate, queue the candidate for processing.
+                        if self.cache.are_dependencies_available_for(candidate)
                             && clauses_added_for_solvable.insert(candidate.into())
                         {
                             pending_solvables.push(candidate.into());
+                        }
+
+                        // Add forbid constraints for this solvable on all other
+                        // solvables that have been visited already for the same
+                        // version set name.
+                        let name_id = self.provider().solvable_name(candidate);
+                        let mut forbidden_clauses_added = self.forbidden_clauses_added.borrow_mut();
+                        let other_solvables = forbidden_clauses_added.entry(name_id).or_default();
+                        let candidate = InternalSolvableId::from(candidate);
+                        if other_solvables.insert(candidate) {
+                            for &other_candidate in other_solvables.iter() {
+                                if candidate == other_candidate {
+                                    continue;
+                                }
+
+                                let (state, kind) = ClauseState::forbid_multiple(
+                                    candidate,
+                                    other_candidate,
+                                    name_id,
+                                );
+                                let clause_id = self.clauses.alloc(state, kind);
+
+                                debug_assert!(self.clauses.states.borrow_mut()
+                                    [clause_id.to_usize()]
+                                .has_watches());
+                                output.clauses_to_watch.push(clause_id);
+                            }
                         }
                     }
 
                     // Add the requirements clause
                     let no_candidates = candidates.is_empty();
-                    let (clause, conflict) = ClauseState::requires(
+                    let (state, conflict, kind) = ClauseState::requires(
                         solvable_id,
                         requirement,
                         candidates,
                         &self.decision_tracker,
                     );
+                    let has_watches = state.has_watches();
+                    let clause_id = self.clauses.alloc(state, kind);
 
-                    let clause_id = self.clauses.borrow_mut().alloc(clause);
-                    let clause = &self.clauses.borrow()[clause_id];
-
-                    let &Clause::Requires(solvable_id, requirement) = &clause.kind else {
-                        unreachable!();
-                    };
-
-                    if clause.has_watches() {
+                    if has_watches {
                         output.clauses_to_watch.push(clause_id);
                     }
 
@@ -634,14 +669,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                     // Add forbidden clauses for the candidates
                     for &forbidden_candidate in non_matching_candidates {
-                        let (clause, conflict) = ClauseState::constrains(
+                        let (state, conflict, kind) = ClauseState::constrains(
                             solvable_id,
                             forbidden_candidate.into(),
                             version_set_id,
                             &self.decision_tracker,
                         );
 
-                        let clause_id = self.clauses.borrow_mut().alloc(clause);
+                        let clause_id = self.clauses.alloc(state, kind);
                         output.clauses_to_watch.push(clause_id);
 
                         if conflict {
@@ -759,7 +794,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
                         tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
-                                clause=self.clauses.borrow()[clause_id].display(self.provider()));
+                                clause=self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider()));
                         level = starting_level;
                         self.decision_tracker.undo_until(starting_level);
                         continue;
@@ -816,7 +851,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     .format_with("\n- ", |(id, derived_from), f| f(&format_args!(
                         "{} (derived from {})",
                         id.display(self.provider()),
-                        self.clauses.borrow()[derived_from].display(self.provider()),
+                        self.clauses.kinds.borrow()[derived_from.to_usize()]
+                            .display(self.provider()),
                     )))
             );
             tracing::debug!("====");
@@ -829,7 +865,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             // Serially process the outputs, to reduce the need for synchronization
             for &clause_id in &output.conflicting_clauses {
                 tracing::debug!("├─ Added clause {clause} introduces a conflict which invalidates the partial solution",
-                                        clause=self.clauses.borrow()[clause_id].display(self.provider()));
+                                        clause=self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider()));
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
@@ -870,18 +906,22 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     }
 
     fn process_add_clause_output(&mut self, mut output: AddClauseOutput) -> Result<(), ClauseId> {
-        let mut clauses = self.clauses.borrow_mut();
+        let mut clauses = self.clauses.states.borrow_mut();
         for clause_id in output.clauses_to_watch {
             debug_assert!(
-                clauses[clause_id].has_watches(),
+                clauses[clause_id.to_usize()].has_watches(),
                 "attempting to watch a clause without watches!"
             );
             self.watches
-                .start_watching(&mut clauses[clause_id], clause_id);
+                .start_watching(&mut clauses[clause_id.to_usize()], clause_id);
         }
 
-        self.requires_clauses
-            .append(&mut output.new_requires_clauses);
+        for (solvable_id, requirement, clause_id) in output.new_requires_clauses {
+            self.requires_clauses
+                .entry(solvable_id)
+                .or_default()
+                .push((requirement, clause_id));
+        }
         self.negative_assertions
             .append(&mut output.negative_assertions);
 
@@ -905,16 +945,33 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// it was provided by the user, and set its value to true.
     fn resolve_dependencies(&mut self, mut level: u32) -> Result<u32, UnsolvableOrCancelled> {
         loop {
-            tracing::trace!("Loop in resolve_dependencies: Level {}: Deciding", level);
-
             // Make a decision. If no decision could be made it means the problem is
             // satisfyable.
             let Some((candidate, required_by, clause_id)) = self.decide() else {
                 break;
             };
 
+            tracing::info!(
+                "╒══ Install {} at level {level} (derived from {})",
+                candidate.display(self.provider()),
+                self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider())
+            );
+
             // Propagate the decision
-            level = self.set_propagate_learn(level, candidate, required_by, clause_id)?;
+            match self.set_propagate_learn(level, candidate, required_by, clause_id) {
+                Ok(new_level) => {
+                    level = new_level;
+                    tracing::info!("╘══ Propagation completed");
+                }
+                Err(UnsolvableOrCancelled::Cancelled(value)) => {
+                    tracing::info!("╘══ Propagation cancelled");
+                    return Err(UnsolvableOrCancelled::Cancelled(value));
+                }
+                Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
+                    tracing::info!("╘══ Propagation resulted in a conflict");
+                    return Err(UnsolvableOrCancelled::Unsolvable(conflict));
+                }
+            }
         }
 
         // We just went through all clauses and there are no choices left to be made
@@ -930,7 +987,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     fn decide(&mut self) -> Option<(InternalSolvableId, InternalSolvableId, ClauseId)> {
         let mut best_decision: Option<(bool, i32, (SolvableId, InternalSolvableId, ClauseId))> =
             None;
-        for &(solvable_id, deps, clause_id) in &self.requires_clauses {
+        for (&solvable_id, requirements) in self.requires_clauses.iter() {
             let is_explicit_requirement = solvable_id == InternalSolvableId::root();
             if !is_explicit_requirement && matches!(best_decision, Some((true, _, _))) {
                 // If we already have an explicit requirement, there is no need to evaluate
@@ -943,44 +1000,46 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 continue;
             }
 
-            // Consider only clauses in which no candidates have been installed
-            let candidates = &self.cache.requirement_to_sorted_candidates[&deps];
+            for (deps, clause_id) in requirements.iter() {
+                // Consider only clauses in which no candidates have been installed
+                let candidates = &self.cache.requirement_to_sorted_candidates[deps];
 
-            // Either find the first assignable candidate or determine that one of the
-            // candidates is already assigned in which case the clause has
-            // already been satisfied.
-            let candidate = candidates.iter().try_fold(
-                (None, 0),
-                |(first_selectable_candidate, selectable_candidates), &candidate| {
-                    let assigned_value = self.decision_tracker.assigned_value(candidate.into());
-                    match assigned_value {
-                        Some(true) => ControlFlow::Break(()),
-                        Some(false) => ControlFlow::Continue((
-                            first_selectable_candidate,
-                            selectable_candidates,
-                        )),
-                        None => ControlFlow::Continue((
-                            first_selectable_candidate.or(Some(candidate)),
-                            selectable_candidates + 1,
-                        )),
-                    }
-                },
-            );
-
-            match candidate {
-                ControlFlow::Continue((Some(candidate), count)) => {
-                    let possible_decision = (candidate, solvable_id, clause_id);
-                    best_decision = Some(match best_decision {
-                        None => (is_explicit_requirement, count, possible_decision),
-                        Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
-                        Some((_, best_count, _)) if count < best_count => {
-                            (is_explicit_requirement, count, possible_decision)
+                // Either find the first assignable candidate or determine that one of the
+                // candidates is already assigned in which case the clause has
+                // already been satisfied.
+                let candidate = candidates.iter().try_fold(
+                    (None, 0),
+                    |(first_selectable_candidate, selectable_candidates), &candidate| {
+                        let assigned_value = self.decision_tracker.assigned_value(candidate.into());
+                        match assigned_value {
+                            Some(true) => ControlFlow::Break(()),
+                            Some(false) => ControlFlow::Continue((
+                                first_selectable_candidate,
+                                selectable_candidates,
+                            )),
+                            None => ControlFlow::Continue((
+                                first_selectable_candidate.or(Some(candidate)),
+                                selectable_candidates + 1,
+                            )),
                         }
-                        Some(best_decision) => best_decision,
-                    })
+                    },
+                );
+
+                match candidate {
+                    ControlFlow::Continue((Some(candidate), count)) => {
+                        let possible_decision = (candidate, solvable_id, *clause_id);
+                        best_decision = Some(match best_decision {
+                            None => (is_explicit_requirement, count, possible_decision),
+                            Some((false, _, _)) if is_explicit_requirement => (is_explicit_requirement, count, possible_decision),
+                            Some((_, best_count, _)) if count < best_count => {
+                                (is_explicit_requirement, count, possible_decision)
+                            }
+                            Some(best_decision) => best_decision,
+                        })
+                    }
+                    ControlFlow::Break(_) => continue,
+                    ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
                 }
-                ControlFlow::Break(_) => continue,
-                ControlFlow::Continue((None, _)) => unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."),
             }
         }
 
@@ -990,7 +1049,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             tracing::trace!(
                 "deciding to assign {}, ({}, {} possible candidates)",
                 self.provider().display_solvable(candidate),
-                self.clauses.borrow()[clause_id].display(self.provider()),
+                self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider()),
                 count,
             );
         }
@@ -1021,18 +1080,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         &mut self,
         mut level: u32,
         solvable: InternalSolvableId,
-        required_by: InternalSolvableId,
+        _required_by: InternalSolvableId,
         clause_id: ClauseId,
     ) -> Result<u32, UnsolvableOrCancelled> {
         level += 1;
 
-        tracing::trace!(
-            "╤══ Install {} at level {level} (required by {})",
-            solvable.display(self.provider()),
-            required_by.display(self.provider())
-        );
-
-        // Add the decision to the tracker
         self.decision_tracker
             .try_add_decision(Decision::new(solvable, true, clause_id), level)
             .expect("bug: solvable was already decided!");
@@ -1044,13 +1096,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         loop {
             match self.propagate(level) {
                 Ok(()) => {
-                    // Propagation completed
-                    tracing::debug!("╘══ Propagation completed");
                     return Ok(level);
                 }
                 Err(PropagationError::Cancelled(value)) => {
-                    // Propagation cancelled
-                    tracing::debug!("╘══ Propagation cancelled");
                     return Err(UnsolvableOrCancelled::Cancelled(value));
                 }
                 Err(PropagationError::Conflict(
@@ -1078,33 +1126,34 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ) -> Result<u32, Conflict> {
         {
             tracing::info!(
-                "├─ Propagation conflicted: could not set {solvable} to {attempted_value}",
+                "├┬ Propagation conflicted: could not set {solvable} to {attempted_value}",
                 solvable = conflicting_solvable.display(self.provider()),
             );
             tracing::info!(
-                "│  During unit propagation for clause: {}",
-                self.clauses.borrow()[conflicting_clause].display(self.provider())
+                "││ During unit propagation for clause: {}",
+                self.clauses.kinds.borrow()[conflicting_clause.to_usize()].display(self.provider())
             );
 
             tracing::info!(
-                "│  Previously decided value: {}. Derived from: {}",
+                "││ Previously decided value: {}. Derived from: {}",
                 !attempted_value,
-                self.clauses.borrow()[self
+                self.clauses.kinds.borrow()[self
                     .decision_tracker
                     .find_clause_for_assignment(conflicting_solvable)
-                    .unwrap()]
+                    .unwrap()
+                    .to_usize()]
                 .display(self.provider()),
             );
         }
 
         if level == 1 {
-            tracing::info!("╘══ UNSOLVABLE");
             for decision in self.decision_tracker.stack() {
-                let clause = &self.clauses.borrow()[decision.derived_from];
+                let clause_id = decision.derived_from;
+                let clause = self.clauses.kinds.borrow()[clause_id.to_usize()];
                 let level = self.decision_tracker.level(decision.solvable_id);
                 let action = if decision.value { "install" } else { "forbid" };
 
-                if let Clause::ForbidMultipleInstances(..) = clause.kind {
+                if let Clause::ForbidMultipleInstances(..) = clause {
                     // Skip forbids clauses, to reduce noise
                     continue;
                 }
@@ -1112,7 +1161,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 tracing::info!(
                     "* ({level}) {action} {}. Reason: {}",
                     decision.solvable_id.display(self.provider()),
-                    clause.display(self.provider()),
+                    self.clauses.kinds.borrow()[decision.derived_from.to_usize()]
+                        .display(self.provider()),
                 );
             }
 
@@ -1121,23 +1171,24 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         let (new_level, learned_clause_id, literal) =
             self.analyze(level, conflicting_solvable, conflicting_clause);
+        let old_level = level;
         level = new_level;
-
-        tracing::debug!("├─ Backtracked to level {level}");
 
         // Optimization: propagate right now, since we know that the clause is a unit
         // clause
         let decision = literal.satisfying_value();
         self.decision_tracker
             .try_add_decision(
-                Decision::new(literal.solvable_id, decision, learned_clause_id),
+                Decision::new(literal.solvable_id(), decision, learned_clause_id),
                 level,
             )
             .expect("bug: solvable was already decided!");
         tracing::debug!(
-            "├─ Propagate after learn: {} = {decision}",
-            literal.solvable_id.display(self.provider()),
+            "│├ Propagate after learn: {} = {decision}",
+            literal.solvable_id().display(self.provider()),
         );
+
+        tracing::info!("│└ Backtracked from {old_level} -> {level}");
 
         Ok(level)
     }
@@ -1177,8 +1228,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
-            let clause = &self.clauses.borrow()[clause_id];
-            let Clause::Learnt(learnt_index) = clause.kind else {
+            let clause = self.clauses.kinds.borrow()[clause_id.to_usize()];
+            let Clause::Learnt(learnt_index) = clause else {
                 unreachable!();
             };
 
@@ -1195,31 +1246,36 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             let decided = self
                 .decision_tracker
                 .try_add_decision(
-                    Decision::new(literal.solvable_id, decision, clause_id),
+                    Decision::new(literal.solvable_id(), decision, clause_id),
                     level,
                 )
                 .map_err(|_| {
-                    PropagationError::Conflict(literal.solvable_id, decision, clause_id)
+                    PropagationError::Conflict(literal.solvable_id(), decision, clause_id)
                 })?;
 
             if decided {
                 tracing::trace!(
                     "├─ Propagate assertion {} = {}",
-                    literal.solvable_id.display(self.provider()),
+                    literal.solvable_id().display(self.provider()),
                     decision
                 );
             }
         }
 
         // Watched solvables
+        let clauses = self.clauses.kinds.borrow();
+        let mut clause_states = self.clauses.states.borrow_mut();
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
-            let pkg = decision.solvable_id;
+            let watched_literal = Literal::new(decision.solvable_id, decision.value);
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
             let mut old_predecessor_clause_id: Option<ClauseId>;
             let mut predecessor_clause_id: Option<ClauseId> = None;
-            let mut clause_id = self.watches.first_clause_watching_solvable(pkg);
+            let mut clause_id = self
+                .watches
+                .first_clause_watching_literal(watched_literal)
+                .unwrap_or(ClauseId::null());
             while !clause_id.is_null() {
                 debug_assert!(
                     predecessor_clause_id != Some(clause_id),
@@ -1227,14 +1283,19 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 );
 
                 // Get mutable access to both clauses.
-                let mut clauses = self.clauses.borrow_mut();
-                let (predecessor_clause, clause) =
+                let (predecessor_clause_state, clause_state) =
                     if let Some(prev_clause_id) = predecessor_clause_id {
-                        let (predecessor_clause, clause) =
-                            clauses.get_two_mut(prev_clause_id, clause_id);
-                        (Some(predecessor_clause), clause)
+                        let prev_idx = prev_clause_id.to_usize();
+                        let current_idx = clause_id.to_usize();
+                        if prev_idx < current_idx {
+                            let (left, right) = clause_states.split_at_mut(current_idx);
+                            (Some(&mut left[prev_idx]), &mut right[0])
+                        } else {
+                            let (left, right) = clause_states.split_at_mut(prev_idx);
+                            (Some(&mut right[0]), &mut left[current_idx])
+                        }
                     } else {
-                        (None, &mut clauses[clause_id])
+                        (None, &mut clause_states[clause_id.to_usize()])
                     };
 
                 // Update the prev_clause_id for the next run
@@ -1243,74 +1304,89 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                 // Configure the next clause to visit
                 let this_clause_id = clause_id;
-                clause_id = clause.next_watched_clause(pkg);
+                clause_id = clause_state.next_watched_clause(watched_literal.solvable_id());
 
-                if let Some((watched_literals, watch_index)) = clause.watch_turned_false(
-                    pkg,
-                    self.decision_tracker.map(),
+                // Determine which watch turned false.
+                let (watch_index, other_watch_index) = if clause_state.watched_literals[0]
+                    .solvable_id()
+                    == watched_literal.solvable_id()
+                {
+                    (0, 1)
+                } else {
+                    (1, 0)
+                };
+                debug_assert!(
+                    clause_state.watched_literals[watch_index].eval(self.decision_tracker.map())
+                        == Some(false)
+                );
+
+                // Find another literal to watch. If we can't find one, the other literal must be
+                // set to true for the clause to still hold.
+                if clause_state.watched_literals[other_watch_index]
+                    .eval(self.decision_tracker.map())
+                    == Some(true)
+                {
+                    // If the other watch is already true, we can simply skip this clause.
+                } else if let Some(variable) = clause_state.next_unwatched_literal(
+                    &clauses[this_clause_id.to_usize()],
                     &self.learnt_clauses,
+                    &self.cache.requirement_to_sorted_candidates,
+                    self.decision_tracker.map(),
+                    watch_index,
                 ) {
-                    // One of the watched literals is now false
-                    if let Some(variable) = clause.next_unwatched_variable(
-                        &self.learnt_clauses,
-                        &self.cache.requirement_to_sorted_candidates,
-                        self.decision_tracker.map(),
-                    ) {
-                        debug_assert!(!clause.watched_literals.contains(&variable));
+                    self.watches.update_watched(
+                        predecessor_clause_state,
+                        clause_state,
+                        this_clause_id,
+                        watch_index,
+                        watched_literal,
+                        variable,
+                    );
 
-                        self.watches.update_watched(
-                            predecessor_clause,
-                            clause,
-                            this_clause_id,
-                            watch_index,
-                            pkg,
-                            variable,
-                        );
+                    // Make sure the right predecessor is kept for the next iteration (i.e. the
+                    // current clause is no longer a predecessor of the next one; the current
+                    // clause's predecessor is)
+                    predecessor_clause_id = old_predecessor_clause_id;
+                } else {
+                    // We could not find another literal to watch, which means the remaining
+                    // watched literal can be set to true
+                    let remaining_watch_index = match watch_index {
+                        0 => 1,
+                        1 => 0,
+                        _ => unreachable!(),
+                    };
 
-                        // Make sure the right predecessor is kept for the next iteration (i.e. the
-                        // current clause is no longer a predecessor of the next one; the current
-                        // clause's predecessor is)
-                        predecessor_clause_id = old_predecessor_clause_id;
-                    } else {
-                        // We could not find another literal to watch, which means the remaining
-                        // watched literal can be set to true
-                        let remaining_watch_index = match watch_index {
-                            0 => 1,
-                            1 => 0,
-                            _ => unreachable!(),
-                        };
-
-                        let remaining_watch = watched_literals[remaining_watch_index];
-                        let decided = self
-                            .decision_tracker
-                            .try_add_decision(
-                                Decision::new(
-                                    remaining_watch.solvable_id,
-                                    remaining_watch.satisfying_value(),
-                                    this_clause_id,
-                                ),
-                                level,
+                    let remaining_watch = clause_state.watched_literals[remaining_watch_index];
+                    let decided = self
+                        .decision_tracker
+                        .try_add_decision(
+                            Decision::new(
+                                remaining_watch.solvable_id(),
+                                remaining_watch.satisfying_value(),
+                                this_clause_id,
+                            ),
+                            level,
+                        )
+                        .map_err(|_| {
+                            PropagationError::Conflict(
+                                remaining_watch.solvable_id(),
+                                true,
+                                this_clause_id,
                             )
-                            .map_err(|_| {
-                                PropagationError::Conflict(
-                                    remaining_watch.solvable_id,
-                                    true,
-                                    this_clause_id,
-                                )
-                            })?;
+                        })?;
 
-                        if decided {
-                            match clause.kind {
-                                // Skip logging for ForbidMultipleInstances, which is so noisy
-                                Clause::ForbidMultipleInstances(..) => {}
-                                _ => {
-                                    tracing::debug!(
-                                        "├─ Propagate {} = {}. {}",
-                                        remaining_watch.solvable_id.display(self.provider()),
-                                        remaining_watch.satisfying_value(),
-                                        clause.display(self.provider()),
-                                    );
-                                }
+                    if decided {
+                        let clause = &clauses[this_clause_id.to_usize()];
+                        match clause {
+                            // Skip logging for ForbidMultipleInstances, which is so noisy
+                            Clause::ForbidMultipleInstances(..) => {}
+                            _ => {
+                                tracing::debug!(
+                                    "├ Propagate {} = {}. {}",
+                                    remaining_watch.solvable_id().display(self.provider()),
+                                    remaining_watch.satisfying_value(),
+                                    clause.display(self.provider())
+                                );
                             }
                         }
                     }
@@ -1326,21 +1402,21 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// Because learnt clauses are not relevant for the user, they are not added
     /// to the [`Conflict`]. Instead, we report the clauses that caused them.
     fn analyze_unsolvable_clause(
-        clauses: &Arena<ClauseId, ClauseState>,
+        clauses: &[Clause],
         learnt_why: &Mapping<LearntClauseId, Vec<ClauseId>>,
         clause_id: ClauseId,
         conflict: &mut Conflict,
         seen: &mut HashSet<ClauseId>,
     ) {
-        let clause = &clauses[clause_id];
-        match clause.kind {
+        let clause = &clauses[clause_id.to_usize()];
+        match clause {
             Clause::Learnt(learnt_clause_id) => {
                 if !seen.insert(clause_id) {
                     return;
                 }
 
                 for &cause in learnt_why
-                    .get(learnt_clause_id)
+                    .get(*learnt_clause_id)
                     .expect("no cause for learnt clause available")
                 {
                     Self::analyze_unsolvable_clause(clauses, learnt_why, cause, conflict, seen);
@@ -1361,18 +1437,18 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
-        let mut involved = HashSet::new();
-        self.clauses.borrow()[clause_id].kind.visit_literals(
+        let mut involved = HashSet::default();
+        self.clauses.kinds.borrow()[clause_id.to_usize()].visit_literals(
             &self.learnt_clauses,
             &self.cache.requirement_to_sorted_candidates,
             |literal| {
-                involved.insert(literal.solvable_id);
+                involved.insert(literal.solvable_id());
             },
         );
 
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         Self::analyze_unsolvable_clause(
-            &self.clauses.borrow(),
+            &self.clauses.kinds.borrow(),
             &self.learnt_why,
             clause_id,
             &mut conflict,
@@ -1393,21 +1469,21 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             assert_ne!(why, ClauseId::install_root());
 
             Self::analyze_unsolvable_clause(
-                &self.clauses.borrow(),
+                &self.clauses.kinds.borrow(),
                 &self.learnt_why,
                 why,
                 &mut conflict,
                 &mut seen,
             );
 
-            self.clauses.borrow()[why].kind.visit_literals(
+            self.clauses.kinds.borrow()[why.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.cache.requirement_to_sorted_candidates,
                 |literal| {
                     if literal.eval(self.decision_tracker.map()) == Some(true) {
-                        assert_eq!(literal.solvable_id, decision.solvable_id);
+                        assert_eq!(literal.solvable_id(), decision.solvable_id);
                     } else {
-                        involved.insert(literal.solvable_id);
+                        involved.insert(literal.solvable_id());
                     }
                 },
             );
@@ -1435,7 +1511,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         mut conflicting_solvable: InternalSolvableId,
         mut clause_id: ClauseId,
     ) -> (u32, ClauseId, Literal) {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut causes_at_current_level = 0u32;
         let mut learnt = Vec::new();
         let mut back_track_to = 0;
@@ -1443,35 +1519,35 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut s_value;
         let mut learnt_why = Vec::new();
         let mut first_iteration = true;
+        let clause_kinds = self.clauses.kinds.borrow();
         loop {
             learnt_why.push(clause_id);
 
-            self.clauses.borrow()[clause_id].kind.visit_literals(
+            clause_kinds[clause_id.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.cache.requirement_to_sorted_candidates,
                 |literal| {
-                    if !first_iteration && literal.solvable_id == conflicting_solvable {
+                    if !first_iteration && literal.solvable_id() == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the
                         // solvable whose value was propagated
                         return;
                     }
 
-                    if !seen.insert(literal.solvable_id) {
+                    if !seen.insert(literal.solvable_id()) {
                         // Skip literals we have already seen
                         return;
                     }
 
-                    let decision_level = self.decision_tracker.level(literal.solvable_id);
+                    let decision_level = self.decision_tracker.level(literal.solvable_id());
                     if decision_level == current_level {
                         causes_at_current_level += 1;
                     } else if current_level > 1 {
-                        let learnt_literal = Literal {
-                            solvable_id: literal.solvable_id,
-                            negate: self
-                                .decision_tracker
-                                .assigned_value(literal.solvable_id)
+                        let learnt_literal = Literal::new(
+                            literal.solvable_id(),
+                            self.decision_tracker
+                                .assigned_value(literal.solvable_id())
                                 .unwrap(),
-                        };
+                        );
                         learnt.push(learnt_literal);
                         back_track_to = back_track_to.max(decision_level);
                     } else {
@@ -1505,33 +1581,33 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
         }
 
-        let last_literal = Literal {
-            solvable_id: conflicting_solvable,
-            negate: s_value,
-        };
+        // No longer need the kinds
+        drop(clause_kinds);
+
+        let last_literal = Literal::new(conflicting_solvable, s_value);
         learnt.push(last_literal);
 
         // Add the clause
         let learnt_id = self.learnt_clauses.alloc(learnt.clone());
         self.learnt_why.insert(learnt_id, learnt_why);
 
-        let clause_id = self
-            .clauses
-            .borrow_mut()
-            .alloc(ClauseState::learnt(learnt_id, &learnt));
+        let (state, kind) = ClauseState::learnt(learnt_id, &learnt);
+        let has_watches = state.has_watches();
+        let clause_id = self.clauses.alloc(state, kind);
         self.learnt_clause_ids.push(clause_id);
-
-        let clause = &mut self.clauses.borrow_mut()[clause_id];
-        if clause.has_watches() {
-            self.watches.start_watching(clause, clause_id);
+        if has_watches {
+            self.watches.start_watching(
+                &mut self.clauses.states.borrow_mut()[clause_id.to_usize()],
+                clause_id,
+            );
         }
 
-        tracing::debug!("├─ Learnt disjunction:",);
+        tracing::debug!("│├ Learnt disjunction:",);
         for lit in learnt {
             tracing::debug!(
-                "│  - {}{}",
-                if lit.negate { "NOT " } else { "" },
-                lit.solvable_id.display(self.provider()),
+                "││ - {}{}",
+                if lit.negate() { "NOT " } else { "" },
+                lit.solvable_id().display(self.provider()),
             );
         }
 

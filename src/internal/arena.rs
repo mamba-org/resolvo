@@ -107,9 +107,9 @@ impl<TId: ArenaId, TValue> Arena<TId, TValue> {
     pub fn get_two_mut(&mut self, a: TId, b: TId) -> (&mut TValue, &mut TValue) {
         let a_index = a.to_usize();
         let b_index = b.to_usize();
-        assert!(a_index < self.len());
-        assert!(b_index < self.len());
-        assert_ne!(a_index, b_index);
+        debug_assert!(a_index < self.len());
+        debug_assert!(b_index < self.len());
+        debug_assert_ne!(a_index, b_index);
         let (a_chunk, a_offset) = Self::chunk_and_offset(a_index);
         let (b_chunk, b_offset) = Self::chunk_and_offset(b_index);
         // SAFE: because we check that the indices are less than the length and that both indices do

@@ -76,6 +76,7 @@ impl DecisionMap {
             .map_or(0, |d| d.level())
     }
 
+    #[inline(always)]
     pub fn value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
         self.map.get(solvable_id.to_usize()).and_then(|d| d.value())
     }

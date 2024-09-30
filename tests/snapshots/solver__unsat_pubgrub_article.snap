@@ -3,14 +3,18 @@ source: tests/solver.rs
 expression: error
 ---
 The following packages are incompatible
-├─ menu * can be installed with any of the following options:
-│  └─ menu 10 would require
-│     └─ dropdown >=1, <2, which can be installed with any of the following options:
-│        └─ dropdown 1 would require
-│           └─ intl >=3, <4, which can be installed with any of the following options:
-│              └─ intl 3
 ├─ icons >=1, <2 can be installed with any of the following options:
 │  └─ icons 1
-└─ intl >=5, <6 cannot be installed because there are no viable options:
-   └─ intl 5, which conflicts with the versions reported above.
-
+├─ intl >=5, <6 can be installed with any of the following options:
+│  └─ intl 5
+└─ menu * cannot be installed because there are no viable options:
+   ├─ menu 15 would require
+   │  └─ dropdown >=2, <3, which cannot be installed because there are no viable options:
+   │     └─ dropdown 2 would require
+   │        └─ icons >=2, <3, which cannot be installed because there are no viable options:
+   │           └─ icons 2, which conflicts with the versions reported above.
+   └─ menu 10 would require
+      └─ dropdown >=1, <2, which cannot be installed because there are no viable options:
+         └─ dropdown 1 would require
+            └─ intl >=3, <4, which cannot be installed because there are no viable options:
+               └─ intl 3, which conflicts with the versions reported above.

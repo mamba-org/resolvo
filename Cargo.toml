@@ -36,13 +36,12 @@ bitvec = "1.0.1"
 serde = { version = "1.0", features = ["derive"], optional = true }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 event-listener = "5.3"
-
+indexmap = "2"
 tokio = { version = "1.37", features = ["rt"], optional = true }
 async-std = { version = "1.12", default-features = false, features = ["alloc", "default"], optional = true }
 
 [dev-dependencies]
 insta = "1.39.0"
-indexmap = "2"
 proptest = "1.2"
 tracing-test = { version = "0.2.4", features = ["no-env-filter"] }
 tokio = { version = "1.35.1", features = ["time", "rt"] }
