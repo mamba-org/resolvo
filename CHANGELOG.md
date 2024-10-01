@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.1...resolvo-v0.8.2) - 2024-10-01
+
+### Fixed
+
+- use GNUInstallDirs for installation locations ([#72](https://github.com/mamba-org/resolvo/pull/72))
+
+### Other
+
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.14 to 0.2.15 ([#71](https://github.com/mamba-org/resolvo/pull/71))
+- prepare cpp v0.2.0 ([#69](https://github.com/mamba-org/resolvo/pull/69))
+
 ## [0.8.1](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.0...resolvo-v0.8.1) - 2024-09-30
 
 ### Other
