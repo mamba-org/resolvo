@@ -106,6 +106,8 @@ target_include_directories(
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include/resolvo>)
 
+include(GNUInstallDirs)
+
 export(
   TARGETS Resolvo resolvo_cpp
   NAMESPACE Resolvo::
@@ -113,17 +115,21 @@ export(
 install(
   EXPORT ResolvoTargets
   NAMESPACE Resolvo::
-  DESTINATION lib/cmake/Resolvo)
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Resolvo)
+
 install(
   TARGETS Resolvo resolvo_cpp
   EXPORT ResolvoTargets
-  LIBRARY DESTINATION lib
-  PUBLIC_HEADER DESTINATION include/resolvo)
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/resolvo)
 
-install(FILES $<TARGET_FILE:${resolvo_cpp_impl}> TYPE LIB)
-
-if(WIN32)
-  install(FILES $<TARGET_LINKER_FILE:${resolvo_cpp_impl}> TYPE LIB)
+if(BUILD_SHARED_LIBS)
+  install(FILES $<TARGET_FILE:${resolvo_cpp_impl}> TYPE BIN)
+  if(WIN32)
+    install(FILES $<TARGET_LINKER_FILE:${resolvo_cpp_impl}> TYPE LIB)
+  endif()
+else()
+    install(FILES $<TARGET_FILE:${resolvo_cpp_impl}> TYPE LIB)
 endif()
 
 include(CMakePackageConfigHelpers)
@@ -160,7 +166,7 @@ function(_resolvo_write_configure_file)
   configure_package_config_file(
     "cmake/ResolvoConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfig.cmake"
-    INSTALL_DESTINATION lib/cmake/resolvo)
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Resolvo)
 endfunction()
 
 cmake_language(DEFER CALL _resolvo_write_configure_file)
@@ -175,7 +181,7 @@ install(
   FILES
     "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Resolvo/ResolvoConfigVersion.cmake"
-  DESTINATION lib/cmake/Resolvo)
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Resolvo)
 
 if(RESOLVO_BUILD_TESTING)
   add_subdirectory(tests)
