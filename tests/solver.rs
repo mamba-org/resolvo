@@ -1367,10 +1367,7 @@ fn test_snapshot_union_requirements() {
 #[test]
 fn test_root_constraints() {
     let provider = BundleBoxProvider::from_packages(&[
-        ("icons", 2, vec![]),
         ("icons", 1, vec![]),
-        ("intl", 5, vec![]),
-        ("intl", 3, vec![]),
         ("union", 1, vec!["icons"]),
     ]);
 
@@ -1381,12 +1378,12 @@ fn test_root_constraints() {
     let mut snapshot_provider = snapshot.provider();
 
     let union_req = snapshot_provider.add_package_requirement(union_name_id, "*");
-    let icons_req = snapshot_provider.add_package_requirement(union_name_id, "5");
+    let union_constraint = snapshot_provider.add_package_requirement(union_name_id, "5");
 
     assert_snapshot!(solve_for_snapshot(
         snapshot_provider,
         &[union_req],
-        &[icons_req]
+        &[union_constraint]
     ));
 }
 
