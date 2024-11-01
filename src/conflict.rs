@@ -982,7 +982,14 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
 
                 // The only possible conflict at the root level is a Locked conflict
                 match conflict {
-                    ConflictCause::Constrains(_) | ConflictCause::ForbidMultipleInstances => {
+                    &ConflictCause::Constrains(version_set_id) => {
+                        writeln!(
+                            f,
+                            "{indent}constraint '{version_set}' cannot be fulfilled",
+                            version_set = self.interner.display_version_set(version_set_id),
+                        )?;
+                    }
+                    &ConflictCause::ForbidMultipleInstances => {
                         unreachable!()
                     }
                     &ConflictCause::Locked(solvable_id) => {

@@ -355,19 +355,29 @@ impl<'s> SnapshotProvider<'s> {
         }
     }
 
-    /// Adds another requirement that matches any version of a package
-    pub fn add_package_requirement(&mut self, name: NameId) -> VersionSetId {
+    /// Adds another requirement that matches any version of a package.
+    /// If you use "*" as the matcher, it will match any version of the package.
+    pub fn add_package_requirement(&mut self, name: NameId, matcher: &str) -> VersionSetId {
         let id = self.snapshot.version_sets.max() + self.additional_version_sets.len();
-
         let package = self.package(name);
 
-        let version_set = VersionSet {
-            name,
-            display: "*".to_string(),
-            matching_candidates: package.solvables.iter().copied().collect(),
-        };
+        let matching_candidates = package
+            .solvables
+            .iter()
+            .copied()
+            .filter(|&s| matcher == "*" || self.solvable(s).display.contains(matcher))
+            .collect();
 
-        self.additional_version_sets.push(version_set);
+        self.additional_version_sets.push(VersionSet {
+            name,
+            display: if matcher == "*" {
+                "*".to_string()
+            } else {
+                format!("{} {}", package.name, matcher)
+            },
+            matching_candidates,
+        });
+
         VersionSetId::from_usize(id)
     }
 
