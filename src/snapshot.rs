@@ -356,19 +356,45 @@ impl<'s> SnapshotProvider<'s> {
     }
 
     /// Adds another requirement that matches any version of a package
-    pub fn add_package_requirement(&mut self, name: NameId) -> VersionSetId {
+    pub fn add_package_requirement(&mut self, name: NameId, matcher: &str) -> VersionSetId {
         let id = self.snapshot.version_sets.max() + self.additional_version_sets.len();
 
         let package = self.package(name);
 
-        let version_set = VersionSet {
-            name,
-            display: "*".to_string(),
-            matching_candidates: package.solvables.iter().copied().collect(),
-        };
+        // match packages if not `*`
+        if matcher != "*" {
+            let matching_candidates = package
+                .solvables
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    self.solvable(s)
+                        .display
+                        .contains(matcher)
+                })
+                .collect();
 
-        self.additional_version_sets.push(version_set);
-        VersionSetId::from_usize(id)
+            let version_set = VersionSet {
+                name,
+                display: format!("{} {}", package.name, matcher),
+                matching_candidates,
+            };
+
+            self.additional_version_sets.push(version_set);
+            return VersionSetId::from_usize(id);
+        } else {
+            // if `*` match all packages
+            let matching_candidates = package.solvables.iter().copied().collect();
+
+            let version_set = VersionSet {
+                name,
+                display: "*".to_string(),
+                matching_candidates,
+            };
+
+            self.additional_version_sets.push(version_set);
+            return VersionSetId::from_usize(id);
+        }
     }
 
     fn solvable(&self, solvable: SolvableId) -> &Solvable {

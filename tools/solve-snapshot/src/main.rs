@@ -88,7 +88,7 @@ fn main() {
                 0 => {
                     // Add a package requirement
                     let (package, _) = snapshot.packages.iter().choose(&mut rng).unwrap();
-                    let package_requirement = provider.add_package_requirement(package);
+                    let package_requirement = provider.add_package_requirement(package, "*");
                     requirements.push(package_requirement.into());
                 }
                 1 => {

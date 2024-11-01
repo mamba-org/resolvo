@@ -1332,9 +1332,9 @@ fn test_snapshot() {
 
     let mut snapshot_provider = snapshot.provider();
 
-    let menu_req = snapshot_provider.add_package_requirement(menu_name_id);
+    let menu_req = snapshot_provider.add_package_requirement(menu_name_id, "*");
 
-    assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req]));
+    assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req], &[]));
 }
 
 #[test]
@@ -1354,12 +1354,40 @@ fn test_snapshot_union_requirements() {
 
     let mut snapshot_provider = snapshot.provider();
 
-    let intl_req = snapshot_provider.add_package_requirement(intl_name_id);
-    let union_req = snapshot_provider.add_package_requirement(union_name_id);
+    let intl_req = snapshot_provider.add_package_requirement(intl_name_id, "*");
+    let union_req = snapshot_provider.add_package_requirement(union_name_id, "*");
 
     assert_snapshot!(solve_for_snapshot(
         snapshot_provider,
-        &[intl_req, union_req]
+        &[intl_req, union_req],
+        &[]
+    ));
+}
+
+#[test]
+fn test_root_constraints() {
+    let provider = BundleBoxProvider::from_packages(&[
+        ("icons", 2, vec![]),
+        ("icons", 1, vec![]),
+        ("intl", 5, vec![]),
+        ("intl", 3, vec![]),
+        ("union", 1, vec!["icons"]),
+    ]);
+
+    let icons_name_id = provider.package_name("icons");
+    let union_name_id = provider.package_name("union");
+
+    let snapshot = provider.into_snapshot();
+
+    let mut snapshot_provider = snapshot.provider();
+
+    let union_req = snapshot_provider.add_package_requirement(union_name_id, "*");
+    let icons_req = snapshot_provider.add_package_requirement(union_name_id, "5");
+
+    assert_snapshot!(solve_for_snapshot(
+        snapshot_provider,
+        &[union_req],
+        &[icons_req]
     ));
 }
 
@@ -1401,9 +1429,10 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
     serde_json::to_writer_pretty(file, snapshot).unwrap()
 }
 
-fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId]) -> String {
+fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId], root_constraints: &[VersionSetId]) -> String {
     let mut solver = Solver::new(provider);
-    let problem = Problem::new().requirements(root_reqs.iter().copied().map(Into::into).collect());
+    let problem = Problem::new().requirements(root_reqs.iter().copied().map(Into::into).collect())
+        .constraints(root_constraints.iter().copied().map(Into::into).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {

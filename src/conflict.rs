@@ -985,7 +985,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                     &ConflictCause::Constrains(version_set_id) => {
                         writeln!(
                             f,
-                            "{indent}The constraint at the root level {version_set} could not be fulfilled",
+                            "{indent}root constraint '{version_set}' cannot be fulfilled",
                             version_set = self.interner.display_version_set(version_set_id),
                         )?;
                     }
