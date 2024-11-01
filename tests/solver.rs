@@ -1366,10 +1366,8 @@ fn test_snapshot_union_requirements() {
 
 #[test]
 fn test_root_constraints() {
-    let provider = BundleBoxProvider::from_packages(&[
-        ("icons", 1, vec![]),
-        ("union", 1, vec!["icons"]),
-    ]);
+    let provider =
+        BundleBoxProvider::from_packages(&[("icons", 1, vec![]), ("union", 1, vec!["icons"])]);
 
     let union_name_id = provider.package_name("union");
 
