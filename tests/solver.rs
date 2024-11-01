@@ -1374,7 +1374,6 @@ fn test_root_constraints() {
         ("union", 1, vec!["icons"]),
     ]);
 
-    let icons_name_id = provider.package_name("icons");
     let union_name_id = provider.package_name("union");
 
     let snapshot = provider.into_snapshot();
@@ -1429,9 +1428,14 @@ fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std
     serde_json::to_writer_pretty(file, snapshot).unwrap()
 }
 
-fn solve_for_snapshot(provider: SnapshotProvider, root_reqs: &[VersionSetId], root_constraints: &[VersionSetId]) -> String {
+fn solve_for_snapshot(
+    provider: SnapshotProvider,
+    root_reqs: &[VersionSetId],
+    root_constraints: &[VersionSetId],
+) -> String {
     let mut solver = Solver::new(provider);
-    let problem = Problem::new().requirements(root_reqs.iter().copied().map(Into::into).collect())
+    let problem = Problem::new()
+        .requirements(root_reqs.iter().copied().map(Into::into).collect())
         .constraints(root_constraints.iter().copied().map(Into::into).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),

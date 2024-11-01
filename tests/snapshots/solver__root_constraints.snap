@@ -5,4 +5,4 @@ expression: "solve_for_snapshot(snapshot_provider, &[union_req], &[icons_req])"
 The following packages are incompatible
 └─ union * can be installed with any of the following options:
    └─ union union=1
-├─ root constraint 'union 5' cannot be fulfilled
+├─ constraint 'union 5' cannot be fulfilled
