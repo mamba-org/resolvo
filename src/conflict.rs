@@ -11,9 +11,11 @@ use petgraph::{
     Direction,
 };
 
-use crate::internal::arena::ArenaId;
 use crate::{
-    internal::id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
+    internal::{
+        arena::ArenaId,
+        id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
+    },
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
     DependencyProvider, Interner, Requirement,
@@ -908,7 +910,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                             let indent = indenter.get_indent();
                             writeln!(
                                 f,
-                                "{indent}{name} {version_set} , which conflicts with any installable versions previously reported",
+                                "{indent}{name} {version_set}, which conflicts with any installable versions previously reported",
                             )?;
                         }
                     } else {
@@ -985,7 +987,10 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                     &ConflictCause::Constrains(version_set_id) => {
                         writeln!(
                             f,
-                            "{indent}constraint '{version_set}' cannot be fulfilled",
+                            "{indent}the constraint {name} {version_set} cannot be fulfilled",
+                            name = self
+                                .interner
+                                .display_name(self.interner.version_set_name(version_set_id)),
                             version_set = self.interner.display_version_set(version_set_id),
                         )?;
                     }

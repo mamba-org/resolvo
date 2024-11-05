@@ -1107,6 +1107,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+ "version-ranges",
 ]
 
 [[package]]
@@ -1475,6 +1476,15 @@ name = "value-bag"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a84c137d37ab0142f0f2ddfe332651fdbf252e7b7dbb4e67b6c1f1b2e925101"
+
+[[package]]
+name = "version-ranges"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "284649eba55872c1253f3f6ec15f22303a784e60684babd01d01e4c6ebb85b91"
+dependencies = [
+ "smallvec",
+]
 
 [[package]]
 name = "version_check"

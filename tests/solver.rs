@@ -21,12 +21,13 @@ use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
-    utils::{Pool, Range},
+    utils::Pool,
     Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
     Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
     VersionSetUnionId,
 };
 use tracing_test::traced_test;
+use version_ranges::Ranges;
 
 // Let's define our own packaging version system and dependency specification.
 // This is a very simple version system, where a package is identified by a name
@@ -39,7 +40,7 @@ use tracing_test::traced_test;
 // means the range from 0..1 (excluding the end)
 //
 // Lets call the tuples of (Name, Version) a `Pack` and the tuples of (Name,
-// Range<u32>) a `Spec`
+// Ranges<u32>) a `Spec`
 //
 // We also need to create a custom provider that tells us how to sort the
 // candidates. This is unique to each packaging ecosystem. Let's call our
@@ -111,11 +112,11 @@ impl FromStr for Pack {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Spec {
     name: String,
-    versions: Range<Pack>,
+    versions: Ranges<Pack>,
 }
 
 impl Spec {
-    pub fn new(name: String, versions: Range<Pack>) -> Self {
+    pub fn new(name: String, versions: Ranges<Pack>) -> Self {
         Self { name, versions }
     }
 
@@ -138,7 +139,7 @@ impl FromStr for Spec {
             .expect("spec does not have a name")
             .to_string();
 
-        fn version_range(s: Option<&&str>) -> Range<Pack> {
+        fn version_range(s: Option<&&str>) -> Ranges<Pack> {
             if let Some(s) = s {
                 let (start, end) = s
                     .split_once("..")
@@ -149,9 +150,9 @@ impl FromStr for Spec {
                     .transpose()
                     .unwrap()
                     .unwrap_or(start.offset(1));
-                Range::between(start, end)
+                Ranges::between(start, end)
             } else {
-                Range::full()
+                Ranges::full()
             }
         }
 
@@ -164,7 +165,7 @@ impl FromStr for Spec {
 /// This provides sorting functionality for our `BundleBox` packaging system
 #[derive(Default)]
 struct BundleBoxProvider {
-    pool: Pool<Range<Pack>>,
+    pool: Pool<Ranges<Pack>>,
     packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,

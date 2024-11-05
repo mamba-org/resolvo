@@ -958,10 +958,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.negative_assertions
             .append(&mut output.negative_assertions);
 
-        if let Some(&clause_id) = output.conflicting_clauses.first() {
-            return Err(clause_id);
-        }
-
         if let Some(max_name_idx) = output
             .new_names
             .into_iter()
@@ -971,6 +967,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             if self.name_activity.len() <= max_name_idx {
                 self.name_activity.resize(max_name_idx + 1, 0.0);
             }
+        }
+
+        if let Some(&clause_id) = output.conflicting_clauses.first() {
+            return Err(clause_id);
         }
 
         Ok(())

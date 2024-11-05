@@ -242,8 +242,9 @@ impl<D: DependencyProvider> SolverCache<D> {
         }
     }
 
-    /// Returns the candidates fulfilling the [`Requirement`] sorted from highest to lowest
-    /// within each version set comprising the [`Requirement`].
+    /// Returns the candidates fulfilling the [`Requirement`] sorted from
+    /// highest to lowest within each version set comprising the
+    /// [`Requirement`].
     ///
     /// If the provider has requested the solving process to be cancelled, the
     /// cancellation value will be returned as an `Err(...)`.
