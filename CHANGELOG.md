@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.3...resolvo-v0.8.4) - 2024-11-05
+
+### Fixed
+
+- constraint formatting ([#80](https://github.com/mamba-org/resolvo/pull/80))
+
 ## [0.8.3](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.2...resolvo-v0.8.3) - 2024-11-01
 
 ### Fixed
