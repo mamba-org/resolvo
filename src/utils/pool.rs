@@ -187,10 +187,11 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         self.version_sets[id].0
     }
 
-    /// Interns a union of two or more version sets and returns its [`VersionSetUnionId`].
+    /// Interns a union of two or more version sets and returns its
+    /// [`VersionSetUnionId`].
     ///
-    /// Version set unions are *not* deduplicated, and a unique id is returned on every
-    /// invocation.
+    /// Version set unions are *not* deduplicated, and a unique id is returned
+    /// on every invocation.
     pub fn intern_version_set_union(
         &self,
         first: VersionSetId,
@@ -260,4 +261,9 @@ impl<N: Eq + Hash> PackageName for N {}
 pub trait VersionSet: Clone + Eq + Hash {
     /// The element type that is included in the set.
     type V: Display;
+}
+
+#[cfg(feature = "version-ranges")]
+impl<R: Clone + Eq + Hash + Display> VersionSet for version_ranges::Ranges<R> {
+    type V = R;
 }

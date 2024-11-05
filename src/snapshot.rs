@@ -370,11 +370,7 @@ impl<'s> SnapshotProvider<'s> {
 
         self.additional_version_sets.push(VersionSet {
             name,
-            display: if matcher == "*" {
-                "*".to_string()
-            } else {
-                format!("{} {}", package.name, matcher)
-            },
+            display: matcher.to_string(),
             matching_candidates,
         });
 
