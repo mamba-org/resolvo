@@ -27,6 +27,16 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
         Self::with_capacity(1)
     }
 
+    /// Returns the total number of values that can be stored in the mapping without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.chunks.len() * VALUES_PER_CHUNK
+    }
+
+    /// Returns the total number of bytes allocated by this instance.
+    pub fn size_in_bytes(&self) -> usize {
+        self.capacity() * std::mem::size_of::<Option<TValue>>()
+    }
+
     /// Constructs a new arena with a capacity for `n` values pre-allocated.
     pub fn with_capacity(n: usize) -> Self {
         let n = cmp::max(1, n);

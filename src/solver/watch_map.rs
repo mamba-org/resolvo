@@ -1,7 +1,6 @@
-use crate::solver::clause::Literal;
 use crate::{
     internal::{id::ClauseId, mapping::Mapping},
-    solver::clause::ClauseState,
+    solver::clause::{ClauseState, Literal},
 };
 
 /// A map from solvables to the clauses that are watching them
@@ -25,7 +24,7 @@ impl WatchMap {
 
     #[cfg(feature = "diagnostics")]
     pub fn size_in_bytes(&self) -> usize {
-        self.len() * std::mem::size_of::<(Literal, ClauseId)>()
+        self.map.size_in_bytes()
     }
 
     pub(crate) fn start_watching(&mut self, clause: &mut ClauseState, clause_id: ClauseId) {
