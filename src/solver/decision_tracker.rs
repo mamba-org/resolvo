@@ -27,6 +27,11 @@ impl DecisionTracker {
         self.propagate_index = 0;
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
     #[inline(always)]
     pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
         self.map.value(solvable_id)
