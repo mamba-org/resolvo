@@ -47,6 +47,11 @@ impl DecisionMap {
         }
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn reset(&mut self, solvable_id: InternalSolvableId) {
         let solvable_id = solvable_id.to_usize();
         if solvable_id < self.map.len() {

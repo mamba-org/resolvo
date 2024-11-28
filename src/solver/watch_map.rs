@@ -18,6 +18,16 @@ impl WatchMap {
         }
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn size_in_bytes(&self) -> usize {
+        self.len() * std::mem::size_of::<(Literal, ClauseId)>()
+    }
+
     pub(crate) fn start_watching(&mut self, clause: &mut ClauseState, clause_id: ClauseId) {
         for (watch_index, watched_literal) in clause.watched_literals.into_iter().enumerate() {
             let already_watching = self

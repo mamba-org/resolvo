@@ -123,9 +123,7 @@ impl Spec {
     pub fn parse_union(
         spec: &str,
     ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
-        spec.split('|')
-            .map(str::trim)
-            .map(|dep| Spec::from_str(dep))
+        spec.split('|').map(str::trim).map(Spec::from_str)
     }
 }
 
@@ -386,7 +384,7 @@ impl DependencyProvider for BundleBoxProvider {
         candidates
             .iter()
             .copied()
-            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) == !inverse)
+            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) != inverse)
             .collect()
     }
 
@@ -538,7 +536,7 @@ impl DependencyProvider for BundleBoxProvider {
 }
 
 /// Create a string from a [`Transaction`]
-fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) -> String {
+fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
     for solvable in solvables

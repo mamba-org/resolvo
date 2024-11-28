@@ -8,6 +8,7 @@ use decision_tracker::DecisionTracker;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
+use segvec::{Linear, MemConfig, SegVec};
 use watch_map::WatchMap;
 
 use crate::{
@@ -26,6 +27,8 @@ pub(crate) mod clause;
 mod decision;
 mod decision_map;
 mod decision_tracker;
+#[cfg(feature = "diagnostics")]
+mod diagnostics;
 mod watch_map;
 
 #[derive(Default)]
@@ -123,8 +126,8 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
 
 #[derive(Default)]
 pub(crate) struct Clauses {
-    pub(crate) kinds: RefCell<Vec<Clause>>,
-    states: RefCell<Vec<ClauseState>>,
+    pub(crate) kinds: RefCell<SegVec<Clause, Linear<8192>>>,
+    states: RefCell<SegVec<ClauseState, Linear<8192>>>,
 }
 
 impl Clauses {
@@ -355,6 +358,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 self.run_sat(additional)?;
             }
         }
+
+        #[cfg(feature = "diagnostics")]
+        self.report_diagnostics();
 
         Ok(self.chosen_solvables().collect())
     }
@@ -995,7 +1001,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 break;
             };
 
-            tracing::info!(
+            tracing::debug!(
                 "╒══ Install {} at level {level} (derived from {})",
                 candidate.display(self.provider()),
                 self.clauses.kinds.borrow()[clause_id.to_usize()].display(self.provider())
@@ -1005,14 +1011,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             match self.set_propagate_learn(level, candidate, required_by, clause_id) {
                 Ok(new_level) => {
                     level = new_level;
-                    tracing::info!("╘══ Propagation completed");
+                    tracing::debug!("╘══ Propagation completed");
                 }
                 Err(UnsolvableOrCancelled::Cancelled(value)) => {
-                    tracing::info!("╘══ Propagation cancelled");
+                    tracing::debug!("╘══ Propagation cancelled");
                     return Err(UnsolvableOrCancelled::Cancelled(value));
                 }
                 Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
-                    tracing::info!("╘══ Propagation resulted in a conflict");
+                    tracing::debug!("╘══ Propagation resulted in a conflict");
                     return Err(UnsolvableOrCancelled::Unsolvable(conflict));
                 }
             }
@@ -1288,16 +1294,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         conflicting_clause: ClauseId,
     ) -> Result<u32, Conflict> {
         {
-            tracing::info!(
+            tracing::debug!(
                 "├┬ Propagation conflicted: could not set {solvable} to {attempted_value}",
                 solvable = conflicting_solvable.display(self.provider()),
             );
-            tracing::info!(
+            tracing::debug!(
                 "││ During unit propagation for clause: {}",
                 self.clauses.kinds.borrow()[conflicting_clause.to_usize()].display(self.provider())
             );
 
-            tracing::info!(
+            tracing::debug!(
                 "││ Previously decided value: {}. Derived from: {}",
                 !attempted_value,
                 self.clauses.kinds.borrow()[self
@@ -1321,7 +1327,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     continue;
                 }
 
-                tracing::info!(
+                tracing::debug!(
                     "* ({level}) {action} {}. Reason: {}",
                     decision.solvable_id.display(self.provider()),
                     self.clauses.kinds.borrow()[decision.derived_from.to_usize()]
@@ -1346,12 +1352,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 level,
             )
             .expect("bug: solvable was already decided!");
-        tracing::debug!(
+        tracing::trace!(
             "│├ Propagate after learn: {} = {decision}",
             literal.solvable_id().display(self.provider()),
         );
 
-        tracing::info!("│└ Backtracked from {old_level} -> {level}");
+        tracing::debug!("│└ Backtracked from {old_level} -> {level}");
 
         Ok(level)
     }
@@ -1446,20 +1452,24 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 );
 
                 // Get mutable access to both clauses.
-                let (predecessor_clause_state, clause_state) =
-                    if let Some(prev_clause_id) = predecessor_clause_id {
-                        let prev_idx = prev_clause_id.to_usize();
-                        let current_idx = clause_id.to_usize();
-                        if prev_idx < current_idx {
-                            let (left, right) = clause_states.split_at_mut(current_idx);
-                            (Some(&mut left[prev_idx]), &mut right[0])
-                        } else {
-                            let (left, right) = clause_states.split_at_mut(prev_idx);
-                            (Some(&mut right[0]), &mut left[current_idx])
-                        }
-                    } else {
-                        (None, &mut clause_states[clause_id.to_usize()])
-                    };
+                let (predecessor_clause_state, clause_state) = if let Some(prev_clause_id) =
+                    predecessor_clause_id
+                {
+                    let prev_idx = prev_clause_id.to_usize();
+                    let current_idx = clause_id.to_usize();
+                    assert_ne!(prev_idx, current_idx);
+                    // SAFETY: This is safe because we guarentee that `prev_idx` and `current_idx`
+                    // are different.
+                    unsafe {
+                        let clause_states_ptr =
+                            std::ops::DerefMut::deref_mut(&mut clause_states) as *mut SegVec<_, _>;
+                        let prev_clause_state = &mut (*clause_states_ptr)[prev_idx];
+                        let current_clause_state = &mut (*clause_states_ptr)[current_idx];
+                        (Some(prev_clause_state), current_clause_state)
+                    }
+                } else {
+                    (None, &mut clause_states[clause_id.to_usize()])
+                };
 
                 // Update the prev_clause_id for the next run
                 old_predecessor_clause_id = predecessor_clause_id;
@@ -1545,7 +1555,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                             // Skip logging for ForbidMultipleInstances, which is so noisy
                             Clause::ForbidMultipleInstances(..) => {}
                             _ => {
-                                tracing::debug!(
+                                tracing::trace!(
                                     "├ Propagate {} = {}. {}",
                                     remaining_watch.solvable_id().display(self.provider()),
                                     remaining_watch.satisfying_value(),
@@ -1565,8 +1575,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ///
     /// Because learnt clauses are not relevant for the user, they are not added
     /// to the [`Conflict`]. Instead, we report the clauses that caused them.
-    fn analyze_unsolvable_clause(
-        clauses: &[Clause],
+    fn analyze_unsolvable_clause<C: MemConfig>(
+        clauses: &SegVec<Clause, C>,
         learnt_why: &Mapping<LearntClauseId, Vec<ClauseId>>,
         clause_id: ClauseId,
         conflict: &mut Conflict,
@@ -1599,7 +1609,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         let mut conflict = Conflict::default();
 
-        tracing::info!("=== ANALYZE UNSOLVABLE");
+        tracing::debug!("=== ANALYZE UNSOLVABLE");
 
         let mut involved = HashSet::default();
         self.clauses.kinds.borrow()[clause_id.to_usize()].visit_literals(
