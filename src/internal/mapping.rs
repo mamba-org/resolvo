@@ -60,7 +60,9 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
                 .resize_with(chunk + 1, || std::array::from_fn(|_| None));
         }
         let previous_value = self.chunks[chunk][offset].replace(value);
-        self.len += 1;
+        if previous_value.is_none() {
+            self.len += 1;
+        }
         self.max = self.max.max(idx);
         previous_value
     }
