@@ -34,8 +34,7 @@ pub struct SolverCache<D: DependencyProvider> {
 
     /// A mapping of [`Requirement`] to a sorted list of candidates that fulfill
     /// that requirement.
-    pub(crate) requirement_to_sorted_candidates:
-        FrozenMap<Requirement, Vec<SolvableId>, ahash::RandomState>,
+    requirement_to_sorted_candidates: FrozenMap<Requirement, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping from a solvable to a list of dependencies
     solvable_dependencies: Arena<DependenciesId, Dependencies>,
@@ -53,7 +52,6 @@ impl<D: DependencyProvider> SolverCache<D> {
     pub fn new(provider: D) -> Self {
         Self {
             provider,
-
             candidates: Default::default(),
             package_name_to_candidates: Default::default(),
             package_name_to_candidates_in_flight: Default::default(),
@@ -287,7 +285,7 @@ impl<D: DependencyProvider> SolverCache<D> {
 
     /// Returns the sorted candidates for a singular version set requirement
     /// (akin to a [`Requirement::Single`]).
-    async fn get_or_cache_sorted_candidates_for_version_set(
+    pub(crate) async fn get_or_cache_sorted_candidates_for_version_set(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {

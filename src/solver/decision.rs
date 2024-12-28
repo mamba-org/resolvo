@@ -1,17 +1,17 @@
-use crate::internal::id::{ClauseId, InternalSolvableId};
+use crate::internal::id::{ClauseId, VariableId};
 
 /// Represents an assignment to a variable
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct Decision {
-    pub(crate) solvable_id: InternalSolvableId,
+    pub(crate) variable: VariableId,
     pub(crate) value: bool,
     pub(crate) derived_from: ClauseId,
 }
 
 impl Decision {
-    pub(crate) fn new(solvable: InternalSolvableId, value: bool, derived_from: ClauseId) -> Self {
+    pub(crate) fn new(variable: VariableId, value: bool, derived_from: ClauseId) -> Self {
         Self {
-            solvable_id: solvable,
+            variable,
             value,
             derived_from,
         }

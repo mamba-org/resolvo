@@ -41,7 +41,7 @@ impl WatchMap {
         // are no longer watching what brought us here
         if let Some(predecessor_clause) = predecessor_clause {
             // Unlink the clause
-            predecessor_clause.unlink_clause(clause, previous_watch.solvable_id(), watch_index);
+            predecessor_clause.unlink_clause(clause, previous_watch.variable(), watch_index);
         } else {
             // This was the first clause in the chain
             self.map
