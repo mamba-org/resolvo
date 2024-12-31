@@ -64,7 +64,7 @@ pub(crate) enum Clause {
     /// itself forbids two solvables from being installed at the same time.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    ForbidMultipleInstances(VariableId, VariableId, NameId),
+    ForbidMultipleInstances(VariableId, Literal, NameId),
     /// Forbids packages that do not satisfy a solvable's constrains
     ///
     /// Usage: for each constrains relationship in a package, determine all the
@@ -186,12 +186,12 @@ impl Clause {
     /// clause itself.
     fn forbid_multiple(
         candidate: VariableId,
-        constrained_candidate: VariableId,
+        constrained_candidate: Literal,
         name: NameId,
     ) -> (Self, Option<[Literal; 2]>) {
         (
             Clause::ForbidMultipleInstances(candidate, constrained_candidate, name),
-            Some([candidate.negative(), constrained_candidate.negative()]),
+            Some([candidate.negative(), constrained_candidate]),
         )
     }
 
@@ -262,10 +262,11 @@ impl Clause {
                         .map(|&s| s.positive()),
                 )
                 .try_fold(init, visit),
-            Clause::Constrains(s1, s2, _) | Clause::ForbidMultipleInstances(s1, s2, _) => {
-                [s1.negative(), s2.negative()]
-                    .into_iter()
-                    .try_fold(init, visit)
+            Clause::Constrains(s1, s2, _) => [s1.negative(), s2.negative()]
+                .into_iter()
+                .try_fold(init, visit),
+            Clause::ForbidMultipleInstances(s1, s2, _) => {
+                [s1.negative(), s2].into_iter().try_fold(init, visit)
             }
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
@@ -321,7 +322,7 @@ impl Clause {
 /// them all.
 #[derive(Clone)]
 pub(crate) struct ClauseState {
-    // The ids of the solvables this clause is watching
+    // The ids of the literals this clause is watching
     pub watched_literals: [Literal; 2],
     // The ids of the next clause in each linked list that this clause is part of
     pub(crate) next_watches: [ClauseId; 2],
@@ -392,7 +393,7 @@ impl ClauseState {
 
     pub fn forbid_multiple(
         candidate: VariableId,
-        other_candidate: VariableId,
+        other_candidate: Literal,
         name: NameId,
     ) -> (Self, Clause) {
         let (kind, watched_literals) = Clause::forbid_multiple(candidate, other_candidate, name);
@@ -420,10 +421,6 @@ impl ClauseState {
         debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
 
         clause
-    }
-
-    pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: ClauseId) {
-        self.next_watches[watch_index] = linked_clause;
     }
 
     pub fn unlink_clause(
@@ -504,6 +501,7 @@ impl ClauseState {
 }
 
 /// Represents a literal in a SAT clause (i.e. either A or ¬A)
+#[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) struct Literal(u32);
 
@@ -625,7 +623,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     "ForbidMultipleInstances({}({:?}), {}({:?}), {})",
                     v1.display(self.variable_map, self.interner),
                     v1,
-                    v2.display(self.variable_map, self.interner),
+                    v2.variable().display(self.variable_map, self.interner),
                     v2,
                     self.interner.display_name(name)
                 )

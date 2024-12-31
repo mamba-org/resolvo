@@ -1,0 +1,13 @@
+---
+source: src/solver/binary_encoding.rs
+expression: "clauses.iter().format(\"\\n\")"
+snapshot_kind: text
+---
+¬x1 ∨ ¬v1
+¬x2 ∨ v1
+¬x1 ∨ ¬v2
+¬x2 ∨ ¬v2
+¬x3 ∨ ¬v1
+¬x3 ∨ v2
+¬x4 ∨ v1
+¬x4 ∨ v2

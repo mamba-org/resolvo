@@ -7,9 +7,9 @@ use decision::Decision;
 use decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use itertools::Itertools;
-use variable_map::{VariableMap, VariableOrigin};
+use variable_map::VariableMap;
 use watch_map::WatchMap;
 
 use crate::{
@@ -20,15 +20,17 @@ use crate::{
         mapping::Mapping,
     },
     runtime::{AsyncRuntime, NowOrNeverRuntime},
+    solver::binary_encoding::AtMostOnceTracker,
     Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
 };
 
+mod binary_encoding;
 mod cache;
 pub(crate) mod clause;
 mod decision;
 mod decision_map;
 mod decision_tracker;
-mod variable_map;
+pub(crate) mod variable_map;
 mod watch_map;
 
 #[derive(Default)]
@@ -165,7 +167,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     clauses_added_for_package: HashSet<NameId>,
     clauses_added_for_solvable: HashSet<SolvableOrRootId>,
-    forbidden_clauses_added: HashMap<NameId, IndexSet<VariableId>>,
+    forbidden_clauses_added: HashMap<NameId, AtMostOnceTracker<VariableId>>,
 
     decision_tracker: DecisionTracker,
 
@@ -540,9 +542,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .filter(|d| d.value)
                 // Select solvables for which we do not yet have dependencies
                 .filter(|d| {
-                    let solvable_or_root = match self.variable_map.origin(d.variable) {
-                        VariableOrigin::Root => SolvableOrRootId::root(),
-                        VariableOrigin::Solvable(solvable) => SolvableOrRootId::from(solvable),
+                    let Some(solvable_or_root) = d.variable.as_solvable_or_root(&self.variable_map)
+                    else {
+                        return false;
                     };
                     !self.clauses_added_for_solvable.contains(&solvable_or_root)
                 })
@@ -1537,7 +1539,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
     variable_map: &mut VariableMap,
     clauses_added_for_solvable: &mut HashSet<SolvableOrRootId>,
     clauses_added_for_package: &mut HashSet<NameId>,
-    forbidden_clauses_added: &mut HashMap<NameId, IndexSet<VariableId>>,
+    forbidden_clauses_added: &mut HashMap<NameId, AtMostOnceTracker<VariableId>>,
     requirement_to_sorted_candidates: &mut FrozenMap<
         Requirement,
         RequirementCandidateVariables,
@@ -1828,23 +1830,20 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     // version set name.
                     let name_id = cache.provider().solvable_name(candidate);
                     let other_solvables = forbidden_clauses_added.entry(name_id).or_default();
-                    if other_solvables.insert(candidate_var) {
-                        for &other_candidate in other_solvables.iter() {
-                            if candidate_var == other_candidate {
-                                continue;
-                            }
-
+                    other_solvables.add(
+                        candidate_var,
+                        |a, b, positive| {
                             let (state, kind) = ClauseState::forbid_multiple(
-                                candidate_var,
-                                other_candidate,
+                                a,
+                                if positive { b.positive() } else { b.negative() },
                                 name_id,
                             );
                             let clause_id = clauses.alloc(state, kind);
-
                             debug_assert!(clauses.states[clause_id.to_usize()].has_watches());
                             output.clauses_to_watch.push(clause_id);
-                        }
-                    }
+                        },
+                        || variable_map.alloc_forbid_multiple_variable(name_id),
+                    );
                 }
 
                 // Add the requirements clause

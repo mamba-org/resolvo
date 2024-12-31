@@ -11,6 +11,7 @@ use petgraph::{
     Direction,
 };
 
+use crate::solver::variable_map::VariableOrigin;
 use crate::{
     internal::{
         arena::ArenaId,
@@ -53,6 +54,7 @@ impl Conflict {
 
         let root_node = Self::add_node(&mut graph, &mut nodes, SolvableOrRootId::root());
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
+        let mut last_node_by_name = HashMap::default();
 
         for clause_id in &self.clauses {
             let clause = &solver.clauses.kinds[clause_id.to_usize()];
@@ -124,13 +126,22 @@ impl Conflict {
                     let solvable1 = instance1_id
                         .as_solvable_or_root(&solver.variable_map)
                         .expect("only solvables can be excluded");
-                    let solvable2 = instance2_id
-                        .as_solvable_or_root(&solver.variable_map)
-                        .expect("only solvables can be excluded");
                     let node1_id = Self::add_node(&mut graph, &mut nodes, solvable1);
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, solvable2);
-                    let conflict = ConflictCause::ForbidMultipleInstances;
-                    graph.add_edge(node1_id, node2_id, ConflictEdge::Conflict(conflict));
+
+                    let VariableOrigin::ForbidMultiple(name) =
+                        solver.variable_map.origin(instance2_id.variable())
+                    else {
+                        unreachable!("expected only forbid variables")
+                    };
+
+                    let previous_node = last_node_by_name.insert(name, node1_id);
+                    if let Some(previous_node) = previous_node {
+                        graph.add_edge(
+                            previous_node,
+                            node1_id,
+                            ConflictEdge::Conflict(ConflictCause::ForbidMultipleInstances),
+                        );
+                    }
                 }
                 &Clause::Constrains(package_id, dep_id, version_set_id) => {
                     let package_solvable = package_id

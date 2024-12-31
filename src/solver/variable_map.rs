@@ -7,7 +7,7 @@ use crate::{
         arena::ArenaId,
         id::{SolvableOrRootId, VariableId},
     },
-    Interner, SolvableId,
+    Interner, NameId, SolvableId,
 };
 
 /// All variables in the solver are stored in a `VariableMap`. This map is used
@@ -35,6 +35,9 @@ pub enum VariableOrigin {
 
     /// The variable represents a specific solvable.
     Solvable(SolvableId),
+
+    /// A variable that helps encode an at most one constraint.
+    ForbidMultiple(NameId),
 }
 
 impl Default for VariableMap {
@@ -73,6 +76,16 @@ impl VariableMap {
             Some(solvable_id) => self.intern_solvable(solvable_id),
             None => VariableId::root(),
         }
+    }
+
+    /// Allocate a variable that helps encode an at most one constraint.
+    pub fn alloc_forbid_multiple_variable(&mut self, name: NameId) -> VariableId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let variable_id = VariableId::from_usize(id);
+        self.origins
+            .insert(variable_id, VariableOrigin::ForbidMultiple(name));
+        variable_id
     }
 
     /// Returns the origin of a variable. The origin describes the semantics of
@@ -125,6 +138,9 @@ impl<'i, I: Interner> Display for VariableDisplay<'i, I> {
             VariableOrigin::Solvable(solvable_id) => {
                 write!(f, "{}", self.interner.display_solvable(solvable_id))
             }
+            VariableOrigin::ForbidMultiple(name) => {
+                write!(f, "forbid-multiple({})", self.interner.display_name(name))
+            }
         }
     }
 }
@@ -141,6 +157,7 @@ impl VariableOrigin {
         match self {
             VariableOrigin::Solvable(solvable_id) => Some((*solvable_id).into()),
             VariableOrigin::Root => Some(SolvableOrRootId::root()),
+            _ => None,
         }
     }
 }

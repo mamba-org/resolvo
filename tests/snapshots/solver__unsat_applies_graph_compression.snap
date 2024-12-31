@@ -1,10 +1,11 @@
 ---
 source: tests/solver.rs
 expression: error
+snapshot_kind: text
 ---
 The following packages are incompatible
 ├─ c >=101, <104 can be installed with any of the following options:
-│  └─ c 101 | 103
+│  └─ c 103
 └─ a * cannot be installed because there are no viable options:
    └─ a 9 | 10 would require
       └─ b *, which cannot be installed because there are no viable options:
