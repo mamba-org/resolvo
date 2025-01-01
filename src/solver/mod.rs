@@ -1089,9 +1089,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                     // Find the first candidate that is not yet assigned a value or find the first
                     // value that makes this clause true.
-                    candidate = candidates
-                        .iter()
-                        .try_fold(None, |first_candidate, &candidate| {
+                    candidate = candidates.iter().try_fold(
+                        match candidate {
+                            ControlFlow::Continue(x) => x,
+                            _ => None,
+                        },
+                        |first_candidate, &candidate| {
                             let assigned_value =
                                 self.decision_tracker.assigned_value(candidate.into());
                             ControlFlow::Continue(match assigned_value {
@@ -1137,7 +1140,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                     }
                                 },
                             })
-                        });
+                        },
+                    );
 
                     // Stop searching if we found a candidate that makes the clause true.
                     if candidate.is_break() {
