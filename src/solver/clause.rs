@@ -324,7 +324,7 @@ pub(crate) struct ClauseState {
     // The ids of the solvables this clause is watching
     pub watched_literals: [Literal; 2],
     // The ids of the next clause in each linked list that this clause is part of
-    pub(crate) next_watches: [ClauseId; 2],
+    pub(crate) next_watches: [Option<ClauseId>; 2],
 }
 
 impl ClauseState {
@@ -417,7 +417,7 @@ impl ClauseState {
 
         let clause = Self {
             watched_literals,
-            next_watches: [ClauseId::null(), ClauseId::null()],
+            next_watches: [None, None],
         };
 
         debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
@@ -425,7 +425,7 @@ impl ClauseState {
         clause
     }
 
-    pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: ClauseId) {
+    pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: Option<ClauseId>) {
         self.next_watches[watch_index] = linked_clause;
     }
 
@@ -444,7 +444,7 @@ impl ClauseState {
     }
 
     #[inline]
-    pub fn next_watched_clause(&self, solvable_id: InternalSolvableId) -> ClauseId {
+    pub fn next_watched_clause(&self, solvable_id: InternalSolvableId) -> Option<ClauseId> {
         if solvable_id == self.watched_literals[0].solvable_id() {
             self.next_watches[0]
         } else {
@@ -650,7 +650,7 @@ mod test {
     use super::*;
     use crate::{internal::arena::ArenaId, solver::decision::Decision};
 
-    fn clause(next_clauses: [ClauseId; 2], watch_literals: [Literal; 2]) -> ClauseState {
+    fn clause(next_clauses: [Option<ClauseId>; 2], watch_literals: [Literal; 2]) -> ClauseState {
         ClauseState {
             watched_literals: watch_literals,
             next_watches: next_clauses,
@@ -691,21 +691,24 @@ mod test {
     #[test]
     fn test_unlink_clause_different() {
         let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(3)],
+            [
+                ClauseId::from_usize(2).into(),
+                ClauseId::from_usize(3).into(),
+            ],
             [
                 InternalSolvableId::from_usize(1596).negative(),
                 InternalSolvableId::from_usize(1211).negative(),
             ],
         );
         let clause2 = clause(
-            [ClauseId::null(), ClauseId::from_usize(3)],
+            [None, ClauseId::from_usize(3).into()],
             [
                 InternalSolvableId::from_usize(1596).negative(),
                 InternalSolvableId::from_usize(1208).negative(),
             ],
         );
         let clause3 = clause(
-            [ClauseId::null(), ClauseId::null()],
+            [None, None],
             [
                 InternalSolvableId::from_usize(1211).negative(),
                 InternalSolvableId::from_usize(42).negative(),
@@ -723,10 +726,7 @@ mod test {
                     InternalSolvableId::from_usize(1211).negative()
                 ]
             );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(3)]
-            )
+            assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(3).into()])
         }
 
         // Unlink 1
@@ -740,24 +740,24 @@ mod test {
                     InternalSolvableId::from_usize(1211).negative()
                 ]
             );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
+            assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
         }
     }
 
     #[test]
     fn test_unlink_clause_same() {
         let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(2)],
+            [
+                ClauseId::from_usize(2).into(),
+                ClauseId::from_usize(2).into(),
+            ],
             [
                 InternalSolvableId::from_usize(1596).negative(),
                 InternalSolvableId::from_usize(1211).negative(),
             ],
         );
         let clause2 = clause(
-            [ClauseId::null(), ClauseId::null()],
+            [None, None],
             [
                 InternalSolvableId::from_usize(1596).negative(),
                 InternalSolvableId::from_usize(1211).negative(),
@@ -775,10 +775,7 @@ mod test {
                     InternalSolvableId::from_usize(1211).negative()
                 ]
             );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(2)]
-            )
+            assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(2).into()])
         }
 
         // Unlink 1
@@ -792,10 +789,7 @@ mod test {
                     InternalSolvableId::from_usize(1211).negative()
                 ]
             );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
+            assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
         }
     }
 
@@ -820,7 +814,10 @@ mod test {
 
         // No conflict, still one candidate available
         decisions
-            .try_add_decision(Decision::new(candidate1.into(), false, ClauseId::null()), 1)
+            .try_add_decision(
+                Decision::new(candidate1.into(), false, ClauseId::from_usize(0)),
+                1,
+            )
             .unwrap();
         let (clause, conflict, _kind) = ClauseState::requires(
             parent,
@@ -834,7 +831,10 @@ mod test {
 
         // Conflict, no candidates available
         decisions
-            .try_add_decision(Decision::new(candidate2.into(), false, ClauseId::null()), 1)
+            .try_add_decision(
+                Decision::new(candidate2.into(), false, ClauseId::install_root()),
+                1,
+            )
             .unwrap();
         let (clause, conflict, _kind) = ClauseState::requires(
             parent,
@@ -848,7 +848,7 @@ mod test {
 
         // Panic
         decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
             ClauseState::requires(
@@ -878,7 +878,7 @@ mod test {
 
         // Conflict, forbidden package installed
         decisions
-            .try_add_decision(Decision::new(forbidden, true, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(forbidden, true, ClauseId::install_root()), 1)
             .unwrap();
         let (clause, conflict, _kind) =
             ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
@@ -888,7 +888,7 @@ mod test {
 
         // Panic
         decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
             ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)

@@ -1435,11 +1435,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             // solvable
             let mut old_predecessor_clause_id: Option<ClauseId>;
             let mut predecessor_clause_id: Option<ClauseId> = None;
-            let mut clause_id = self
-                .watches
-                .first_clause_watching_literal(watched_literal)
-                .unwrap_or(ClauseId::null());
-            while !clause_id.is_null() {
+            let mut next_clause_id = self.watches.first_clause_watching_literal(watched_literal);
+            while let Some(clause_id) = next_clause_id {
                 debug_assert!(
                     predecessor_clause_id != Some(clause_id),
                     "Linked list is circular!"
@@ -1466,8 +1463,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 predecessor_clause_id = Some(clause_id);
 
                 // Configure the next clause to visit
-                let this_clause_id = clause_id;
-                clause_id = clause_state.next_watched_clause(watched_literal.solvable_id());
+                next_clause_id = clause_state.next_watched_clause(watched_literal.solvable_id());
 
                 // Determine which watch turned false.
                 let (watch_index, other_watch_index) = if clause_state.watched_literals[0]
@@ -1492,7 +1488,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // If the other watch is already true, we can simply skip
                     // this clause.
                 } else if let Some(variable) = clause_state.next_unwatched_literal(
-                    &clauses[this_clause_id.to_usize()],
+                    &clauses[clause_id.to_usize()],
                     &self.learnt_clauses,
                     &self.cache.requirement_to_sorted_candidates,
                     self.decision_tracker.map(),
@@ -1501,7 +1497,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     self.watches.update_watched(
                         predecessor_clause_state,
                         clause_state,
-                        this_clause_id,
+                        clause_id,
                         watch_index,
                         watched_literal,
                         variable,
@@ -1527,7 +1523,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                             Decision::new(
                                 remaining_watch.solvable_id(),
                                 remaining_watch.satisfying_value(),
-                                this_clause_id,
+                                clause_id,
                             ),
                             level,
                         )
@@ -1535,12 +1531,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                             PropagationError::Conflict(
                                 remaining_watch.solvable_id(),
                                 true,
-                                this_clause_id,
+                                clause_id,
                             )
                         })?;
 
                     if decided {
-                        let clause = &clauses[this_clause_id.to_usize()];
+                        let clause = &clauses[clause_id.to_usize()];
                         match clause {
                             // Skip logging for ForbidMultipleInstances, which is so noisy
                             Clause::ForbidMultipleInstances(..) => {}
