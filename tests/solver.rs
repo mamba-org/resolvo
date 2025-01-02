@@ -1366,6 +1366,17 @@ fn test_snapshot_union_requirements() {
 }
 
 #[test]
+fn test_union_empty_requirements() {
+    let provider = BundleBoxProvider::from_packages(&[("a", 1, vec!["b 1 | c"]), ("b", 1, vec![])]);
+
+    let result = solve_snapshot(provider, &["a"]);
+    assert_snapshot!(result, @r"
+    a=1
+    b=1
+    ");
+}
+
+#[test]
 fn test_root_constraints() {
     let provider =
         BundleBoxProvider::from_packages(&[("icons", 1, vec![]), ("union", 1, vec!["icons"])]);
