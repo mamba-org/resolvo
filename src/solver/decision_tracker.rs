@@ -1,8 +1,5 @@
-use crate::internal::id::ClauseId;
-use crate::{
-    internal::id::InternalSolvableId,
-    solver::{decision::Decision, decision_map::DecisionMap},
-};
+use crate::internal::id::{ClauseId, VariableId};
+use crate::solver::{decision::Decision, decision_map::DecisionMap};
 
 /// Tracks the assignments to solvables, keeping a log that can be used to backtrack, and a map that
 /// can be used to query the current value assigned
@@ -28,8 +25,8 @@ impl DecisionTracker {
     }
 
     #[inline(always)]
-    pub(crate) fn assigned_value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
-        self.map.value(solvable_id)
+    pub(crate) fn assigned_value(&self, variable_id: VariableId) -> Option<bool> {
+        self.map.value(variable_id)
     }
 
     pub(crate) fn map(&self) -> &DecisionMap {
@@ -40,19 +37,16 @@ impl DecisionTracker {
         self.stack.iter().copied()
     }
 
-    pub(crate) fn level(&self, solvable_id: InternalSolvableId) -> u32 {
-        self.map.level(solvable_id)
+    pub(crate) fn level(&self, variable_id: VariableId) -> u32 {
+        self.map.level(variable_id)
     }
 
     // Find the clause that caused the assignment of the specified solvable. If no assignment has
     // been made to the solvable than `None` is returned.
-    pub(crate) fn find_clause_for_assignment(
-        &self,
-        solvable_id: InternalSolvableId,
-    ) -> Option<ClauseId> {
+    pub(crate) fn find_clause_for_assignment(&self, variable_id: VariableId) -> Option<ClauseId> {
         self.stack
             .iter()
-            .find(|d| d.solvable_id == solvable_id)
+            .find(|d| d.variable == variable_id)
             .map(|d| d.derived_from)
     }
 
@@ -62,9 +56,9 @@ impl DecisionTracker {
     ///
     /// Returns an error if the solvable was decided to a different value (which means there is a conflict)
     pub(crate) fn try_add_decision(&mut self, decision: Decision, level: u32) -> Result<bool, ()> {
-        match self.map.value(decision.solvable_id) {
+        match self.map.value(decision.variable) {
             None => {
-                self.map.set(decision.solvable_id, decision.value, level);
+                self.map.set(decision.variable, decision.value, level);
                 self.stack.push(decision);
                 Ok(true)
             }
@@ -80,7 +74,7 @@ impl DecisionTracker {
         }
 
         while let Some(decision) = self.stack.last() {
-            if self.level(decision.solvable_id) <= level {
+            if self.level(decision.variable) <= level {
                 break;
             }
 
@@ -90,12 +84,12 @@ impl DecisionTracker {
 
     pub(crate) fn undo_last(&mut self) -> (Decision, u32) {
         let decision = self.stack.pop().unwrap();
-        self.map.reset(decision.solvable_id);
+        self.map.reset(decision.variable);
 
         self.propagate_index = self.stack.len();
 
         let top_decision = self.stack.last().unwrap();
-        (decision, self.map.level(top_decision.solvable_id))
+        (decision, self.map.level(top_decision.variable))
     }
 
     /// Returns the next decision in the log for which unit propagation still needs to run

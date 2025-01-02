@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
 
-use crate::internal::{arena::ArenaId, id::InternalSolvableId};
+use crate::internal::arena::ArenaId;
+use crate::internal::id::VariableId;
 
-/// Represents a decision (i.e. an assignment to a solvable) and the level at
+/// Represents a decision (i.e. an assignment to a variable) and the level at
 /// which it was made
 ///
 /// = 0: undecided
-/// > 0: level of decision when the solvable is set to true
-/// < 0: level of decision when the solvable is set to false
+/// > 0: level of decision when the variable is set to true
+/// < 0: level of decision when the variable is set to false
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 struct DecisionAndLevel(i32);
@@ -47,37 +48,37 @@ impl DecisionMap {
         }
     }
 
-    pub fn reset(&mut self, solvable_id: InternalSolvableId) {
-        let solvable_id = solvable_id.to_usize();
-        if solvable_id < self.map.len() {
+    pub fn reset(&mut self, variable_id: VariableId) {
+        let variable_id = variable_id.to_usize();
+        if variable_id < self.map.len() {
             // SAFE: because we check that the solvable id is within bounds
-            unsafe { *self.map.get_unchecked_mut(solvable_id) = DecisionAndLevel::undecided() };
+            unsafe { *self.map.get_unchecked_mut(variable_id) = DecisionAndLevel::undecided() };
         }
     }
 
-    pub fn set(&mut self, solvable_id: InternalSolvableId, value: bool, level: u32) {
-        let solvable_id = solvable_id.to_usize();
-        if solvable_id >= self.map.len() {
+    pub fn set(&mut self, variable_id: VariableId, value: bool, level: u32) {
+        let variable_id = variable_id.to_usize();
+        if variable_id >= self.map.len() {
             self.map
-                .resize_with(solvable_id + 1, DecisionAndLevel::undecided);
+                .resize_with(variable_id + 1, DecisionAndLevel::undecided);
         }
 
         // SAFE: because we ensured that vec contains at least the correct number of
         // elements.
         unsafe {
-            *self.map.get_unchecked_mut(solvable_id) =
+            *self.map.get_unchecked_mut(variable_id) =
                 DecisionAndLevel::with_value_and_level(value, level)
         };
     }
 
-    pub fn level(&self, solvable_id: InternalSolvableId) -> u32 {
+    pub fn level(&self, variable_id: VariableId) -> u32 {
         self.map
-            .get(solvable_id.to_usize())
+            .get(variable_id.to_usize())
             .map_or(0, |d| d.level())
     }
 
     #[inline(always)]
-    pub fn value(&self, solvable_id: InternalSolvableId) -> Option<bool> {
-        self.map.get(solvable_id.to_usize()).and_then(|d| d.value())
+    pub fn value(&self, variable_id: VariableId) -> Option<bool> {
+        self.map.get(variable_id.to_usize()).and_then(|d| d.value())
     }
 }

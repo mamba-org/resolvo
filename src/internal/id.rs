@@ -80,76 +80,6 @@ impl ArenaId for VersionSetUnionId {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SolvableId(pub u32);
 
-/// Internally used id for solvables that can also represent the root.
-#[repr(transparent)]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-pub(crate) struct InternalSolvableId(pub u32);
-const INTERNAL_SOLVABLE_ROOT: u32 = 0;
-
-impl InternalSolvableId {
-    /// Returns the id of the "root" solvable. This is a special solvable that
-    /// is always present when solving.
-    pub const fn root() -> Self {
-        Self(0)
-    }
-
-    /// Returns if this id represents the root solvable.
-    pub const fn is_root(self) -> bool {
-        self.0 == 0
-    }
-
-    pub const fn as_solvable(self) -> Option<SolvableId> {
-        match self.0 {
-            INTERNAL_SOLVABLE_ROOT => None,
-            x => Some(SolvableId(x - 1)),
-        }
-    }
-
-    pub fn display<I: Interner>(self, interner: &I) -> impl std::fmt::Display + '_ {
-        DisplayInternalSolvable { interner, id: self }
-    }
-}
-
-pub struct DisplayInternalSolvable<'i, I: Interner> {
-    interner: &'i I,
-    id: InternalSolvableId,
-}
-
-impl<'i, I: Interner> Display for DisplayInternalSolvable<'i, I> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.id.0 {
-            INTERNAL_SOLVABLE_ROOT => write!(f, "<root>"),
-            x => {
-                write!(f, "{}", self.interner.display_solvable(SolvableId(x - 1)))
-            }
-        }
-    }
-}
-
-impl From<SolvableId> for InternalSolvableId {
-    fn from(value: SolvableId) -> Self {
-        Self(value.0 + 1)
-    }
-}
-
-impl TryFrom<InternalSolvableId> for SolvableId {
-    type Error = ();
-
-    fn try_from(value: InternalSolvableId) -> Result<Self, Self::Error> {
-        value.as_solvable().ok_or(())
-    }
-}
-
-impl ArenaId for InternalSolvableId {
-    fn from_usize(x: usize) -> Self {
-        Self(x as u32)
-    }
-
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
 impl ArenaId for SolvableId {
     fn from_usize(x: usize) -> Self {
         Self(x as u32)
@@ -229,6 +159,106 @@ impl ArenaId for DependenciesId {
 
     fn to_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+/// A unique identifier for a variable in the solver.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct VariableId(u32);
+
+impl VariableId {
+    pub fn root() -> Self {
+        Self(0)
+    }
+
+    pub fn is_root(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl ArenaId for VariableId {
+    #[inline]
+    fn from_usize(x: usize) -> Self {
+        Self(x.try_into().expect("variable id too big"))
+    }
+
+    #[inline]
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl SolvableId {
+    pub(crate) fn display<I: Interner>(self, interner: &I) -> impl Display + '_ {
+        DisplaySolvableId {
+            interner,
+            solvable_id: self,
+        }
+    }
+}
+
+pub(crate) struct DisplaySolvableId<'i, I: Interner> {
+    interner: &'i I,
+    solvable_id: SolvableId,
+}
+
+impl<'i, I: Interner> Display for DisplaySolvableId<'i, I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.interner.display_solvable(self.solvable_id))
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SolvableOrRootId(u32);
+
+impl SolvableOrRootId {
+    pub fn root() -> Self {
+        Self(0)
+    }
+
+    pub fn is_root(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn solvable(self) -> Option<SolvableId> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(SolvableId(self.0 - 1))
+        }
+    }
+
+    pub fn display<I: Interner>(self, interner: &I) -> impl Display + '_ {
+        DisplaySolvableOrRootId {
+            interner,
+            solvable_id: self,
+        }
+    }
+}
+
+impl From<SolvableId> for SolvableOrRootId {
+    fn from(value: SolvableId) -> Self {
+        Self(
+            (value.to_usize() + 1)
+                .try_into()
+                .expect("solvable id too big"),
+        )
+    }
+}
+
+pub(crate) struct DisplaySolvableOrRootId<'i, I: Interner> {
+    interner: &'i I,
+    solvable_id: SolvableOrRootId,
+}
+
+impl<'i, I: Interner> Display for DisplaySolvableOrRootId<'i, I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.solvable_id.solvable() {
+            Some(solvable_id) => write!(f, "{}", self.interner.display_solvable(solvable_id)),
+            None => write!(f, "root"),
+        }
     }
 }
 

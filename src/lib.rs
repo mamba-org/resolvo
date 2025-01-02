@@ -91,6 +91,9 @@ pub trait Interner {
     fn solvable_name(&self, solvable: SolvableId) -> NameId;
 
     /// Returns the version sets comprising the given union.
+    ///
+    /// The implementor must take care that the order in which the version sets
+    /// are returned is deterministic.
     fn version_sets_in_union(
         &self,
         version_set_union: VersionSetUnionId,
