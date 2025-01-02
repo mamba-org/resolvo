@@ -66,7 +66,7 @@ impl<V: Hash + Eq + Clone> AtMostOnceTracker<V> {
             alloc_clause(
                 variable.clone(),
                 helper_var.clone(),
-                var_idx >> bit_idx & 1 == 1,
+                ((var_idx >> bit_idx) & 1) == 1,
             );
         }
     }
