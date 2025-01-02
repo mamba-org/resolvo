@@ -1,4 +1,7 @@
-use std::fmt::{Display, Formatter};
+use std::{
+    fmt::{Display, Formatter},
+    num::NonZeroU32,
+};
 
 use crate::{internal::arena::ArenaId, Interner};
 
@@ -165,32 +168,24 @@ impl From<SolvableId> for u32 {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialOrd, Ord, Eq, PartialEq, Debug, Hash)]
-pub(crate) struct ClauseId(u32);
+pub(crate) struct ClauseId(NonZeroU32);
 
 impl ClauseId {
-    /// There is a guarentee that ClauseId(0) will always be
+    /// There is a guarentee that ClauseId(1) will always be
     /// "Clause::InstallRoot". This assumption is verified by the solver.
     pub(crate) fn install_root() -> Self {
-        Self(0)
-    }
-
-    pub(crate) fn is_null(self) -> bool {
-        self.0 == u32::MAX
-    }
-
-    pub(crate) fn null() -> ClauseId {
-        ClauseId(u32::MAX)
+        Self(unsafe { NonZeroU32::new_unchecked(1) })
     }
 }
 
 impl ArenaId for ClauseId {
     fn from_usize(x: usize) -> Self {
-        assert!(x < u32::MAX as usize, "clause id too big");
-        Self(x as u32)
+        // SAFETY: Safe because we always add 1 to the index
+        Self(unsafe { NonZeroU32::new_unchecked((x + 1).try_into().expect("clause id too big")) })
     }
 
     fn to_usize(self) -> usize {
-        self.0 as usize
+        (self.0.get() - 1) as usize
     }
 }
 
@@ -234,5 +229,19 @@ impl ArenaId for DependenciesId {
 
     fn to_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clause_id_size() {
+        // Verify that the size of a ClauseId is the same as an Option<ClauseId>.
+        assert_eq!(
+            std::mem::size_of::<ClauseId>(),
+            std::mem::size_of::<Option<ClauseId>>()
+        );
     }
 }

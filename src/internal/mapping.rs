@@ -65,6 +65,21 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
         previous_value
     }
 
+    /// Unset a specific value in the mapping, returns the previous value.
+    pub fn unset(&mut self, id: TId) -> Option<TValue> {
+        let idx = id.to_usize();
+        let (chunk, offset) = Self::chunk_and_offset(idx);
+        if chunk >= self.chunks.len() {
+            return None;
+        }
+
+        let previous_value = self.chunks[chunk][offset].take();
+        if previous_value.is_some() {
+            self.len -= 1;
+        }
+        previous_value
+    }
+
     /// Get a specific value in the mapping with bound checks
     pub fn get(&self, id: TId) -> Option<&TValue> {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
