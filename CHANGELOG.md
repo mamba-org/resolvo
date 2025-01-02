@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.4...resolvo-v0.8.5) - 2025-01-02
+
+### Fixed
+
+- issue where a union clause has no candidates (#93)
+
+### Other
+
+- reintroduce binary encoding of forbid multiple clauses (#91)
+- reduce watchmap memory size (#92)
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.19 to 0.2.25 (#89)
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.18 to 0.2.19 (#82)
+
 ## [0.8.4](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.3...resolvo-v0.8.4) - 2024-11-05
 
 ### Fixed
