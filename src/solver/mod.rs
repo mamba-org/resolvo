@@ -1093,8 +1093,110 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             return Err(PropagationError::Cancelled(value));
         };
 
-        // Negative assertions derived from other rules (assertions are clauses that
-        // consist of a single literal, and therefore do not have watches)
+        // Add decisions from assertions and learned clauses. If any of these cause a
+        // conflict, we will return an error.
+        self.decide_assertions(level)?;
+        self.decide_learned(level)?;
+
+        // For each decision that has not been propagated yet, we propagate the
+        // decision.
+        //
+        // Propagation entails iterating through the linked list of clauses that watch
+        // the literal that the decision caused to turn false. If a clause can only be
+        // satisfied if one of the literals involved is assigned a value, we also make a
+        // decision on that literal to ensure that the clause is satisfied.
+        //
+        // Any new decision is also propagated. If by making a decision on one of the
+        // remaining literals of a clause we cause a conflict, propagation is halted and
+        // an error is returned.
+
+        let interner = self.cache.provider();
+        let clause_kinds = &self.clauses.kinds;
+
+        while let Some(decision) = self.decision_tracker.next_unpropagated() {
+            let watched_literal = Literal::new(decision.variable, decision.value);
+
+            debug_assert!(
+                watched_literal.eval(self.decision_tracker.map()) == Some(false),
+                "we are only watching literals that are turning false"
+            );
+
+            // Propagate, iterating through the linked list of clauses that watch this
+            // solvable
+            let mut next_cursor = self
+                .watches
+                .cursor(&mut self.clauses.states, watched_literal);
+            while let Some(mut cursor) = next_cursor.take() {
+                let clause_id = cursor.clause_id();
+                let clause = &clause_kinds[clause_id.to_usize()];
+                let watch_index = cursor.watch_index();
+
+                // If the other literal the current clause is watching is already true, we can
+                // skip this clause. Its is already satisfied.
+                let other_watched_literal = cursor.other_literal();
+                if other_watched_literal.eval(self.decision_tracker.map()) == Some(true) {
+                    // Continue with the next clause in the linked list.
+                    next_cursor = cursor.next();
+                } else if let Some(literal) = cursor.watches().next_unwatched_literal(
+                    clause,
+                    &self.learnt_clauses,
+                    &self.requirement_to_sorted_candidates,
+                    self.decision_tracker.map(),
+                    watch_index,
+                ) {
+                    // Update the watch to point to the new literal
+                    next_cursor = cursor.update(literal);
+                } else {
+                    // We could not find another literal to watch, which means the remaining
+                    // watched literal must be set to true.
+                    let decided = self
+                        .decision_tracker
+                        .try_add_decision(
+                            Decision::new(
+                                other_watched_literal.variable(),
+                                other_watched_literal.satisfying_value(),
+                                clause_id,
+                            ),
+                            level,
+                        )
+                        .map_err(|_| {
+                            PropagationError::Conflict(
+                                other_watched_literal.variable(),
+                                true,
+                                clause_id,
+                            )
+                        })?;
+
+                    if decided {
+                        match clause {
+                            // Skip logging for ForbidMultipleInstances, which is so noisy
+                            Clause::ForbidMultipleInstances(..) => {}
+                            _ => {
+                                tracing::debug!(
+                                    "├ Propagate {} = {}. {}",
+                                    other_watched_literal
+                                        .variable()
+                                        .display(&self.variable_map, interner),
+                                    other_watched_literal.satisfying_value(),
+                                    clause.display(&self.variable_map, interner)
+                                );
+                            }
+                        }
+                    }
+
+                    // Skip to the next clause in the linked list.
+                    next_cursor = cursor.next();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add decisions for negative assertions derived from other rules
+    /// (assertions are clauses that consist of a single literal, and
+    /// therefore do not have watches).
+    fn decide_assertions(&mut self, level: u32) -> Result<(), PropagationError> {
         for &(solvable_id, clause_id) in &self.negative_assertions {
             let value = false;
             let decided = self
@@ -1110,7 +1212,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 );
             }
         }
+        Ok(())
+    }
 
+    /// Add decisions derived from learnt clauses.
+    fn decide_learned(&mut self, level: u32) -> Result<(), PropagationError> {
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
@@ -1147,131 +1253,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 );
             }
         }
-
-        // Watched solvables
-        let clauses = &self.clauses.kinds;
-        let clause_states = &mut self.clauses.states;
-        let interner = self.cache.provider();
-        while let Some(decision) = self.decision_tracker.next_unpropagated() {
-            let watched_literal = Literal::new(decision.variable, decision.value);
-
-            debug_assert!(
-                watched_literal.eval(self.decision_tracker.map()) == Some(false),
-                "we are only watching literals that are turning false"
-            );
-
-            // Propagate, iterating through the linked list of clauses that watch this
-            // solvable
-            let mut old_predecessor_clause_id: Option<ClauseId>;
-            let mut predecessor_clause_id: Option<ClauseId> = None;
-            let mut next_clause_id = self.watches.first_clause_watching_literal(watched_literal);
-            while let Some(clause_id) = next_clause_id {
-                debug_assert!(
-                    predecessor_clause_id != Some(clause_id),
-                    "Linked list is circular!"
-                );
-
-                // Get mutable access to both clauses.
-                let (predecessor_clause_state, clause_state) =
-                    if let Some(prev_clause_id) = predecessor_clause_id {
-                        let prev_idx = prev_clause_id.to_usize();
-                        let current_idx = clause_id.to_usize();
-                        if prev_idx < current_idx {
-                            let (left, right) = clause_states.split_at_mut(current_idx);
-                            (Some(&mut left[prev_idx]), &mut right[0])
-                        } else {
-                            let (left, right) = clause_states.split_at_mut(prev_idx);
-                            (Some(&mut right[0]), &mut left[current_idx])
-                        }
-                    } else {
-                        (None, &mut clause_states[clause_id.to_usize()])
-                    };
-
-                // Update the prev_clause_id for the next run
-                old_predecessor_clause_id = predecessor_clause_id;
-                predecessor_clause_id = Some(clause_id);
-
-                // Configure the next clause to visit
-                next_clause_id = clause_state.next_watched_clause(watched_literal);
-
-                // Determine which of the two literals that the clause is watching turned false.
-                let (watch_index, other_watch_index) =
-                    if clause_state.watched_literals[0] == Some(watched_literal) {
-                        (0, 1)
-                    } else {
-                        debug_assert_eq!(clause_state.watched_literals[1], Some(watched_literal));
-                        (1, 0)
-                    };
-
-                // Find another literal to watch. If we can't find one, the other literal must
-                // be set to true for the clause to still hold.
-                let other_watched_literal = clause_state.watched_literals[other_watch_index]
-                    .expect("clauses are always watching two literals");
-                if other_watched_literal.eval(self.decision_tracker.map()) == Some(true) {
-                    // If the other watch is already true, we can simply skip
-                    // this clause.
-                } else if let Some(variable) = clause_state.next_unwatched_literal(
-                    &clauses[clause_id.to_usize()],
-                    &self.learnt_clauses,
-                    &self.requirement_to_sorted_candidates,
-                    self.decision_tracker.map(),
-                    watch_index,
-                ) {
-                    self.watches.update_watched(
-                        predecessor_clause_state,
-                        clause_state,
-                        clause_id,
-                        watch_index,
-                        watched_literal,
-                        variable,
-                    );
-
-                    // Make sure the right predecessor is kept for the next iteration (i.e. the
-                    // current clause is no longer a predecessor of the next one; the current
-                    // clause's predecessor is)
-                    predecessor_clause_id = old_predecessor_clause_id;
-                } else {
-                    // We could not find another literal to watch, which means the remaining
-                    // watched literal can be set to true
-                    let decided = self
-                        .decision_tracker
-                        .try_add_decision(
-                            Decision::new(
-                                other_watched_literal.variable(),
-                                other_watched_literal.satisfying_value(),
-                                clause_id,
-                            ),
-                            level,
-                        )
-                        .map_err(|_| {
-                            PropagationError::Conflict(
-                                other_watched_literal.variable(),
-                                true,
-                                clause_id,
-                            )
-                        })?;
-
-                    if decided {
-                        let clause = &clauses[clause_id.to_usize()];
-                        match clause {
-                            // Skip logging for ForbidMultipleInstances, which is so noisy
-                            Clause::ForbidMultipleInstances(..) => {}
-                            _ => {
-                                tracing::debug!(
-                                    "├ Propagate {} = {}. {}",
-                                    other_watched_literal
-                                        .variable()
-                                        .display(&self.variable_map, interner),
-                                    other_watched_literal.satisfying_value(),
-                                    clause.display(&self.variable_map, interner)
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 

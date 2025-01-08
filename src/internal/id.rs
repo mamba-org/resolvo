@@ -114,6 +114,7 @@ impl ArenaId for ClauseId {
         Self(unsafe { NonZeroU32::new_unchecked((x + 1).try_into().expect("clause id too big")) })
     }
 
+    #[inline]
     fn to_usize(self) -> usize {
         (self.0.get() - 1) as usize
     }

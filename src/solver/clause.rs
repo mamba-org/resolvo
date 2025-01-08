@@ -425,30 +425,6 @@ impl ClauseWatches {
         clause
     }
 
-    pub fn unlink_clause(
-        &mut self,
-        linked_clause: &ClauseWatches,
-        watched_literal: Literal,
-        linked_clause_watch_index: usize,
-    ) {
-        if self.watched_literals[0] == Some(watched_literal) {
-            self.next_watches[0] = linked_clause.next_watches[linked_clause_watch_index];
-        } else {
-            debug_assert_eq!(self.watched_literals[1], Some(watched_literal));
-            self.next_watches[1] = linked_clause.next_watches[linked_clause_watch_index];
-        }
-    }
-
-    #[inline]
-    pub fn next_watched_clause(&self, watched_literal: Literal) -> Option<ClauseId> {
-        if Some(watched_literal) == self.watched_literals[0] {
-            self.next_watches[0]
-        } else {
-            debug_assert_eq!(self.watched_literals[1], Some(watched_literal));
-            self.next_watches[1]
-        }
-    }
-
     pub fn has_watches(&self) -> bool {
         // If the first watch is not null, the second won't be either
         self.watched_literals[0].is_some()
@@ -642,18 +618,6 @@ mod test {
     use super::*;
     use crate::{internal::arena::ArenaId, solver::decision::Decision};
 
-    fn clause(
-        next_clauses: [Option<ClauseId>; 2],
-        watch_literals: Option<[Literal; 2]>,
-    ) -> ClauseWatches {
-        ClauseWatches {
-            watched_literals: watch_literals.map_or([None, None], |literals| {
-                [Some(literals[0]), Some(literals[1])]
-            }),
-            next_watches: next_clauses,
-        }
-    }
-
     #[test]
     #[allow(clippy::bool_assert_comparison)]
     fn test_literal_satisfying_value() {
@@ -683,111 +647,6 @@ mod test {
         decision_map.set(VariableId::root(), false, 1);
         assert_eq!(literal.eval(&decision_map), Some(false));
         assert_eq!(negated_literal.eval(&decision_map), Some(true));
-    }
-
-    #[test]
-    fn test_unlink_clause_different() {
-        let clause1 = clause(
-            [
-                ClauseId::from_usize(2).into(),
-                ClauseId::from_usize(3).into(),
-            ],
-            Some([
-                VariableId::from_usize(1596).negative(),
-                VariableId::from_usize(1211).negative(),
-            ]),
-        );
-        let clause2 = clause(
-            [None, ClauseId::from_usize(3).into()],
-            Some([
-                VariableId::from_usize(1596).negative(),
-                VariableId::from_usize(1208).negative(),
-            ]),
-        );
-        let clause3 = clause(
-            [None, None],
-            Some([
-                VariableId::from_usize(1211).negative(),
-                VariableId::from_usize(42).negative(),
-            ]),
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1596).negative(), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    Some(VariableId::from_usize(1596).negative()),
-                    Some(VariableId::from_usize(1211).negative())
-                ]
-            );
-            assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(3).into()])
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause3, VariableId::from_usize(1211).negative(), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    Some(VariableId::from_usize(1596).negative()),
-                    Some(VariableId::from_usize(1211).negative())
-                ]
-            );
-            assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
-        }
-    }
-
-    #[test]
-    fn test_unlink_clause_same() {
-        let clause1 = clause(
-            [
-                ClauseId::from_usize(2).into(),
-                ClauseId::from_usize(2).into(),
-            ],
-            Some([
-                VariableId::from_usize(1596).negative(),
-                VariableId::from_usize(1211).negative(),
-            ]),
-        );
-        let clause2 = clause(
-            [None, None],
-            Some([
-                VariableId::from_usize(1596).negative(),
-                VariableId::from_usize(1211).negative(),
-            ]),
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1596).negative(), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    Some(VariableId::from_usize(1596).negative()),
-                    Some(VariableId::from_usize(1211).negative())
-                ]
-            );
-            assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(2).into()])
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1211).negative(), 1);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    Some(VariableId::from_usize(1596).negative()),
-                    Some(VariableId::from_usize(1211).negative())
-                ]
-            );
-            assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
-        }
     }
 
     #[test]
