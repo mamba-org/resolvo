@@ -2,7 +2,7 @@ use std::{any::Any, fmt::Display, future::ready, ops::ControlFlow};
 
 use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
-use clause::{Clause, ClauseState, Literal};
+use clause::{Clause, ClauseWatches, Literal};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
@@ -129,11 +129,11 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
 #[derive(Default)]
 pub(crate) struct Clauses {
     pub(crate) kinds: Vec<Clause>,
-    states: Vec<ClauseState>,
+    states: Vec<ClauseWatches>,
 }
 
 impl Clauses {
-    pub fn alloc(&mut self, state: ClauseState, kind: Clause) -> ClauseId {
+    pub fn alloc(&mut self, state: ClauseWatches, kind: Clause) -> ClauseId {
         let id = ClauseId::from_usize(self.kinds.len());
         self.kinds.push(kind);
         self.states.push(state);
@@ -352,7 +352,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
         let root_clause = {
-            let (state, kind) = ClauseState::root();
+            let (state, kind) = ClauseWatches::root();
             self.clauses.alloc(state, kind)
         };
         assert_eq!(root_clause, ClauseId::install_root());
@@ -1155,6 +1155,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
             let watched_literal = Literal::new(decision.variable, decision.value);
 
+            debug_assert!(
+                watched_literal.eval(self.decision_tracker.map()) == Some(false),
+                "we are only watching literals that are turning false"
+            );
+
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
             let mut old_predecessor_clause_id: Option<ClauseId>;
@@ -1187,26 +1192,22 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 predecessor_clause_id = Some(clause_id);
 
                 // Configure the next clause to visit
-                next_clause_id = clause_state.next_watched_clause(watched_literal.variable());
+                next_clause_id = clause_state.next_watched_clause(watched_literal);
 
-                // Determine which watch turned false.
+                // Determine which of the two literals that the clause is watching turned false.
                 let (watch_index, other_watch_index) =
-                    if clause_state.watched_literals[0].variable() == watched_literal.variable() {
+                    if clause_state.watched_literals[0] == Some(watched_literal) {
                         (0, 1)
                     } else {
+                        debug_assert_eq!(clause_state.watched_literals[1], Some(watched_literal));
                         (1, 0)
                     };
-                debug_assert!(
-                    clause_state.watched_literals[watch_index].eval(self.decision_tracker.map())
-                        == Some(false)
-                );
 
                 // Find another literal to watch. If we can't find one, the other literal must
                 // be set to true for the clause to still hold.
-                if clause_state.watched_literals[other_watch_index]
-                    .eval(self.decision_tracker.map())
-                    == Some(true)
-                {
+                let other_watched_literal = clause_state.watched_literals[other_watch_index]
+                    .expect("clauses are always watching two literals");
+                if other_watched_literal.eval(self.decision_tracker.map()) == Some(true) {
                     // If the other watch is already true, we can simply skip
                     // this clause.
                 } else if let Some(variable) = clause_state.next_unwatched_literal(
@@ -1232,25 +1233,22 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 } else {
                     // We could not find another literal to watch, which means the remaining
                     // watched literal can be set to true
-                    let remaining_watch_index = match watch_index {
-                        0 => 1,
-                        1 => 0,
-                        _ => unreachable!(),
-                    };
-
-                    let remaining_watch = clause_state.watched_literals[remaining_watch_index];
                     let decided = self
                         .decision_tracker
                         .try_add_decision(
                             Decision::new(
-                                remaining_watch.variable(),
-                                remaining_watch.satisfying_value(),
+                                other_watched_literal.variable(),
+                                other_watched_literal.satisfying_value(),
                                 clause_id,
                             ),
                             level,
                         )
                         .map_err(|_| {
-                            PropagationError::Conflict(remaining_watch.variable(), true, clause_id)
+                            PropagationError::Conflict(
+                                other_watched_literal.variable(),
+                                true,
+                                clause_id,
+                            )
                         })?;
 
                     if decided {
@@ -1261,10 +1259,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                             _ => {
                                 tracing::debug!(
                                     "├ Propagate {} = {}. {}",
-                                    remaining_watch
+                                    other_watched_literal
                                         .variable()
                                         .display(&self.variable_map, interner),
-                                    remaining_watch.satisfying_value(),
+                                    other_watched_literal.satisfying_value(),
                                     clause.display(&self.variable_map, interner)
                                 );
                             }
@@ -1479,7 +1477,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let learnt_id = self.learnt_clauses.alloc(learnt.clone());
         self.learnt_why.insert(learnt_id, learnt_why);
 
-        let (state, kind) = ClauseState::learnt(learnt_id, &learnt);
+        let (state, kind) = ClauseWatches::learnt(learnt_id, &learnt);
         let has_watches = state.has_watches();
         let clause_id = self.clauses.alloc(state, kind);
         self.learnt_clause_ids.push(clause_id);
@@ -1643,7 +1641,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         // There is no information about the solvable's dependencies, so we add
                         // an exclusion clause for it
 
-                        let (state, kind) = ClauseState::exclude(variable, reason);
+                        let (state, kind) = ClauseWatches::exclude(variable, reason);
                         let clause_id = clauses.alloc(state, kind);
 
                         // Exclusions are negative assertions, tracked outside the watcher
@@ -1748,7 +1746,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         if other_candidate != locked_solvable_id {
                             let other_candidate_var = variable_map.intern_solvable(other_candidate);
                             let (state, kind) =
-                                ClauseState::lock(locked_solvable_var, other_candidate_var);
+                                ClauseWatches::lock(locked_solvable_var, other_candidate_var);
                             let clause_id = clauses.alloc(state, kind);
 
                             debug_assert!(clauses.states[clause_id.to_usize()].has_watches());
@@ -1760,7 +1758,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 // Add a clause for solvables that are externally excluded.
                 for (solvable, reason) in package_candidates.excluded.iter().copied() {
                     let solvable_var = variable_map.intern_solvable(solvable);
-                    let (state, kind) = ClauseState::exclude(solvable_var, reason);
+                    let (state, kind) = ClauseWatches::exclude(solvable_var, reason);
                     let clause_id = clauses.alloc(state, kind);
 
                     // Exclusions are negative assertions, tracked outside the watcher system
@@ -1829,7 +1827,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     other_solvables.add(
                         candidate_var,
                         |a, b, positive| {
-                            let (state, kind) = ClauseState::forbid_multiple(
+                            let (state, kind) = ClauseWatches::forbid_multiple(
                                 a,
                                 if positive { b.positive() } else { b.negative() },
                                 name_id,
@@ -1844,7 +1842,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Add the requirements clause
                 let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
-                let (state, conflict, kind) = ClauseState::requires(
+                let (state, conflict, kind) = ClauseWatches::requires(
                     variable,
                     requirement,
                     version_set_variables.iter().flatten().copied(),
@@ -1890,7 +1888,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 // Add forbidden clauses for the candidates
                 for &forbidden_candidate in non_matching_candidates {
                     let forbidden_candidate_var = variable_map.intern_solvable(forbidden_candidate);
-                    let (state, conflict, kind) = ClauseState::constrains(
+                    let (state, conflict, kind) = ClauseWatches::constrains(
                         variable,
                         forbidden_candidate_var,
                         version_set_id,

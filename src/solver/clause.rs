@@ -1,6 +1,7 @@
 use std::{
     fmt::{Debug, Display, Formatter},
     iter,
+    num::NonZeroU32,
     ops::ControlFlow,
 };
 
@@ -99,7 +100,7 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
-    /// Returns the building blocks needed for a new [ClauseState] of the
+    /// Returns the building blocks needed for a new [ClauseWatches] of the
     /// [Clause::Requires] kind.
     ///
     /// These building blocks are:
@@ -149,7 +150,7 @@ impl Clause {
         }
     }
 
-    /// Returns the building blocks needed for a new [ClauseState] of the
+    /// Returns the building blocks needed for a new [ClauseWatches] of the
     /// [Clause::Constrains] kind.
     ///
     /// These building blocks are:
@@ -321,14 +322,15 @@ impl Clause {
 /// variable are grouped together in a linked list, so it becomes easy to notify
 /// them all.
 #[derive(Clone)]
-pub(crate) struct ClauseState {
-    // The ids of the literals this clause is watching
-    pub watched_literals: [Literal; 2],
+pub(crate) struct ClauseWatches {
+    // The ids of the literals this clause is watching. A clause is always
+    // watching two literals or none.
+    pub watched_literals: [Option<Literal>; 2],
     // The ids of the next clause in each linked list that this clause is part of
     pub(crate) next_watches: [Option<ClauseId>; 2],
 }
 
-impl ClauseState {
+impl ClauseWatches {
     /// Shorthand method to construct a [`Clause::InstallRoot`] without
     /// requiring complicated arguments.
     pub fn root() -> (Self, Clause) {
@@ -411,7 +413,7 @@ impl ClauseState {
     }
 
     fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Self {
-        let watched_literals = watched_literals.unwrap_or([Literal::null(), Literal::null()]);
+        let watched_literals = watched_literals.map_or([None, None], |[a, b]| [Some(a), Some(b)]);
 
         let clause = Self {
             watched_literals,
@@ -425,31 +427,31 @@ impl ClauseState {
 
     pub fn unlink_clause(
         &mut self,
-        linked_clause: &ClauseState,
-        watched_solvable: VariableId,
+        linked_clause: &ClauseWatches,
+        watched_literal: Literal,
         linked_clause_watch_index: usize,
     ) {
-        if self.watched_literals[0].variable() == watched_solvable {
+        if self.watched_literals[0] == Some(watched_literal) {
             self.next_watches[0] = linked_clause.next_watches[linked_clause_watch_index];
         } else {
-            debug_assert_eq!(self.watched_literals[1].variable(), watched_solvable);
+            debug_assert_eq!(self.watched_literals[1], Some(watched_literal));
             self.next_watches[1] = linked_clause.next_watches[linked_clause_watch_index];
         }
     }
 
     #[inline]
-    pub fn next_watched_clause(&self, solvable_id: VariableId) -> Option<ClauseId> {
-        if solvable_id == self.watched_literals[0].variable() {
+    pub fn next_watched_clause(&self, watched_literal: Literal) -> Option<ClauseId> {
+        if Some(watched_literal) == self.watched_literals[0] {
             self.next_watches[0]
         } else {
-            debug_assert_eq!(self.watched_literals[1].variable(), solvable_id);
+            debug_assert_eq!(self.watched_literals[1], Some(watched_literal));
             self.next_watches[1]
         }
     }
 
     pub fn has_watches(&self) -> bool {
         // If the first watch is not null, the second won't be either
-        !self.watched_literals[0].is_null()
+        self.watched_literals[0].is_some()
     }
 
     pub fn next_unwatched_literal(
@@ -482,7 +484,7 @@ impl ClauseState {
                         // The next unwatched variable (if available), is a variable that is:
                         // * Not already being watched
                         // * Not yet decided, or decided in such a way that the literal yields true
-                        if self.watched_literals[other_watch_index].variable() != lit.variable()
+                        if self.watched_literals[other_watch_index] != Some(lit)
                             && lit.eval(decision_map).unwrap_or(true)
                         {
                             ControlFlow::Break(lit)
@@ -503,40 +505,33 @@ impl ClauseState {
 /// Represents a literal in a SAT clause (i.e. either A or ¬A)
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) struct Literal(u32);
+pub(crate) struct Literal(NonZeroU32);
 
 impl Literal {
     /// Constructs a new [`Literal`] from a [`VariableId`] and a boolean
     /// indicating whether the literal should be negated.
     pub fn new(variable: VariableId, negate: bool) -> Self {
         let variable_idx = variable.to_usize();
-        let literal_idx = variable_idx << 1 | negate as usize;
-        Self(literal_idx.try_into().expect("literal id too big"))
+        let encoded_literal = variable_idx << 1 | negate as usize;
+        Self::from_usize(encoded_literal)
     }
 }
 
 impl ArenaId for Literal {
     fn from_usize(x: usize) -> Self {
-        debug_assert!(x <= u32::MAX as usize, "watched literal id too big");
-        Literal(x as u32)
+        let idx: u32 = (x + 1).try_into().expect("watched literal id too big");
+        // SAFETY: This is safe because we are adding 1 to the index
+        unsafe { Literal(NonZeroU32::new_unchecked(idx)) }
     }
 
     fn to_usize(self) -> usize {
-        self.0 as usize
+        self.0.get() as usize - 1
     }
 }
 
 impl Literal {
-    pub fn null() -> Self {
-        Self(u32::MAX)
-    }
-
-    pub fn is_null(&self) -> bool {
-        self.0 == u32::MAX
-    }
-
     pub fn negate(&self) -> bool {
-        (self.0 & 1) == 1
+        (self.0.get() & 1) == 0
     }
 
     /// Returns the value that would make the literal evaluate to true if
@@ -549,7 +544,7 @@ impl Literal {
     /// assigned to the literal's solvable
     #[inline]
     pub(crate) fn variable(self) -> VariableId {
-        VariableId::from_usize((self.0 >> 1) as usize)
+        VariableId::from_usize(self.to_usize() >> 1)
     }
 
     /// Evaluates the literal, or returns `None` if no value has been assigned
@@ -647,9 +642,14 @@ mod test {
     use super::*;
     use crate::{internal::arena::ArenaId, solver::decision::Decision};
 
-    fn clause(next_clauses: [Option<ClauseId>; 2], watch_literals: [Literal; 2]) -> ClauseState {
-        ClauseState {
-            watched_literals: watch_literals,
+    fn clause(
+        next_clauses: [Option<ClauseId>; 2],
+        watch_literals: Option<[Literal; 2]>,
+    ) -> ClauseWatches {
+        ClauseWatches {
+            watched_literals: watch_literals.map_or([None, None], |literals| {
+                [Some(literals[0]), Some(literals[1])]
+            }),
             next_watches: next_clauses,
         }
     }
@@ -692,35 +692,35 @@ mod test {
                 ClauseId::from_usize(2).into(),
                 ClauseId::from_usize(3).into(),
             ],
-            [
+            Some([
                 VariableId::from_usize(1596).negative(),
                 VariableId::from_usize(1211).negative(),
-            ],
+            ]),
         );
         let clause2 = clause(
             [None, ClauseId::from_usize(3).into()],
-            [
+            Some([
                 VariableId::from_usize(1596).negative(),
                 VariableId::from_usize(1208).negative(),
-            ],
+            ]),
         );
         let clause3 = clause(
             [None, None],
-            [
+            Some([
                 VariableId::from_usize(1211).negative(),
                 VariableId::from_usize(42).negative(),
-            ],
+            ]),
         );
 
         // Unlink 0
         {
             let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1596), 0);
+            clause1.unlink_clause(&clause2, VariableId::from_usize(1596).negative(), 0);
             assert_eq!(
                 clause1.watched_literals,
                 [
-                    VariableId::from_usize(1596).negative(),
-                    VariableId::from_usize(1211).negative()
+                    Some(VariableId::from_usize(1596).negative()),
+                    Some(VariableId::from_usize(1211).negative())
                 ]
             );
             assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(3).into()])
@@ -729,12 +729,12 @@ mod test {
         // Unlink 1
         {
             let mut clause1 = clause1;
-            clause1.unlink_clause(&clause3, VariableId::from_usize(1211), 0);
+            clause1.unlink_clause(&clause3, VariableId::from_usize(1211).negative(), 0);
             assert_eq!(
                 clause1.watched_literals,
                 [
-                    VariableId::from_usize(1596).negative(),
-                    VariableId::from_usize(1211).negative()
+                    Some(VariableId::from_usize(1596).negative()),
+                    Some(VariableId::from_usize(1211).negative())
                 ]
             );
             assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
@@ -748,28 +748,28 @@ mod test {
                 ClauseId::from_usize(2).into(),
                 ClauseId::from_usize(2).into(),
             ],
-            [
+            Some([
                 VariableId::from_usize(1596).negative(),
                 VariableId::from_usize(1211).negative(),
-            ],
+            ]),
         );
         let clause2 = clause(
             [None, None],
-            [
+            Some([
                 VariableId::from_usize(1596).negative(),
                 VariableId::from_usize(1211).negative(),
-            ],
+            ]),
         );
 
         // Unlink 0
         {
             let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1596), 0);
+            clause1.unlink_clause(&clause2, VariableId::from_usize(1596).negative(), 0);
             assert_eq!(
                 clause1.watched_literals,
                 [
-                    VariableId::from_usize(1596).negative(),
-                    VariableId::from_usize(1211).negative()
+                    Some(VariableId::from_usize(1596).negative()),
+                    Some(VariableId::from_usize(1211).negative())
                 ]
             );
             assert_eq!(clause1.next_watches, [None, ClauseId::from_usize(2).into()])
@@ -778,12 +778,12 @@ mod test {
         // Unlink 1
         {
             let mut clause1 = clause1;
-            clause1.unlink_clause(&clause2, VariableId::from_usize(1211), 1);
+            clause1.unlink_clause(&clause2, VariableId::from_usize(1211).negative(), 1);
             assert_eq!(
                 clause1.watched_literals,
                 [
-                    VariableId::from_usize(1596).negative(),
-                    VariableId::from_usize(1211).negative()
+                    Some(VariableId::from_usize(1596).negative()),
+                    Some(VariableId::from_usize(1211).negative())
                 ]
             );
             assert_eq!(clause1.next_watches, [ClauseId::from_usize(2).into(), None])
@@ -799,15 +799,18 @@ mod test {
         let candidate2 = VariableId::from_usize(3);
 
         // No conflict, all candidates available
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = ClauseWatches::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].variable(), parent);
-        assert_eq!(clause.watched_literals[1].variable(), candidate1.into());
+        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
+        assert_eq!(
+            clause.watched_literals[1].unwrap().variable(),
+            candidate1.into()
+        );
 
         // No conflict, still one candidate available
         decisions
@@ -816,15 +819,18 @@ mod test {
                 1,
             )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = ClauseWatches::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].variable(), parent);
-        assert_eq!(clause.watched_literals[1].variable(), candidate2.into());
+        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
+        assert_eq!(
+            clause.watched_literals[1].unwrap().variable(),
+            candidate2.into()
+        );
 
         // Conflict, no candidates available
         decisions
@@ -833,22 +839,25 @@ mod test {
                 1,
             )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = ClauseWatches::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
             &decisions,
         );
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].variable(), parent);
-        assert_eq!(clause.watched_literals[1].variable(), candidate1.into());
+        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
+        assert_eq!(
+            clause.watched_literals[1].unwrap().variable(),
+            candidate1.into()
+        );
 
         // Panic
         decisions
             .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseState::requires(
+            ClauseWatches::requires(
                 parent,
                 VersionSetId::from_usize(0).into(),
                 [candidate1, candidate2],
@@ -868,27 +877,27 @@ mod test {
 
         // No conflict, forbidden package not installed
         let (clause, conflict, _kind) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].variable(), parent);
-        assert_eq!(clause.watched_literals[1].variable(), forbidden);
+        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
+        assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
 
         // Conflict, forbidden package installed
         decisions
             .try_add_decision(Decision::new(forbidden, true, ClauseId::install_root()), 1)
             .unwrap();
         let (clause, conflict, _kind) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].variable(), parent);
-        assert_eq!(clause.watched_literals[1].variable(), forbidden);
+        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
+        assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
 
         // Panic
         decisions
             .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
+            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
         })
         .is_err();
         assert!(panicked);
@@ -899,6 +908,6 @@ mod test {
         // This test is here to ensure we don't increase the size of `ClauseState` by
         // accident, as we are creating thousands of instances.
         // libsolv: 24 bytes
-        assert_eq!(std::mem::size_of::<ClauseState>(), 16);
+        assert_eq!(std::mem::size_of::<ClauseWatches>(), 16);
     }
 }

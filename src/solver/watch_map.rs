@@ -1,6 +1,6 @@
 use crate::{
     internal::{id::ClauseId, mapping::Mapping},
-    solver::clause::{ClauseState, Literal},
+    solver::clause::{ClauseWatches, Literal},
 };
 
 /// A map from literals to the clauses that are watching them. Each literal
@@ -20,8 +20,10 @@ impl WatchMap {
 
     /// Add the clause to the linked list of the literals that the clause is
     /// watching.
-    pub(crate) fn start_watching(&mut self, clause: &mut ClauseState, clause_id: ClauseId) {
-        for (watch_index, watched_literal) in clause.watched_literals.into_iter().enumerate() {
+    pub(crate) fn start_watching(&mut self, clause: &mut ClauseWatches, clause_id: ClauseId) {
+        for (watch_index, watched_literal) in
+            clause.watched_literals.into_iter().flatten().enumerate()
+        {
             // Construct a linked list by adding the clause to the start of the linked list
             // and setting the previous head of the chain as the next element in the linked
             // list.
@@ -33,8 +35,8 @@ impl WatchMap {
 
     pub(crate) fn update_watched(
         &mut self,
-        predecessor_clause: Option<&mut ClauseState>,
-        clause: &mut ClauseState,
+        predecessor_clause: Option<&mut ClauseWatches>,
+        clause: &mut ClauseWatches,
         clause_id: ClauseId,
         watch_index: usize,
         previous_watch: Literal,
@@ -44,7 +46,7 @@ impl WatchMap {
         // are no longer watching what brought us here
         if let Some(predecessor_clause) = predecessor_clause {
             // Unlink the clause
-            predecessor_clause.unlink_clause(clause, previous_watch.variable(), watch_index);
+            predecessor_clause.unlink_clause(clause, previous_watch, watch_index);
         } else if let Some(next_watch) = clause.next_watches[watch_index] {
             // This was the first clause in the chain
             self.map.insert(previous_watch, next_watch);
@@ -53,7 +55,7 @@ impl WatchMap {
         }
 
         // Set the new watch
-        clause.watched_literals[watch_index] = new_watch;
+        clause.watched_literals[watch_index] = Some(new_watch);
         let previous_clause_id = self.map.insert(new_watch, clause_id);
         clause.next_watches[watch_index] = previous_clause_id;
     }
