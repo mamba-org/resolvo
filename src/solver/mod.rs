@@ -1463,8 +1463,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let clause_id = self.clauses.alloc(state, kind);
         self.learnt_clause_ids.push(clause_id);
         if has_watches {
-            self.watches
-                .start_watching(&mut self.clauses.watched_literals[clause_id.to_usize()], clause_id);
+            self.watches.start_watching(
+                &mut self.clauses.watched_literals[clause_id.to_usize()],
+                clause_id,
+            );
         }
 
         tracing::debug!("│├ Learnt disjunction:",);
@@ -1730,7 +1732,9 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 WatchedLiterals::lock(locked_solvable_var, other_candidate_var);
                             let clause_id = clauses.alloc(state, kind);
 
-                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].has_watches());
+                            debug_assert!(
+                                clauses.watched_literals[clause_id.to_usize()].has_watches()
+                            );
                             output.clauses_to_watch.push(clause_id);
                         }
                     }
@@ -1814,7 +1818,9 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 name_id,
                             );
                             let clause_id = clauses.alloc(state, kind);
-                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].has_watches());
+                            debug_assert!(
+                                clauses.watched_literals[clause_id.to_usize()].has_watches()
+                            );
                             output.clauses_to_watch.push(clause_id);
                         },
                         || variable_map.alloc_forbid_multiple_variable(name_id),
