@@ -813,4 +813,13 @@ mod test {
             std::mem::size_of::<Option<[Literal; 2]>>()
         );
     }
+
+    #[test]
+    fn test_watched_literal_size() {
+        assert_eq!(std::mem::size_of::<WatchedLiterals>(), 16);
+        assert_eq!(
+            std::mem::size_of::<Option<WatchedLiterals>>(),
+            std::mem::size_of::<WatchedLiterals>()
+        );
+    }
 }
