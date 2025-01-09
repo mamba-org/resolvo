@@ -100,7 +100,7 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
-    /// Returns the building blocks needed for a new [ClauseWatches] of the
+    /// Returns the building blocks needed for a new [WatchedLiterals] of the
     /// [Clause::Requires] kind.
     ///
     /// These building blocks are:
@@ -150,7 +150,7 @@ impl Clause {
         }
     }
 
-    /// Returns the building blocks needed for a new [ClauseWatches] of the
+    /// Returns the building blocks needed for a new [WatchedLiterals] of the
     /// [Clause::Constrains] kind.
     ///
     /// These building blocks are:
@@ -322,7 +322,7 @@ impl Clause {
 /// variable are grouped together in a linked list, so it becomes easy to notify
 /// them all.
 #[derive(Clone)]
-pub(crate) struct ClauseWatches {
+pub(crate) struct WatchedLiterals {
     // The ids of the literals this clause is watching. A clause is always
     // watching two literals or none.
     pub watched_literals: [Option<Literal>; 2],
@@ -330,7 +330,7 @@ pub(crate) struct ClauseWatches {
     pub(crate) next_watches: [Option<ClauseId>; 2],
 }
 
-impl ClauseWatches {
+impl WatchedLiterals {
     /// Shorthand method to construct a [`Clause::InstallRoot`] without
     /// requiring complicated arguments.
     pub fn root() -> (Self, Clause) {
@@ -478,7 +478,11 @@ impl ClauseWatches {
     }
 }
 
-/// Represents a literal in a SAT clause (i.e. either A or ¬A)
+/// Represents a literal in a SAT clause, a literal holds a variable and
+/// indicates whether it should be positive or negative (i.e. either A or ¬A).
+///
+/// A [`Literal`] stores a [`NonZeroU32`] which ensures that the size of an
+/// `Option<Literal>` is the same as a `Literal`.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) struct Literal(NonZeroU32);
@@ -658,7 +662,7 @@ mod test {
         let candidate2 = VariableId::from_usize(3);
 
         // No conflict, all candidates available
-        let (clause, conflict, _kind) = ClauseWatches::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
@@ -678,7 +682,7 @@ mod test {
                 1,
             )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseWatches::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
@@ -698,7 +702,7 @@ mod test {
                 1,
             )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseWatches::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
@@ -716,7 +720,7 @@ mod test {
             .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseWatches::requires(
+            WatchedLiterals::requires(
                 parent,
                 VersionSetId::from_usize(0).into(),
                 [candidate1, candidate2],
@@ -736,7 +740,7 @@ mod test {
 
         // No conflict, forbidden package not installed
         let (clause, conflict, _kind) =
-            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(!conflict);
         assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
         assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
@@ -746,7 +750,7 @@ mod test {
             .try_add_decision(Decision::new(forbidden, true, ClauseId::install_root()), 1)
             .unwrap();
         let (clause, conflict, _kind) =
-            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(conflict);
         assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
         assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
@@ -756,17 +760,38 @@ mod test {
             .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseWatches::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
         })
         .is_err();
         assert!(panicked);
     }
 
     #[test]
-    fn test_clause_size() {
-        // This test is here to ensure we don't increase the size of `ClauseState` by
-        // accident, as we are creating thousands of instances.
+    fn test_watched_literals_size() {
+        // This test is here to ensure we don't increase the size of `WatchedLiterals`
+        // by accident, as we are creating thousands of instances.
         // libsolv: 24 bytes
-        assert_eq!(std::mem::size_of::<ClauseWatches>(), 16);
+        assert_eq!(std::mem::size_of::<WatchedLiterals>(), 16);
+    }
+
+    #[test]
+    fn test_literal_size() {
+        assert_eq!(std::mem::size_of::<Literal>(), 4);
+        assert_eq!(
+            std::mem::size_of::<Literal>(),
+            std::mem::size_of::<Option<Literal>>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<[Literal; 2]>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<[Option<Literal>; 2]>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<Option<[Literal; 2]>>()
+        );
     }
 }

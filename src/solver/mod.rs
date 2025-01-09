@@ -2,7 +2,7 @@ use std::{any::Any, fmt::Display, future::ready, ops::ControlFlow};
 
 use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
-use clause::{Clause, ClauseWatches, Literal};
+use clause::{Clause, Literal, WatchedLiterals};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
@@ -129,11 +129,11 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
 #[derive(Default)]
 pub(crate) struct Clauses {
     pub(crate) kinds: Vec<Clause>,
-    states: Vec<ClauseWatches>,
+    states: Vec<WatchedLiterals>,
 }
 
 impl Clauses {
-    pub fn alloc(&mut self, state: ClauseWatches, kind: Clause) -> ClauseId {
+    pub fn alloc(&mut self, state: WatchedLiterals, kind: Clause) -> ClauseId {
         let id = ClauseId::from_usize(self.kinds.len());
         self.kinds.push(kind);
         self.states.push(state);
@@ -352,7 +352,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
         let root_clause = {
-            let (state, kind) = ClauseWatches::root();
+            let (state, kind) = WatchedLiterals::root();
             self.clauses.alloc(state, kind)
         };
         assert_eq!(root_clause, ClauseId::install_root());
@@ -1458,7 +1458,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let learnt_id = self.learnt_clauses.alloc(learnt.clone());
         self.learnt_why.insert(learnt_id, learnt_why);
 
-        let (state, kind) = ClauseWatches::learnt(learnt_id, &learnt);
+        let (state, kind) = WatchedLiterals::learnt(learnt_id, &learnt);
         let has_watches = state.has_watches();
         let clause_id = self.clauses.alloc(state, kind);
         self.learnt_clause_ids.push(clause_id);
@@ -1622,7 +1622,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         // There is no information about the solvable's dependencies, so we add
                         // an exclusion clause for it
 
-                        let (state, kind) = ClauseWatches::exclude(variable, reason);
+                        let (state, kind) = WatchedLiterals::exclude(variable, reason);
                         let clause_id = clauses.alloc(state, kind);
 
                         // Exclusions are negative assertions, tracked outside the watcher
@@ -1727,7 +1727,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         if other_candidate != locked_solvable_id {
                             let other_candidate_var = variable_map.intern_solvable(other_candidate);
                             let (state, kind) =
-                                ClauseWatches::lock(locked_solvable_var, other_candidate_var);
+                                WatchedLiterals::lock(locked_solvable_var, other_candidate_var);
                             let clause_id = clauses.alloc(state, kind);
 
                             debug_assert!(clauses.states[clause_id.to_usize()].has_watches());
@@ -1739,7 +1739,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 // Add a clause for solvables that are externally excluded.
                 for (solvable, reason) in package_candidates.excluded.iter().copied() {
                     let solvable_var = variable_map.intern_solvable(solvable);
-                    let (state, kind) = ClauseWatches::exclude(solvable_var, reason);
+                    let (state, kind) = WatchedLiterals::exclude(solvable_var, reason);
                     let clause_id = clauses.alloc(state, kind);
 
                     // Exclusions are negative assertions, tracked outside the watcher system
@@ -1808,7 +1808,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     other_solvables.add(
                         candidate_var,
                         |a, b, positive| {
-                            let (state, kind) = ClauseWatches::forbid_multiple(
+                            let (state, kind) = WatchedLiterals::forbid_multiple(
                                 a,
                                 if positive { b.positive() } else { b.negative() },
                                 name_id,
@@ -1823,7 +1823,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Add the requirements clause
                 let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
-                let (state, conflict, kind) = ClauseWatches::requires(
+                let (state, conflict, kind) = WatchedLiterals::requires(
                     variable,
                     requirement,
                     version_set_variables.iter().flatten().copied(),
@@ -1869,7 +1869,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 // Add forbidden clauses for the candidates
                 for &forbidden_candidate in non_matching_candidates {
                     let forbidden_candidate_var = variable_map.intern_solvable(forbidden_candidate);
-                    let (state, conflict, kind) = ClauseWatches::constrains(
+                    let (state, conflict, kind) = WatchedLiterals::constrains(
                         variable,
                         forbidden_candidate_var,
                         version_set_id,

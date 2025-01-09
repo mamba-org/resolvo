@@ -1,6 +1,6 @@
 use crate::{
     internal::{arena::ArenaId, id::ClauseId, mapping::Mapping},
-    solver::clause::{ClauseWatches, Literal},
+    solver::clause::{Literal, WatchedLiterals},
 };
 
 /// A map from literals to the clauses that are watching them. Each literal
@@ -20,7 +20,7 @@ impl WatchMap {
 
     /// Add the clause to the linked list of the literals that the clause is
     /// watching.
-    pub(crate) fn start_watching(&mut self, clause: &mut ClauseWatches, clause_id: ClauseId) {
+    pub(crate) fn start_watching(&mut self, clause: &mut WatchedLiterals, clause_id: ClauseId) {
         for (watch_index, watched_literal) in
             clause.watched_literals.into_iter().flatten().enumerate()
         {
@@ -38,7 +38,7 @@ impl WatchMap {
     /// literal.
     pub fn cursor<'a>(
         &'a mut self,
-        watches: &'a mut [ClauseWatches],
+        watches: &'a mut [WatchedLiterals],
         literal: Literal,
     ) -> Option<WatchMapCursor<'a>> {
         let clause_id = *self.map.get(literal)?;
@@ -67,10 +67,10 @@ impl WatchMap {
 }
 
 struct WatchNode {
-    /// The index of the [`ClauseWatches`]
+    /// The index of the [`WatchedLiterals`]
     clause_id: ClauseId,
 
-    /// A [`ClauseWatches`] contains the state for two linked lists. This index
+    /// A [`WatchedLiterals`] contains the state for two linked lists. This index
     /// indicates which of the two linked-list nodes is referenced.
     watch_index: usize,
 }
@@ -88,7 +88,7 @@ pub struct WatchMapCursor<'a> {
     watch_map: &'a mut WatchMap,
 
     /// The nodes of the linked list.
-    watches: &'a mut [ClauseWatches],
+    watches: &'a mut [WatchedLiterals],
 
     /// The literal who's linked list is being navigated.
     literal: Literal,
@@ -147,7 +147,7 @@ impl<'a> WatchMapCursor<'a> {
     }
 
     /// Returns the watches of the current clause.
-    pub fn watches(&mut self) -> &mut ClauseWatches {
+    pub fn watches(&mut self) -> &mut WatchedLiterals {
         &mut self.watches[self.current.clause_id.to_usize()]
     }
 
