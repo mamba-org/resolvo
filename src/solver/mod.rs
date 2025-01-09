@@ -129,14 +129,14 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
 #[derive(Default)]
 pub(crate) struct Clauses {
     pub(crate) kinds: Vec<Clause>,
-    watched_literals: Vec<WatchedLiterals>,
+    watched_literals: Vec<Option<WatchedLiterals>>,
 }
 
 impl Clauses {
-    pub fn alloc(&mut self, state: WatchedLiterals, kind: Clause) -> ClauseId {
+    pub fn alloc(&mut self, watched_literals: Option<WatchedLiterals>, kind: Clause) -> ClauseId {
         let id = ClauseId::from_usize(self.kinds.len());
         self.kinds.push(kind);
-        self.watched_literals.push(state);
+        self.watched_literals.push(watched_literals);
         id
     }
 }
@@ -646,14 +646,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     }
 
     fn process_add_clause_output(&mut self, mut output: AddClauseOutput) -> Result<(), ClauseId> {
-        let clauses = &mut self.clauses.watched_literals;
+        let watched_literals = &mut self.clauses.watched_literals;
         for clause_id in output.clauses_to_watch {
-            debug_assert!(
-                clauses[clause_id.to_usize()].has_watches(),
-                "attempting to watch a clause without watches!"
-            );
-            self.watches
-                .start_watching(&mut clauses[clause_id.to_usize()], clause_id);
+            let watched_literals = watched_literals[clause_id.to_usize()]
+                .as_mut()
+                .expect("attempting to watch a clause without watches!");
+            self.watches.start_watching(watched_literals, clause_id);
         }
 
         for (solvable_id, requirement, clause_id) in output.new_requires_clauses {
@@ -1126,18 +1124,20 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             let mut next_cursor = self
                 .watches
                 .cursor(&mut self.clauses.watched_literals, watched_literal);
-            while let Some(mut cursor) = next_cursor.take() {
+            while let Some(cursor) = next_cursor.take() {
                 let clause_id = cursor.clause_id();
                 let clause = &clause_kinds[clause_id.to_usize()];
                 let watch_index = cursor.watch_index();
 
                 // If the other literal the current clause is watching is already true, we can
                 // skip this clause. Its is already satisfied.
-                let other_watched_literal = cursor.other_literal();
+                let watched_literals = cursor.watched_literals();
+                let other_watched_literal =
+                    watched_literals.watched_literals[1 - cursor.watch_index()];
                 if other_watched_literal.eval(self.decision_tracker.map()) == Some(true) {
                     // Continue with the next clause in the linked list.
                     next_cursor = cursor.next();
-                } else if let Some(literal) = cursor.watches().next_unwatched_literal(
+                } else if let Some(literal) = watched_literals.next_unwatched_literal(
                     clause,
                     &self.learnt_clauses,
                     &self.requirement_to_sorted_candidates,
@@ -1458,15 +1458,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let learnt_id = self.learnt_clauses.alloc(learnt.clone());
         self.learnt_why.insert(learnt_id, learnt_why);
 
-        let (state, kind) = WatchedLiterals::learnt(learnt_id, &learnt);
-        let has_watches = state.has_watches();
-        let clause_id = self.clauses.alloc(state, kind);
+        let (watched_literals, kind) = WatchedLiterals::learnt(learnt_id, &learnt);
+        let clause_id = self.clauses.alloc(watched_literals, kind);
         self.learnt_clause_ids.push(clause_id);
-        if has_watches {
-            self.watches.start_watching(
-                &mut self.clauses.watched_literals[clause_id.to_usize()],
-                clause_id,
-            );
+        if let Some(watched_literals) = self.clauses.watched_literals[clause_id.to_usize()].as_mut()
+        {
+            self.watches.start_watching(watched_literals, clause_id);
         }
 
         tracing::debug!("│├ Learnt disjunction:",);
@@ -1728,13 +1725,11 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     for &other_candidate in candidates {
                         if other_candidate != locked_solvable_id {
                             let other_candidate_var = variable_map.intern_solvable(other_candidate);
-                            let (state, kind) =
+                            let (watched_literals, kind) =
                                 WatchedLiterals::lock(locked_solvable_var, other_candidate_var);
-                            let clause_id = clauses.alloc(state, kind);
+                            let clause_id = clauses.alloc(watched_literals, kind);
 
-                            debug_assert!(
-                                clauses.watched_literals[clause_id.to_usize()].has_watches()
-                            );
+                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].is_some());
                             output.clauses_to_watch.push(clause_id);
                         }
                     }
@@ -1743,8 +1738,8 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 // Add a clause for solvables that are externally excluded.
                 for (solvable, reason) in package_candidates.excluded.iter().copied() {
                     let solvable_var = variable_map.intern_solvable(solvable);
-                    let (state, kind) = WatchedLiterals::exclude(solvable_var, reason);
-                    let clause_id = clauses.alloc(state, kind);
+                    let (watched_literals, kind) = WatchedLiterals::exclude(solvable_var, reason);
+                    let clause_id = clauses.alloc(watched_literals, kind);
 
                     // Exclusions are negative assertions, tracked outside the watcher system
                     output.negative_assertions.push((solvable_var, clause_id));
@@ -1812,15 +1807,13 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     other_solvables.add(
                         candidate_var,
                         |a, b, positive| {
-                            let (state, kind) = WatchedLiterals::forbid_multiple(
+                            let (watched_literals, kind) = WatchedLiterals::forbid_multiple(
                                 a,
                                 if positive { b.positive() } else { b.negative() },
                                 name_id,
                             );
-                            let clause_id = clauses.alloc(state, kind);
-                            debug_assert!(
-                                clauses.watched_literals[clause_id.to_usize()].has_watches()
-                            );
+                            let clause_id = clauses.alloc(watched_literals, kind);
+                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].is_some());
                             output.clauses_to_watch.push(clause_id);
                         },
                         || variable_map.alloc_forbid_multiple_variable(name_id),
@@ -1829,14 +1822,14 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Add the requirements clause
                 let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
-                let (state, conflict, kind) = WatchedLiterals::requires(
+                let (watched_literals, conflict, kind) = WatchedLiterals::requires(
                     variable,
                     requirement,
                     version_set_variables.iter().flatten().copied(),
                     decision_tracker,
                 );
-                let has_watches = state.has_watches();
-                let clause_id = clauses.alloc(state, kind);
+                let has_watches = watched_literals.is_some();
+                let clause_id = clauses.alloc(watched_literals, kind);
 
                 if has_watches {
                     output.clauses_to_watch.push(clause_id);

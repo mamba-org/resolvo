@@ -1,5 +1,5 @@
 use crate::{
-    internal::{arena::ArenaId, id::ClauseId, mapping::Mapping},
+    internal::{arena::ArenaId, debug_expect_unchecked, id::ClauseId, mapping::Mapping},
     solver::clause::{Literal, WatchedLiterals},
 };
 
@@ -21,9 +21,7 @@ impl WatchMap {
     /// Add the clause to the linked list of the literals that the clause is
     /// watching.
     pub(crate) fn start_watching(&mut self, clause: &mut WatchedLiterals, clause_id: ClauseId) {
-        for (watch_index, watched_literal) in
-            clause.watched_literals.into_iter().flatten().enumerate()
-        {
+        for (watch_index, watched_literal) in clause.watched_literals.into_iter().enumerate() {
             // Construct a linked list by adding the clause to the start of the linked list
             // and setting the previous head of the chain as the next element in the linked
             // list.
@@ -38,16 +36,18 @@ impl WatchMap {
     /// literal.
     pub fn cursor<'a>(
         &'a mut self,
-        watches: &'a mut [WatchedLiterals],
+        watches: &'a mut [Option<WatchedLiterals>],
         literal: Literal,
     ) -> Option<WatchMapCursor<'a>> {
         let clause_id = *self.map.get(literal)?;
-        let watch_index = if watches[clause_id.to_usize()].watched_literals[0] == Some(literal) {
+        let watched_literal = watches[clause_id.to_usize()]
+            .as_ref()
+            .expect("no watches found for clause");
+        let watch_index = if watched_literal.watched_literals[0] == literal {
             0
         } else {
             debug_assert_eq!(
-                watches[clause_id.to_usize()].watched_literals[1],
-                Some(literal),
+                watched_literal.watched_literals[1], literal,
                 "the clause is not actually watching the literal"
             );
             1
@@ -70,8 +70,8 @@ struct WatchNode {
     /// The index of the [`WatchedLiterals`]
     clause_id: ClauseId,
 
-    /// A [`WatchedLiterals`] contains the state for two linked lists. This index
-    /// indicates which of the two linked-list nodes is referenced.
+    /// A [`WatchedLiterals`] contains the state for two linked lists. This
+    /// index indicates which of the two linked-list nodes is referenced.
     watch_index: usize,
 }
 
@@ -88,7 +88,7 @@ pub struct WatchMapCursor<'a> {
     watch_map: &'a mut WatchMap,
 
     /// The nodes of the linked list.
-    watches: &'a mut [WatchedLiterals],
+    watches: &'a mut [Option<WatchedLiterals>],
 
     /// The literal who's linked list is being navigated.
     literal: Literal,
@@ -114,31 +114,25 @@ impl<'a> WatchMapCursor<'a> {
 
     /// Returns the next node in the linked list or `None` if there is no next.
     fn next_node(&self) -> Option<WatchNode> {
-        let next_clause_id =
-            self.watches[self.current.clause_id.to_usize()].next_watches[self.current.watch_index]?;
-        let next_clause_watch_index =
-            if self.watches[next_clause_id.to_usize()].watched_literals[0] == Some(self.literal) {
-                0
-            } else {
-                debug_assert_eq!(
-                    self.watches[next_clause_id.to_usize()].watched_literals[1],
-                    Some(self.literal),
-                    "the clause is not actually watching the literal"
-                );
-                1
-            };
+        let current_watch = self.watched_literals();
+        let next_clause_id = current_watch.next_watches[self.current.watch_index]?;
+        let next_watch = self.watches[next_clause_id.to_usize()]
+            .as_ref()
+            .expect("watches are missing");
+        let next_clause_watch_index = if next_watch.watched_literals[0] == self.literal {
+            0
+        } else {
+            debug_assert_eq!(
+                next_watch.watched_literals[1], self.literal,
+                "the clause is not actually watching the literal"
+            );
+            1
+        };
 
         Some(WatchNode {
             clause_id: next_clause_id,
             watch_index: next_clause_watch_index,
         })
-    }
-
-    /// Returns the other literal that the current clause is watching.
-    pub fn other_literal(&self) -> Literal {
-        self.watches[self.current.clause_id.to_usize()].watched_literals
-            [1 - self.current.watch_index]
-            .expect("clauses never watch just one literal")
     }
 
     /// The current clause that is being navigated.
@@ -147,8 +141,14 @@ impl<'a> WatchMapCursor<'a> {
     }
 
     /// Returns the watches of the current clause.
-    pub fn watches(&mut self) -> &mut WatchedLiterals {
-        &mut self.watches[self.current.clause_id.to_usize()]
+    pub fn watched_literals(&self) -> &WatchedLiterals {
+        // SAFETY: Within the cursor, the current clause is always watching literals.
+        unsafe {
+            debug_expect_unchecked(
+                self.watches[self.current.clause_id.to_usize()].as_ref(),
+                "clause is not watching literals",
+            )
+        }
     }
 
     /// Returns the index of the current watch in the current clause.
@@ -174,7 +174,15 @@ impl<'a> WatchMapCursor<'a> {
         // (effectively removing this one).
         if let Some(previous) = &self.previous {
             // If there is a previous node we update that node to point to the next.
-            self.watches[previous.clause_id.to_usize()].next_watches[previous.watch_index] =
+            // SAFETY: Within the cursor, the watches are never unset, so if we have a
+            // previous index there will also be watch literals for that clause.
+            let previous_watches = unsafe {
+                debug_expect_unchecked(
+                    self.watches[previous.clause_id.to_usize()].as_mut(),
+                    "previous clause has no watches",
+                )
+            };
+            previous_watches.next_watches[previous.watch_index] =
                 next_node.as_ref().map(|node| node.clause_id);
         } else if let Some(next_clause_id) = next_node.as_ref().map(|node| node.clause_id) {
             // If there is no previous node, we are the head of the linked list.
@@ -184,8 +192,13 @@ impl<'a> WatchMapCursor<'a> {
         }
 
         // Set the new watch for the current clause.
-        let watch = &mut self.watches[clause_idx];
-        watch.watched_literals[self.current.watch_index] = Some(new_watch);
+        let watch = unsafe {
+            debug_expect_unchecked(
+                self.watches[clause_idx].as_mut(),
+                "clause is not watching literals",
+            )
+        };
+        watch.watched_literals[self.current.watch_index] = new_watch;
         let previous_clause_id = self.watch_map.map.insert(new_watch, self.current.clause_id);
         watch.next_watches[self.current.watch_index] = previous_clause_id;
 

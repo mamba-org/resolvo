@@ -323,17 +323,18 @@ impl Clause {
 /// them all.
 #[derive(Clone)]
 pub(crate) struct WatchedLiterals {
-    // The ids of the literals this clause is watching. A clause is always
-    // watching two literals or none.
-    pub watched_literals: [Option<Literal>; 2],
-    // The ids of the next clause in each linked list that this clause is part of
+    /// The ids of the literals this clause is watching. A clause that is
+    /// watching literals is always watching two literals, no more, no less.
+    pub watched_literals: [Literal; 2],
+    /// The ids of the next clause in each linked list that this clause is part
+    /// of. If either of these or `None` then there is no next clause.
     pub(crate) next_watches: [Option<ClauseId>; 2],
 }
 
 impl WatchedLiterals {
     /// Shorthand method to construct a [`Clause::InstallRoot`] without
     /// requiring complicated arguments.
-    pub fn root() -> (Self, Clause) {
+    pub fn root() -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::root();
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
@@ -348,7 +349,7 @@ impl WatchedLiterals {
         requirement: Requirement,
         matching_candidates: impl IntoIterator<Item = VariableId>,
         decision_tracker: &DecisionTracker,
-    ) -> (Self, bool, Clause) {
+    ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::requires(
             candidate,
             requirement,
@@ -373,7 +374,7 @@ impl WatchedLiterals {
         constrained_package: VariableId,
         requirement: VersionSetId,
         decision_tracker: &DecisionTracker,
-    ) -> (Self, bool, Clause) {
+    ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::constrains(
             candidate,
             constrained_package,
@@ -388,7 +389,10 @@ impl WatchedLiterals {
         )
     }
 
-    pub fn lock(locked_candidate: VariableId, other_candidate: VariableId) -> (Self, Clause) {
+    pub fn lock(
+        locked_candidate: VariableId,
+        other_candidate: VariableId,
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::lock(locked_candidate, other_candidate);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
@@ -397,37 +401,31 @@ impl WatchedLiterals {
         candidate: VariableId,
         other_candidate: Literal,
         name: NameId,
-    ) -> (Self, Clause) {
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::forbid_multiple(candidate, other_candidate, name);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    pub fn learnt(learnt_clause_id: LearntClauseId, literals: &[Literal]) -> (Self, Clause) {
+    pub fn learnt(
+        learnt_clause_id: LearntClauseId,
+        literals: &[Literal],
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::learnt(learnt_clause_id, literals);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    pub fn exclude(candidate: VariableId, reason: StringId) -> (Self, Clause) {
+    pub fn exclude(candidate: VariableId, reason: StringId) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::exclude(candidate, reason);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Self {
-        let watched_literals = watched_literals.map_or([None, None], |[a, b]| [Some(a), Some(b)]);
-
-        let clause = Self {
+    fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Option<Self> {
+        let watched_literals = watched_literals?;
+        debug_assert!(watched_literals[0] != watched_literals[1]);
+        Some(Self {
             watched_literals,
             next_watches: [None, None],
-        };
-
-        debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
-
-        clause
-    }
-
-    pub fn has_watches(&self) -> bool {
-        // If the first watch is not null, the second won't be either
-        self.watched_literals[0].is_some()
+        })
     }
 
     pub fn next_unwatched_literal(
@@ -460,7 +458,7 @@ impl WatchedLiterals {
                         // The next unwatched variable (if available), is a variable that is:
                         // * Not already being watched
                         // * Not yet decided, or decided in such a way that the literal yields true
-                        if self.watched_literals[other_watch_index] != Some(lit)
+                        if self.watched_literals[other_watch_index] != lit
                             && lit.eval(decision_map).unwrap_or(true)
                         {
                             ControlFlow::Break(lit)
@@ -669,9 +667,12 @@ mod test {
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
         assert_eq!(
-            clause.watched_literals[1].unwrap().variable(),
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.unwrap().watched_literals[1].variable(),
             candidate1.into()
         );
 
@@ -689,9 +690,12 @@ mod test {
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
         assert_eq!(
-            clause.watched_literals[1].unwrap().variable(),
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
             candidate2.into()
         );
 
@@ -709,9 +713,12 @@ mod test {
             &decisions,
         );
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
         assert_eq!(
-            clause.watched_literals[1].unwrap().variable(),
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
             candidate1.into()
         );
 
@@ -742,8 +749,14 @@ mod test {
         let (clause, conflict, _kind) =
             WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
-        assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            forbidden
+        );
 
         // Conflict, forbidden package installed
         decisions
@@ -752,8 +765,14 @@ mod test {
         let (clause, conflict, _kind) =
             WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].unwrap().variable(), parent);
-        assert_eq!(clause.watched_literals[1].unwrap().variable(), forbidden);
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            forbidden
+        );
 
         // Panic
         decisions
