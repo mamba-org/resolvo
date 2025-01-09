@@ -129,14 +129,14 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
 #[derive(Default)]
 pub(crate) struct Clauses {
     pub(crate) kinds: Vec<Clause>,
-    states: Vec<WatchedLiterals>,
+    watched_literals: Vec<WatchedLiterals>,
 }
 
 impl Clauses {
     pub fn alloc(&mut self, state: WatchedLiterals, kind: Clause) -> ClauseId {
         let id = ClauseId::from_usize(self.kinds.len());
         self.kinds.push(kind);
-        self.states.push(state);
+        self.watched_literals.push(state);
         id
     }
 }
@@ -646,7 +646,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     }
 
     fn process_add_clause_output(&mut self, mut output: AddClauseOutput) -> Result<(), ClauseId> {
-        let clauses = &mut self.clauses.states;
+        let clauses = &mut self.clauses.watched_literals;
         for clause_id in output.clauses_to_watch {
             debug_assert!(
                 clauses[clause_id.to_usize()].has_watches(),
@@ -1125,7 +1125,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             // solvable
             let mut next_cursor = self
                 .watches
-                .cursor(&mut self.clauses.states, watched_literal);
+                .cursor(&mut self.clauses.watched_literals, watched_literal);
             while let Some(mut cursor) = next_cursor.take() {
                 let clause_id = cursor.clause_id();
                 let clause = &clause_kinds[clause_id.to_usize()];
@@ -1464,7 +1464,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.learnt_clause_ids.push(clause_id);
         if has_watches {
             self.watches
-                .start_watching(&mut self.clauses.states[clause_id.to_usize()], clause_id);
+                .start_watching(&mut self.clauses.watched_literals[clause_id.to_usize()], clause_id);
         }
 
         tracing::debug!("│├ Learnt disjunction:",);
@@ -1730,7 +1730,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 WatchedLiterals::lock(locked_solvable_var, other_candidate_var);
                             let clause_id = clauses.alloc(state, kind);
 
-                            debug_assert!(clauses.states[clause_id.to_usize()].has_watches());
+                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].has_watches());
                             output.clauses_to_watch.push(clause_id);
                         }
                     }
@@ -1814,7 +1814,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 name_id,
                             );
                             let clause_id = clauses.alloc(state, kind);
-                            debug_assert!(clauses.states[clause_id.to_usize()].has_watches());
+                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].has_watches());
                             output.clauses_to_watch.push(clause_id);
                         },
                         || variable_map.alloc_forbid_multiple_variable(name_id),
