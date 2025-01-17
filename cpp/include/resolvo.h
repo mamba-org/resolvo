@@ -25,6 +25,15 @@ inline Requirement requirement_union(VersionSetUnionId id) {
 }
 
 /**
+ * Specifies a conditional requirement, where the requirement is only active when the condition is met.
+ * @param condition The version set that must be satisfied for the requirement to be active.
+ * @param requirement The version set that must be satisfied when the condition is met.
+ */
+inline Requirement requirement_conditional(VersionSetId condition, VersionSetId requirement) {
+    return cbindgen_private::resolvo_requirement_conditional(condition, requirement);
+}
+
+/**
  * Called to solve a package problem.
  *
  * If the solve was successful, an empty string is returned and selected solvable ids will be

@@ -11,12 +11,10 @@ use crate::{
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
-    },
-    solver::{
+    }, solver::{
         decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
         VariableId,
-    },
-    Interner, NameId, Requirement,
+    }, DependencyProvider, Interner, NameId, Requirement
 };
 
 /// Represents a single clause in the SAT problem
@@ -46,7 +44,7 @@ use crate::{
 /// limited set of clauses. There are thousands of clauses for a particular
 /// dependency resolution problem, and we try to keep the [`Clause`] enum small.
 /// A naive implementation would store a `Vec<Literal>`.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Clause {
     /// An assertion that the root solvable must be installed
     ///
@@ -77,6 +75,10 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬A ∨ ¬B)
     Constrains(VariableId, VariableId, VersionSetId),
+    /// In SAT terms: (¬A ∨ ¬C ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
+    /// C is the condition, and B1 to B99 represent the possible candidates for
+    /// the provided [`Requirement`].
+    Conditional(VariableId, VariableId, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -230,6 +232,45 @@ impl Clause {
         )
     }
 
+    fn conditional_impl(
+        package_id: VariableId,
+        condition: VariableId,
+        then: Requirement,
+        candidates: impl IntoIterator<Item = VariableId>,
+        decision_tracker: &DecisionTracker,
+    ) -> (Self, Option<[Literal; 2]>, bool) {
+        // It only makes sense to introduce a conditional clause when the package is undecided or going to be installed
+        assert_ne!(decision_tracker.assigned_value(package_id), Some(false));
+        assert_ne!(decision_tracker.assigned_value(condition), Some(false));
+
+        let kind = Clause::Conditional(package_id, condition, then);
+        let mut candidates = candidates.into_iter().peekable();
+        let first_candidate = candidates.peek().copied();
+        if let Some(first_candidate) = first_candidate {
+            match candidates.find(|&c| decision_tracker.assigned_value(c) != Some(false)) {
+                // Watch any candidate that is not assigned to false
+                Some(watched_candidate) => (
+                    kind,
+                    Some([package_id.negative(), watched_candidate.positive()]),
+                    false,
+                ),
+
+                // All candidates are assigned to false! Therefore, the clause conflicts with the
+                // current decisions. There are no valid watches for it at the moment, but we will
+                // assign default ones nevertheless, because they will become valid after the solver
+                // restarts.
+                None => (
+                    kind,
+                    Some([package_id.negative(), first_candidate.positive()]),
+                    true,
+                ),
+            }
+        } else {
+            // If there are no candidates there is no need to watch anything.
+            (kind, None, false)
+        }
+    }
+
     /// Tries to fold over all the literals in the clause.
     ///
     /// This function is useful to iterate, find, or filter the literals in a
@@ -272,6 +313,17 @@ impl Clause {
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
+            Clause::Conditional(package_id, condition, then) => {
+                [package_id.negative(), condition.negative()]
+                    .into_iter()
+                    .chain(
+                        requirements_to_sorted_candidates[&then]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.positive()),
+                    )
+                    .try_fold(init, visit)
+            }
         }
     }
 
@@ -417,6 +469,33 @@ impl WatchedLiterals {
     pub fn exclude(candidate: VariableId, reason: StringId) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::exclude(candidate, reason);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
+    }
+
+    /// Shorthand method to construct a [Clause::Conditional] without requiring
+    /// complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a
+    /// conflict.
+    pub fn conditional(
+        package_id: VariableId,
+        condition: VariableId,
+        then: Requirement,
+        candidates: impl IntoIterator<Item = VariableId>,
+        decision_tracker: &DecisionTracker,
+    ) -> (Option<Self>, bool, Clause) {
+        let (kind, watched_literals, conflict) = Clause::conditional_impl(
+            package_id,
+            condition,
+            then,
+            candidates,
+            decision_tracker,
+        );
+
+        (
+            WatchedLiterals::from_kind_and_initial_watches(watched_literals),
+            conflict,
+            kind,
+        )
     }
 
     fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Option<Self> {
@@ -609,6 +688,17 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     locked,
                     other.display(self.variable_map, self.interner),
                     other,
+                )
+            }
+            Clause::Conditional(package_id, condition, then) => {
+                write!(
+                    f,
+                    "Conditional({}({:?}), {}({:?}), {})",
+                    package_id.display(self.variable_map, self.interner),
+                    package_id,
+                    condition.display(self.variable_map, self.interner), 
+                    condition,
+                    then.display(self.interner)
                 )
             }
         }

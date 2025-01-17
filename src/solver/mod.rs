@@ -695,7 +695,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     fn resolve_dependencies(&mut self, mut level: u32) -> Result<u32, UnsolvableOrCancelled> {
         loop {
             // Make a decision. If no decision could be made it means the problem is
-            // satisfyable.
+            // satisfiable.
             let Some((candidate, required_by, clause_id)) = self.decide() else {
                 break;
             };

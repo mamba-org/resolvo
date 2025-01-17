@@ -11,14 +11,17 @@ use petgraph::{
     Direction,
 };
 
-use crate::solver::variable_map::VariableOrigin;
 use crate::{
     internal::{
         arena::ArenaId,
-        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
+        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VariableId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{clause::Clause, Solver},
+    solver::{
+        clause::Clause,
+        variable_map::{VariableMap, VariableOrigin},
+        Solver,
+    },
     DependencyProvider, Interner, Requirement,
 };
 
@@ -160,6 +163,49 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
+                &Clause::Conditional(package_id, condition, then_version_set_id) => {
+                    let solvable = package_id
+                        .as_solvable_or_root(&solver.variable_map)
+                        .expect("only solvables can be excluded");
+                    let package_node = Self::add_node(&mut graph, &mut nodes, solvable);
+
+                    let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(then_version_set_id)).unwrap_or_else(|_| {
+                        unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
+                    });
+                    
+                    if candidates.is_empty() {
+                        tracing::trace!(
+                            "{package_id:?} conditionally requires {then_version_set_id:?}, which has no candidates"
+                        );
+                        graph.add_edge(
+                            package_node,
+                            unresolved_node,
+                            ConflictEdge::ConditionalRequires(then_version_set_id, condition),
+                        );
+                    } else {
+                        for &candidate_id in candidates {
+                            tracing::trace!("{package_id:?} conditionally requires {candidate_id:?}");
+
+                            let candidate_node =
+                                Self::add_node(&mut graph, &mut nodes, candidate_id.into());
+                            graph.add_edge(
+                                package_node,
+                                candidate_node,
+                                ConflictEdge::ConditionalRequires(then_version_set_id, condition),
+                            );
+                        }
+                    }
+                    
+                    // Add an edge for the unsatisfied condition if it exists
+                    if let Some(condition_solvable) = condition.as_solvable(&solver.variable_map) {
+                        let condition_node = Self::add_node(&mut graph, &mut nodes, condition_solvable.into());
+                        graph.add_edge(
+                            package_node,
+                            condition_node,
+                            ConflictEdge::Conflict(ConflictCause::UnsatisfiedCondition(condition)),
+                        );
+                    }
+                }
             }
         }
 
@@ -205,7 +251,7 @@ impl Conflict {
         solver: &'a Solver<D, RT>,
     ) -> DisplayUnsat<'a, D> {
         let graph = self.graph(solver);
-        DisplayUnsat::new(graph, solver.provider())
+        DisplayUnsat::new(graph, solver.provider(), &solver.variable_map)
     }
 }
 
@@ -239,13 +285,15 @@ impl ConflictNode {
 }
 
 /// An edge in the graph representation of a [`Conflict`]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum ConflictEdge {
     /// The target node is a candidate for the dependency specified by the
     /// [`Requirement`]
     Requires(Requirement),
     /// The target node is involved in a conflict, caused by `ConflictCause`
     Conflict(ConflictCause),
+    /// The target node is a candidate for a conditional dependency
+    ConditionalRequires(Requirement, VariableId),
 }
 
 impl ConflictEdge {
@@ -253,12 +301,14 @@ impl ConflictEdge {
         match self {
             ConflictEdge::Requires(match_spec_id) => Some(match_spec_id),
             ConflictEdge::Conflict(_) => None,
+            ConflictEdge::ConditionalRequires(match_spec_id, _) => Some(match_spec_id),
         }
     }
 
     fn requires(self) -> Requirement {
         match self {
             ConflictEdge::Requires(match_spec_id) => match_spec_id,
+            ConflictEdge::ConditionalRequires(match_spec_id, _) => match_spec_id,
             ConflictEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
         }
     }
@@ -275,6 +325,8 @@ pub(crate) enum ConflictCause {
     ForbidMultipleInstances,
     /// The node was excluded
     Excluded,
+    /// The condition for a conditional dependency was not satisfied
+    UnsatisfiedCondition(VariableId),
 }
 
 /// Represents a node that has been merged with others
@@ -307,6 +359,7 @@ impl ConflictGraph {
         &self,
         f: &mut impl std::io::Write,
         interner: &impl Interner,
+        variable_map: &VariableMap,
         simplify: bool,
     ) -> Result<(), std::io::Error> {
         let graph = &self.graph;
@@ -356,6 +409,16 @@ impl ConflictGraph {
                         "already installed".to_string()
                     }
                     ConflictEdge::Conflict(ConflictCause::Excluded) => "excluded".to_string(),
+                    ConflictEdge::Conflict(ConflictCause::UnsatisfiedCondition(condition)) => {
+                        let condition_solvable = condition.as_solvable(variable_map)
+                            .expect("condition must be a solvable");
+                        format!("unsatisfied condition: {}", condition_solvable.display(interner))
+                    }
+                    ConflictEdge::ConditionalRequires(requirement, condition) => {
+                        let condition_solvable = condition.as_solvable(variable_map)
+                            .expect("condition must be a solvable");
+                        format!("if {} then {}", condition_solvable.display(interner), requirement.display(interner))
+                    }
                 };
 
                 let target = match target {
@@ -494,6 +557,7 @@ impl ConflictGraph {
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
+                    ConflictEdge::ConditionalRequires(version_set_id, _) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
                 .chunk_by(|(&version_set_id, _)| version_set_id);
@@ -540,6 +604,7 @@ impl ConflictGraph {
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
+                    ConflictEdge::ConditionalRequires(version_set_id, _) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
                 .chunk_by(|(&version_set_id, _)| version_set_id);
@@ -673,10 +738,11 @@ pub struct DisplayUnsat<'i, I: Interner> {
     installable_set: HashSet<NodeIndex>,
     missing_set: HashSet<NodeIndex>,
     interner: &'i I,
+    variable_map: &'i VariableMap,
 }
 
 impl<'i, I: Interner> DisplayUnsat<'i, I> {
-    pub(crate) fn new(graph: ConflictGraph, interner: &'i I) -> Self {
+    pub(crate) fn new(graph: ConflictGraph, interner: &'i I, variable_map: &'i VariableMap) -> Self {
         let merged_candidates = graph.simplify(interner);
         let installable_set = graph.get_installable_set();
         let missing_set = graph.get_missing_set();
@@ -687,6 +753,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
             installable_set,
             missing_set,
             interner,
+            variable_map,
         }
     }
 
@@ -1020,6 +1087,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                 let conflict = match e.weight() {
                     ConflictEdge::Requires(_) => continue,
                     ConflictEdge::Conflict(conflict) => conflict,
+                    ConflictEdge::ConditionalRequires(_, _) => continue,
                 };
 
                 // The only possible conflict at the root level is a Locked conflict
@@ -1045,6 +1113,15 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                         )?;
                     }
                     ConflictCause::Excluded => continue,
+                    &ConflictCause::UnsatisfiedCondition(condition) => {
+                        let condition_solvable = condition.as_solvable(self.variable_map)
+                            .expect("condition must be a solvable");
+                        writeln!(
+                            f,
+                            "{indent}condition {} is not satisfied",
+                            condition_solvable.display(self.interner),
+                        )?;
+                    }
                 };
             }
         }

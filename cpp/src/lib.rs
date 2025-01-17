@@ -48,6 +48,11 @@ pub enum Requirement {
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Union(VersionSetUnionId),
+    /// Specifies a conditional requirement, where the requirement is only active when the condition is met.
+    /// First VersionSetId is the condition, second is the requirement.
+    /// cbindgen:derive-eq
+    /// cbindgen:derive-neq
+    ConditionalRequires(VersionSetId, VersionSetId),
 }
 
 impl From<resolvo::Requirement> for crate::Requirement {
@@ -55,6 +60,9 @@ impl From<resolvo::Requirement> for crate::Requirement {
         match value {
             resolvo::Requirement::Single(id) => Requirement::Single(id.into()),
             resolvo::Requirement::Union(id) => Requirement::Union(id.into()),
+            resolvo::Requirement::ConditionalRequires(condition, requirement) => {
+                Requirement::ConditionalRequires(condition.into(), requirement.into())
+            }
         }
     }
 }
@@ -64,6 +72,9 @@ impl From<crate::Requirement> for resolvo::Requirement {
         match value {
             Requirement::Single(id) => resolvo::Requirement::Single(id.into()),
             Requirement::Union(id) => resolvo::Requirement::Union(id.into()),
+            Requirement::ConditionalRequires(condition, requirement) => {
+                resolvo::Requirement::ConditionalRequires(condition.into(), requirement.into())
+            }
         }
     }
 }
@@ -537,6 +548,15 @@ pub extern "C" fn resolvo_requirement_union(
     version_set_union_id: VersionSetUnionId,
 ) -> Requirement {
     Requirement::Union(version_set_union_id)
+}
+
+#[no_mangle]
+#[allow(unused)]
+pub extern "C" fn resolvo_requirement_conditional(
+    condition: VersionSetId,
+    requirement: VersionSetId,
+) -> Requirement {
+    Requirement::ConditionalRequires(condition, requirement)
 }
 
 #[cfg(test)]

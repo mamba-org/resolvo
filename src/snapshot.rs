@@ -243,6 +243,14 @@ impl DependencySnapshot {
                                             .version_set_unions
                                             .insert(version_set_union_id, version_sets);
                                     }
+                                    Requirement::ConditionalRequires(condition, requirement) => {
+                                        if seen.insert(Element::VersionSet(condition)) {
+                                            queue.push_back(Element::VersionSet(condition));
+                                        }
+                                        if seen.insert(Element::VersionSet(requirement)) {
+                                            queue.push_back(Element::VersionSet(requirement));
+                                        }
+                                    }
                                 }
                             }
                         }
