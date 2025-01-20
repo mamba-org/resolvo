@@ -68,7 +68,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
       - name: Build conda package
-        uses: prefix-dev/rattler-build-action@v0.2.26
+        uses: prefix-dev/rattler-build-action@v0.2.28
         with:
           recipe-path: recipe/recipe.yaml
           # needs to be unique for each matrix entry
