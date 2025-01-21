@@ -1673,7 +1673,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                             cache.get_or_cache_candidates(condition_name).await?;
                                         Ok(TaskResult::Candidates {
                                             name_id: condition_name,
-                                            package_candidates: &condition_candidates,
+                                            package_candidates: condition_candidates,
                                         })
                                     }
                                     .boxed_local(),
