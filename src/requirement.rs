@@ -2,6 +2,57 @@ use crate::{Interner, VersionSetId, VersionSetUnionId};
 use itertools::Itertools;
 use std::fmt::Display;
 
+/// Specifies a conditional requirement, where the requirement is only active when the condition is met.
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ConditionalRequirement {
+    /// The condition that must be met for the requirement to be active.
+    pub condition: Option<VersionSetId>,
+    /// The requirement that is only active when the condition is met.
+    pub requirement: Requirement,
+}
+
+impl ConditionalRequirement {
+    /// Creates a new conditional requirement.
+    pub fn new(condition: VersionSetId, requirement: Requirement) -> Self {
+        Self {
+            condition: Some(condition),
+            requirement,
+        }
+    }
+    /// Returns the version sets that satisfy the requirement.
+    pub fn requirement_version_sets<'i>(
+        &'i self,
+        interner: &'i impl Interner,
+    ) -> impl Iterator<Item = VersionSetId> + 'i {
+        self.requirement.version_sets(interner)
+    }
+
+    /// Returns the version sets that satisfy the requirement, along with the condition that must be met.
+    pub fn version_sets_with_condition<'i>(
+        &'i self,
+        interner: &'i impl Interner,
+    ) -> impl Iterator<Item = (VersionSetId, Option<VersionSetId>)> + 'i {
+        self.requirement
+            .version_sets(interner)
+            .map(move |vs| (vs, self.condition))
+    }
+
+    /// Returns the condition and requirement.
+    pub fn into_condition_and_requirement(self) -> (Option<VersionSetId>, Requirement) {
+        (self.condition, self.requirement)
+    }
+}
+
+impl From<Requirement> for ConditionalRequirement {
+    fn from(value: Requirement) -> Self {
+        Self {
+            condition: None,
+            requirement: value,
+        }
+    }
+}
+
 /// Specifies the dependency of a solvable on a set of version sets.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -13,9 +64,6 @@ pub enum Requirement {
     /// This variant is typically used for requirements that can be satisfied by two or more
     /// version sets belonging to _different_ packages.
     Union(VersionSetUnionId),
-    /// Specifies a conditional requirement, where the requirement is only active when the condition is met.
-    /// First VersionSetId is the condition, second is the requirement.
-    ConditionalRequires(VersionSetId, VersionSetId),
 }
 
 impl Default for Requirement {
@@ -48,22 +96,14 @@ impl Requirement {
     pub(crate) fn version_sets<'i>(
         &'i self,
         interner: &'i impl Interner,
-    ) -> (
-        impl Iterator<Item = VersionSetId> + 'i,
-        Option<VersionSetId>,
-    ) {
-        match self {
+    ) -> impl Iterator<Item = VersionSetId> + 'i {
+        match *self {
             Requirement::Single(version_set) => {
-                (itertools::Either::Left(std::iter::once(*version_set)), None)
+                itertools::Either::Left(std::iter::once(version_set))
             }
-            Requirement::Union(version_set_union) => (
-                itertools::Either::Right(interner.version_sets_in_union(*version_set_union)),
-                None,
-            ),
-            Requirement::ConditionalRequires(condition, requirement) => (
-                itertools::Either::Left(std::iter::once(*requirement)),
-                Some(*condition),
-            ),
+            Requirement::Union(version_set_union) => {
+                itertools::Either::Right(interner.version_sets_in_union(version_set_union))
+            }
         }
     }
 }
@@ -97,16 +137,6 @@ impl<'i, I: Interner> Display for DisplayRequirement<'i, I> {
                     });
 
                 write!(f, "{}", formatted_version_sets)
-            }
-            Requirement::ConditionalRequires(condition, requirement) => {
-                write!(
-                    f,
-                    "if {} then {} {}",
-                    self.interner.display_version_set(condition),
-                    self.interner
-                        .display_name(self.interner.version_set_name(requirement)),
-                    self.interner.display_version_set(requirement)
-                )
             }
         }
     }

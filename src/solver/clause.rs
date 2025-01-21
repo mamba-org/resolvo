@@ -80,7 +80,7 @@ pub(crate) enum Clause {
     /// In SAT terms: (¬A ∨ ¬C ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
     /// C is the condition, and B1 to B99 represent the possible candidates for
     /// the provided [`Requirement`].
-    Conditional(VariableId, Requirement),
+    Conditional(VariableId, VersionSetId, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -237,50 +237,61 @@ impl Clause {
     fn conditional(
         parent_id: VariableId,
         requirement: Requirement,
+        condition: VersionSetId,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
         condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
 
-        let mut candidates = condition_candidates.into_iter().peekable();
-        let first_candidate = candidates.peek().copied();
-        if let Some(first_candidate) = first_candidate {
-            match condition_candidates
-                .into_iter()
-                .find(|&condition_id| decision_tracker.assigned_value(condition_id) == Some(true))
-            {
-                Some(_) => Clause::requires(
-                    parent_id,
-                    requirement,
-                    requirement_candidates,
-                    decision_tracker,
-                ),
-                None => {
-                    if let Some(first_unset_candidate) = candidates.find(|&condition_id| {
-                        decision_tracker.assigned_value(condition_id) != Some(false)
-                    }) {
-                        (
-                            Clause::Conditional(parent_id, requirement),
-                            Some([parent_id.negative(), first_unset_candidate.negative()]),
-                            false,
-                        )
-                    } else {
-                        // All condition candidates are assigned to false! Therefore, the clause conflicts with the
-                        // current decisions. There are no valid watches for it at the moment, but we will
-                        // assign default ones nevertheless, because they will become valid after the solver
-                        // restarts.
-                        (
-                            Clause::Conditional(parent_id, requirement),
-                            Some([parent_id.negative(), first_candidate.negative()]),
-                            true,
-                        )
-                    }
+        let mut condition_candidates = condition_candidates.into_iter().peekable();
+        let condition_first_candidate = condition_candidates
+            .peek()
+            .copied()
+            .expect("no condition candidates");
+        let mut requirement_candidates = requirement_candidates.into_iter().peekable();
+
+        match condition_candidates
+            .find(|&condition_id| decision_tracker.assigned_value(condition_id) == Some(true))
+        {
+            Some(_) => {
+                // Condition is true, find first requirement candidate not set to false
+                if let Some(req_candidate) = requirement_candidates
+                    .find(|&req_id| decision_tracker.assigned_value(req_id) != Some(false))
+                {
+                    (
+                        Clause::Conditional(parent_id, condition, requirement),
+                        Some([parent_id.negative(), req_candidate.positive()]),
+                        false,
+                    )
+                } else {
+                    // No valid requirement candidate, use first condition candidate and mark conflict
+                    (
+                        Clause::Conditional(parent_id, condition, requirement),
+                        Some([parent_id.negative(), condition_first_candidate.positive()]),
+                        true,
+                    )
                 }
             }
-        } else {
-            // No condition candidates, so no need to watch anything
-            (Clause::Conditional(parent_id, requirement), None, false)
+            None => {
+                // No true condition, look for unset condition
+                if let Some(unset_condition) = condition_candidates.find(|&condition_id| {
+                    decision_tracker.assigned_value(condition_id) != Some(false)
+                }) {
+                    (
+                        Clause::Conditional(parent_id, condition, requirement),
+                        Some([parent_id.negative(), unset_condition.negative()]),
+                        false,
+                    )
+                } else {
+                    // All conditions false
+                    (
+                        Clause::Conditional(parent_id, condition, requirement),
+                        None,
+                        false,
+                    )
+                }
+            }
         }
     }
 
@@ -326,14 +337,22 @@ impl Clause {
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
-            Clause::Conditional(package_id, condition) => iter::once(package_id.negative())
-                .chain(
-                    requirements_to_sorted_candidates[&condition]
-                        .iter()
-                        .flatten()
-                        .map(|&s| s.positive()),
-                )
-                .try_fold(init, visit),
+            Clause::Conditional(package_id, condition, requirement) => {
+                iter::once(package_id.negative())
+                    .chain(
+                        requirements_to_sorted_candidates[&condition.into()]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.negative()),
+                    )
+                    .chain(
+                        requirements_to_sorted_candidates[&requirement]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.positive()),
+                    )
+                    .try_fold(init, visit)
+            }
         }
     }
 
@@ -488,13 +507,15 @@ impl WatchedLiterals {
     /// conflict.
     pub fn conditional(
         package_id: VariableId,
-        condition: Requirement,
+        requirement: Requirement,
+        condition: VersionSetId,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
         condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::conditional(
             package_id,
+            requirement,
             condition,
             decision_tracker,
             requirement_candidates,
@@ -700,13 +721,14 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     other,
                 )
             }
-            Clause::Conditional(package_id, condition) => {
+            Clause::Conditional(package_id, condition, requirement) => {
                 write!(
                     f,
-                    "Conditional({}({:?}), {})",
+                    "Conditional({}({:?}), {}, {})",
                     package_id.display(self.variable_map, self.interner),
                     package_id,
-                    condition.display(self.interner),
+                    self.interner.display_version_set(condition),
+                    requirement.display(self.interner),
                 )
             }
         }

@@ -19,6 +19,7 @@ use crate::{
         id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
         mapping::Mapping,
     },
+    requirement::ConditionalRequirement,
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     solver::binary_encoding::AtMostOnceTracker,
     Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
@@ -51,7 +52,7 @@ struct AddClauseOutput {
 /// This struct follows the builder pattern and can have its fields set by one
 /// of the available setter methods.
 pub struct Problem<S> {
-    requirements: Vec<Requirement>,
+    requirements: Vec<ConditionalRequirement>,
     constraints: Vec<VersionSetId>,
     soft_requirements: S,
 }
@@ -80,7 +81,7 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
     ///
     /// Returns the [`Problem`] for further mutation or to pass to
     /// [`Solver::solve`].
-    pub fn requirements(self, requirements: Vec<Requirement>) -> Self {
+    pub fn requirements(self, requirements: Vec<ConditionalRequirement>) -> Self {
         Self {
             requirements,
             ..self
@@ -172,7 +173,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     decision_tracker: DecisionTracker,
 
     /// The [`Requirement`]s that must be installed as part of the solution.
-    root_requirements: Vec<Requirement>,
+    root_requirements: Vec<ConditionalRequirement>,
 
     /// Additional constraints imposed by the root.
     root_constraints: Vec<VersionSetId>,
@@ -788,7 +789,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // Get the candidates for the individual version sets.
                 let version_set_candidates = &self.requirement_to_sorted_candidates[deps];
 
-                let (version_sets, condition) = deps.version_sets(self.provider());
+                let version_sets = deps.version_sets(self.provider());
 
                 // Iterate over all version sets in the requirement and find the first version
                 // set that we can act on, or if a single candidate (from any version set) makes
@@ -1518,7 +1519,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         RequirementCandidateVariables,
         ahash::RandomState,
     >,
-    root_requirements: &[Requirement],
+    root_requirements: &[ConditionalRequirement],
     root_constraints: &[VersionSetId],
 ) -> Result<AddClauseOutput, Box<dyn Any>> {
     let mut output = AddClauseOutput::default();
@@ -1533,13 +1534,8 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         SortedCandidates {
             solvable_id: SolvableOrRootId,
             requirement: Requirement,
+            condition: Option<(VersionSetId, Vec<&'i [SolvableId]>)>,
             candidates: Vec<&'i [SolvableId]>,
-        },
-        ConditionalSortedCandidates {
-            solvable_id: SolvableOrRootId,
-            requirement: Requirement,
-            requirement_candidates: Vec<&'i [SolvableId]>,
-            condition_candidates: &'i [SolvableId],
         },
         NonMatchingCandidates {
             solvable_id: SolvableOrRootId,
@@ -1588,7 +1584,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 ready(Ok(TaskResult::Dependencies {
                     solvable_id: solvable_or_root,
                     dependencies: Dependencies::Known(KnownDependencies {
-                        requirements: root_requirements.to_vec(),
+                        conditional_requirements: root_requirements.to_vec(),
                         constrains: root_constraints.to_vec(),
                     }),
                 }))
@@ -1620,8 +1616,8 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     None => variable_map.root(),
                 };
 
-                let (requirements, constrains) = match dependencies {
-                    Dependencies::Known(deps) => (deps.requirements, deps.constrains),
+                let (conditional_requirements, constrains) = match dependencies {
+                    Dependencies::Known(deps) => (deps.conditional_requirements, deps.constrains),
                     Dependencies::Unknown(reason) => {
                         // There is no information about the solvable's dependencies, so we add
                         // an exclusion clause for it
@@ -1642,11 +1638,10 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     }
                 };
 
-                for (version_set_id, condition) in requirements
+                for (version_set_id, condition) in conditional_requirements
                     .iter()
-                    .flat_map(|requirement| {
-                        let (version_sets, condition) = requirement.version_sets(cache.provider());
-                        version_sets.map(move |vs| (vs, condition))
+                    .flat_map(|conditional_requirement| {
+                        conditional_requirement.version_sets_with_condition(cache.provider())
                     })
                     .chain(constrains.iter().map(|&vs| (vs, None)))
                 {
@@ -1668,32 +1663,32 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                             }
                             .boxed_local(),
                         );
-                    }
 
-                    if let Some(condition) = condition {
-                        let condition_name = cache.provider().version_set_name(condition);
-                        if clauses_added_for_package.insert(condition_name) {
-                            pending_futures.push(
-                                async move {
-                                    let condition_candidates =
-                                        cache.get_or_cache_candidates(condition_name).await?;
-                                    Ok(TaskResult::Candidates {
-                                        name_id: condition_name,
-                                        package_candidates: &condition_candidates,
-                                    })
-                                }
-                                .boxed_local(),
-                            );
+                        if let Some(condition) = condition {
+                            let condition_name = cache.provider().version_set_name(condition);
+                            if clauses_added_for_package.insert(condition_name) {
+                                pending_futures.push(
+                                    async move {
+                                        let condition_candidates =
+                                            cache.get_or_cache_candidates(condition_name).await?;
+                                        Ok(TaskResult::Candidates {
+                                            name_id: condition_name,
+                                            package_candidates: &condition_candidates,
+                                        })
+                                    }
+                                    .boxed_local(),
+                                );
+                            }
                         }
                     }
                 }
 
-                for requirement in requirements {
+                for conditional_requirement in conditional_requirements {
                     // Find all the solvable that match for the given version set
                     pending_futures.push(
                         async move {
-                            let (version_sets, condition) =
-                                requirement.version_sets(cache.provider());
+                            let version_sets =
+                                conditional_requirement.requirement_version_sets(cache.provider());
                             let candidates =
                                 futures::future::try_join_all(version_sets.map(|version_set| {
                                     cache
@@ -1701,21 +1696,26 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 }))
                                 .await?;
 
-                            if let Some(condition) = condition {
-                                let condition_candidates = cache
-                                    .get_or_cache_sorted_candidates_for_version_set(condition)
-                                    .await?;
+                            // condition is `VersionSetId` right now but it will become a `Requirement`
+                            // in the future
+                            if let Some(condition) = conditional_requirement.condition {
+                                let condition_candidates = vec![
+                                    cache
+                                        .get_or_cache_sorted_candidates_for_version_set(condition)
+                                        .await?,
+                                ];
 
-                                Ok(TaskResult::ConditionalSortedCandidates {
+                                Ok(TaskResult::SortedCandidates {
                                     solvable_id,
-                                    requirement,
-                                    requirement_candidates: candidates,
-                                    condition_candidates,
+                                    requirement: conditional_requirement.requirement,
+                                    condition: Some((condition, condition_candidates)),
+                                    candidates,
                                 })
                             } else {
                                 Ok(TaskResult::SortedCandidates {
                                     solvable_id,
-                                    requirement,
+                                    requirement: conditional_requirement.requirement,
+                                    condition: None,
                                     candidates,
                                 })
                             }
@@ -1787,6 +1787,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
             TaskResult::SortedCandidates {
                 solvable_id,
                 requirement,
+                condition,
                 candidates,
             } => {
                 tracing::trace!(
@@ -1856,104 +1857,42 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     );
                 }
 
+                let (watched_literals, conflict, kind) =
+                    if let Some((condition, condition_candidates)) = condition {
+                        let condition_version_set_variables = requirement_to_sorted_candidates
+                            .insert(
+                                condition.into(),
+                                condition_candidates
+                                    .iter()
+                                    .map(|&candidates| {
+                                        candidates
+                                            .iter()
+                                            .map(|&var| variable_map.intern_solvable(var))
+                                            .collect()
+                                    })
+                                    .collect(),
+                            );
+
+                        // Add a condition clause
+                        WatchedLiterals::conditional(
+                            variable,
+                            requirement,
+                            condition,
+                            decision_tracker,
+                            version_set_variables.iter().flatten().copied(),
+                            condition_version_set_variables.iter().flatten().copied(),
+                        )
+                    } else {
+                        WatchedLiterals::requires(
+                            variable,
+                            requirement,
+                            version_set_variables.iter().flatten().copied(),
+                            decision_tracker,
+                        )
+                    };
+
                 // Add the requirements clause
                 let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
-                let (watched_literals, conflict, kind) = WatchedLiterals::requires(
-                    variable,
-                    requirement,
-                    version_set_variables.iter().flatten().copied(),
-                    decision_tracker,
-                );
-                let has_watches = watched_literals.is_some();
-                let clause_id = clauses.alloc(watched_literals, kind);
-
-                if has_watches {
-                    output.clauses_to_watch.push(clause_id);
-                }
-
-                output
-                    .new_requires_clauses
-                    .push((variable, requirement, clause_id));
-
-                if conflict {
-                    output.conflicting_clauses.push(clause_id);
-                } else if no_candidates {
-                    // Add assertions for unit clauses (i.e. those with no matching candidates)
-                    output.negative_assertions.push((variable, clause_id));
-                }
-            }
-            TaskResult::ConditionalSortedCandidates {
-                solvable_id,
-                requirement,
-                requirement_candidates,
-                condition_candidates,
-            } => {
-                tracing::trace!(
-                    "conditional candidates available for {}",
-                    solvable_id.display(cache.provider()),
-                );
-
-                // Allocate a variable for the solvable
-                let variable = match solvable_id.solvable() {
-                    Some(solvable_id) => variable_map.intern_solvable(solvable_id),
-                    None => variable_map.root(),
-                };
-
-                // Cache the candidates for this requirement
-                let version_set_variables: Vec<_> = requirement_candidates
-                    .iter()
-                    .map(|candidates| {
-                        candidates
-                            .iter()
-                            .map(|&candidate| variable_map.intern_solvable(candidate))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-
-                requirement_to_sorted_candidates
-                    .insert(requirement.clone(), version_set_variables.clone());
-
-                // Add forbidden clauses for the candidates
-                for candidates in requirement_candidates.iter() {
-                    for &candidate in *candidates {
-                        let candidate_var = variable_map.intern_solvable(candidate);
-                        let name_id = cache.provider().solvable_name(candidate);
-                        let other_solvables = forbidden_clauses_added.entry(name_id).or_default();
-                        other_solvables.add(
-                            candidate_var,
-                            |a, b, positive| {
-                                let (watched_literals, kind) = WatchedLiterals::forbid_multiple(
-                                    a,
-                                    if positive { b.positive() } else { b.negative() },
-                                    name_id,
-                                );
-                                let clause_id = clauses.alloc(watched_literals, kind);
-                                debug_assert!(
-                                    clauses.watched_literals[clause_id.to_usize()].is_some()
-                                );
-                                output.clauses_to_watch.push(clause_id);
-                            },
-                            || variable_map.alloc_forbid_multiple_variable(name_id),
-                        );
-                    }
-                }
-
-                // Add the requirements clause
-                let no_candidates = requirement_candidates
-                    .iter()
-                    .all(|candidates| candidates.is_empty());
-                let condition_variables = condition_candidates
-                    .iter()
-                    .map(|&candidate| variable_map.intern_solvable(candidate))
-                    .collect::<Vec<_>>();
-
-                let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
-                    variable,
-                    requirement,
-                    decision_tracker,
-                    version_set_variables.iter().flatten().copied(),
-                    condition_variables.iter().copied(),
-                );
 
                 let has_watches = watched_literals.is_some();
                 let clause_id = clauses.alloc(watched_literals, kind);

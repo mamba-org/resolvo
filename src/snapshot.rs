@@ -220,7 +220,9 @@ impl DependencySnapshot {
                                 }
                             }
 
-                            for &requirement in deps.requirements.iter() {
+                            for &req in deps.conditional_requirements.iter() {
+                                let (_, requirement) = req.into_condition_and_requirement(); // TODO: condition
+
                                 match requirement {
                                     Requirement::Single(version_set) => {
                                         if seen.insert(Element::VersionSet(version_set)) {
@@ -242,14 +244,6 @@ impl DependencySnapshot {
                                         result
                                             .version_set_unions
                                             .insert(version_set_union_id, version_sets);
-                                    }
-                                    Requirement::ConditionalRequires(condition, requirement) => {
-                                        if seen.insert(Element::VersionSet(condition)) {
-                                            queue.push_back(Element::VersionSet(condition));
-                                        }
-                                        if seen.insert(Element::VersionSet(requirement)) {
-                                            queue.push_back(Element::VersionSet(requirement));
-                                        }
                                     }
                                 }
                             }

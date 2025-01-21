@@ -28,7 +28,7 @@ pub use internal::{
     mapping::Mapping,
 };
 use itertools::Itertools;
-pub use requirement::Requirement;
+pub use requirement::{ConditionalRequirement, Requirement};
 pub use solver::{Problem, Solver, SolverCache, UnsolvableOrCancelled};
 
 /// An object that is used by the solver to query certain properties of
@@ -206,7 +206,7 @@ pub struct KnownDependencies {
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
-    pub requirements: Vec<Requirement>,
+    pub conditional_requirements: Vec<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set

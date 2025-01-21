@@ -31,6 +31,17 @@ impl From<SolvableId> for resolvo::SolvableId {
     }
 }
 
+/// Specifies a conditional requirement, where the requirement is only active when the condition is met.
+/// First VersionSetId is the condition, second is the requirement.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ConditionalRequirement {
+    pub condition: Option<VersionSetId>,
+    pub requirement: Requirement,
+}
+
 /// Specifies the dependency of a solvable on a set of version sets.
 /// cbindgen:derive-eq
 /// cbindgen:derive-neq
@@ -48,11 +59,6 @@ pub enum Requirement {
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Union(VersionSetUnionId),
-    /// Specifies a conditional requirement, where the requirement is only active when the condition is met.
-    /// First VersionSetId is the condition, second is the requirement.
-    /// cbindgen:derive-eq
-    /// cbindgen:derive-neq
-    ConditionalRequires(VersionSetId, VersionSetId),
 }
 
 impl From<resolvo::Requirement> for crate::Requirement {
@@ -60,9 +66,6 @@ impl From<resolvo::Requirement> for crate::Requirement {
         match value {
             resolvo::Requirement::Single(id) => Requirement::Single(id.into()),
             resolvo::Requirement::Union(id) => Requirement::Union(id.into()),
-            resolvo::Requirement::ConditionalRequires(condition, requirement) => {
-                Requirement::ConditionalRequires(condition.into(), requirement.into())
-            }
         }
     }
 }
@@ -72,9 +75,24 @@ impl From<crate::Requirement> for resolvo::Requirement {
         match value {
             Requirement::Single(id) => resolvo::Requirement::Single(id.into()),
             Requirement::Union(id) => resolvo::Requirement::Union(id.into()),
-            Requirement::ConditionalRequires(condition, requirement) => {
-                resolvo::Requirement::ConditionalRequires(condition.into(), requirement.into())
-            }
+        }
+    }
+}
+
+impl From<resolvo::ConditionalRequirement> for ConditionalRequirement {
+    fn from(value: resolvo::ConditionalRequirement) -> Self {
+        Self {
+            condition: value.condition.map(|id| id.into()),
+            requirement: value.requirement.into(),
+        }
+    }
+}
+
+impl From<ConditionalRequirement> for resolvo::ConditionalRequirement {
+    fn from(value: ConditionalRequirement) -> Self {
+        Self {
+            condition: value.condition.map(|id| id.into()),
+            requirement: value.requirement.into(),
         }
     }
 }
@@ -173,7 +191,7 @@ pub struct Dependencies {
     /// A pointer to the first element of a list of requirements. Requirements
     /// defines which packages should be installed alongside the depending
     /// package and the constraints applied to the package.
-    pub requirements: Vector<Requirement>,
+    pub conditional_requirements: Vector<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set
@@ -470,8 +488,8 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         };
 
         resolvo::Dependencies::Known(KnownDependencies {
-            requirements: dependencies
-                .requirements
+            conditional_requirements: dependencies
+                .conditional_requirements
                 .into_iter()
                 .map(Into::into)
                 .collect(),
@@ -486,7 +504,7 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
 
 #[repr(C)]
 pub struct Problem<'a> {
-    pub requirements: Slice<'a, Requirement>,
+    pub requirements: Slice<'a, ConditionalRequirement>,
     pub constraints: Slice<'a, VersionSetId>,
     pub soft_requirements: Slice<'a, SolvableId>,
 }
@@ -548,15 +566,6 @@ pub extern "C" fn resolvo_requirement_union(
     version_set_union_id: VersionSetUnionId,
 ) -> Requirement {
     Requirement::Union(version_set_union_id)
-}
-
-#[no_mangle]
-#[allow(unused)]
-pub extern "C" fn resolvo_requirement_conditional(
-    condition: VersionSetId,
-    requirement: VersionSetId,
-) -> Requirement {
-    Requirement::ConditionalRequires(condition, requirement)
 }
 
 #[cfg(test)]
