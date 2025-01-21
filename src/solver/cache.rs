@@ -281,8 +281,12 @@ impl<D: DependencyProvider> SolverCache<D> {
                 }
             }
             Requirement::ConditionalRequires(condition, requirement) => {
-                let candidates = self.get_or_cache_sorted_candidates_for_version_set(condition).await?;
-                let sorted_candidates = self.get_or_cache_sorted_candidates_for_version_set(requirement).await?;
+                let candidates = self
+                    .get_or_cache_sorted_candidates_for_version_set(condition)
+                    .await?;
+                let sorted_candidates = self
+                    .get_or_cache_sorted_candidates_for_version_set(requirement)
+                    .await?;
                 Ok(sorted_candidates)
             }
         }

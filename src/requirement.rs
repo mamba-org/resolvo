@@ -48,17 +48,22 @@ impl Requirement {
     pub(crate) fn version_sets<'i>(
         &'i self,
         interner: &'i impl Interner,
-    ) -> impl Iterator<Item = VersionSetId> + 'i {
+    ) -> (
+        impl Iterator<Item = VersionSetId> + 'i,
+        Option<VersionSetId>,
+    ) {
         match self {
             Requirement::Single(version_set) => {
-                itertools::Either::Left(itertools::Either::Left(std::iter::once(*version_set)))
+                (itertools::Either::Left(std::iter::once(*version_set)), None)
             }
-            Requirement::Union(version_set_union) => {
-                itertools::Either::Left(itertools::Either::Right(interner.version_sets_in_union(*version_set_union)))
-            }
-            Requirement::ConditionalRequires(condition, requirement) => {
-                itertools::Either::Right(std::iter::once(*condition).chain(std::iter::once(*requirement)))
-            }
+            Requirement::Union(version_set_union) => (
+                itertools::Either::Right(interner.version_sets_in_union(*version_set_union)),
+                None,
+            ),
+            Requirement::ConditionalRequires(condition, requirement) => (
+                itertools::Either::Left(std::iter::once(*requirement)),
+                Some(*condition),
+            ),
         }
     }
 }
@@ -70,18 +75,18 @@ pub(crate) struct DisplayRequirement<'i, I: Interner> {
 
 impl<'i, I: Interner> Display for DisplayRequirement<'i, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.requirement {
+        match *self.requirement {
             Requirement::Single(version_set) => write!(
                 f,
                 "{} {}",
                 self.interner
-                    .display_name(self.interner.version_set_name(*version_set)),
-                self.interner.display_version_set(*version_set)
+                    .display_name(self.interner.version_set_name(version_set)),
+                self.interner.display_version_set(version_set)
             ),
             Requirement::Union(version_set_union) => {
                 let formatted_version_sets = self
                     .interner
-                    .version_sets_in_union(*version_set_union)
+                    .version_sets_in_union(version_set_union)
                     .format_with(" | ", |version_set, f| {
                         f(&format_args!(
                             "{} {}",
@@ -97,10 +102,10 @@ impl<'i, I: Interner> Display for DisplayRequirement<'i, I> {
                 write!(
                     f,
                     "if {} then {} {}",
-                    self.interner.display_version_set(*condition),
+                    self.interner.display_version_set(condition),
                     self.interner
-                        .display_name(self.interner.version_set_name(*requirement)),
-                    self.interner.display_version_set(*requirement)
+                        .display_name(self.interner.version_set_name(requirement)),
+                    self.interner.display_version_set(requirement)
                 )
             }
         }

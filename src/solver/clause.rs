@@ -11,10 +11,12 @@ use crate::{
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
-    }, solver::{
+    },
+    solver::{
         decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
         VariableId,
-    }, DependencyProvider, Interner, NameId, Requirement
+    },
+    Interner, NameId, Requirement,
 };
 
 /// Represents a single clause in the SAT problem
@@ -78,7 +80,7 @@ pub(crate) enum Clause {
     /// In SAT terms: (¬A ∨ ¬C ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
     /// C is the condition, and B1 to B99 represent the possible candidates for
     /// the provided [`Requirement`].
-    Conditional(VariableId, VariableId, Requirement),
+    Conditional(VariableId, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -232,42 +234,53 @@ impl Clause {
         )
     }
 
-    fn conditional_impl(
-        package_id: VariableId,
-        condition: VariableId,
-        then: Requirement,
-        candidates: impl IntoIterator<Item = VariableId>,
+    fn conditional(
+        parent_id: VariableId,
+        requirement: Requirement,
         decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+        condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Self, Option<[Literal; 2]>, bool) {
-        // It only makes sense to introduce a conditional clause when the package is undecided or going to be installed
-        assert_ne!(decision_tracker.assigned_value(package_id), Some(false));
-        assert_ne!(decision_tracker.assigned_value(condition), Some(false));
+        assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
 
-        let kind = Clause::Conditional(package_id, condition, then);
-        let mut candidates = candidates.into_iter().peekable();
+        let mut candidates = condition_candidates.into_iter().peekable();
         let first_candidate = candidates.peek().copied();
         if let Some(first_candidate) = first_candidate {
-            match candidates.find(|&c| decision_tracker.assigned_value(c) != Some(false)) {
-                // Watch any candidate that is not assigned to false
-                Some(watched_candidate) => (
-                    kind,
-                    Some([package_id.negative(), watched_candidate.positive()]),
-                    false,
+            match condition_candidates
+                .into_iter()
+                .find(|&condition_id| decision_tracker.assigned_value(condition_id) == Some(true))
+            {
+                Some(_) => Clause::requires(
+                    parent_id,
+                    requirement,
+                    requirement_candidates,
+                    decision_tracker,
                 ),
-
-                // All candidates are assigned to false! Therefore, the clause conflicts with the
-                // current decisions. There are no valid watches for it at the moment, but we will
-                // assign default ones nevertheless, because they will become valid after the solver
-                // restarts.
-                None => (
-                    kind,
-                    Some([package_id.negative(), first_candidate.positive()]),
-                    true,
-                ),
+                None => {
+                    if let Some(first_unset_candidate) = candidates.find(|&condition_id| {
+                        decision_tracker.assigned_value(condition_id) != Some(false)
+                    }) {
+                        (
+                            Clause::Conditional(parent_id, requirement),
+                            Some([parent_id.negative(), first_unset_candidate.negative()]),
+                            false,
+                        )
+                    } else {
+                        // All condition candidates are assigned to false! Therefore, the clause conflicts with the
+                        // current decisions. There are no valid watches for it at the moment, but we will
+                        // assign default ones nevertheless, because they will become valid after the solver
+                        // restarts.
+                        (
+                            Clause::Conditional(parent_id, requirement),
+                            Some([parent_id.negative(), first_candidate.negative()]),
+                            true,
+                        )
+                    }
+                }
             }
         } else {
-            // If there are no candidates there is no need to watch anything.
-            (kind, None, false)
+            // No condition candidates, so no need to watch anything
+            (Clause::Conditional(parent_id, requirement), None, false)
         }
     }
 
@@ -313,17 +326,14 @@ impl Clause {
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
-            Clause::Conditional(package_id, condition, then) => {
-                [package_id.negative(), condition.negative()]
-                    .into_iter()
-                    .chain(
-                        requirements_to_sorted_candidates[&then]
-                            .iter()
-                            .flatten()
-                            .map(|&s| s.positive()),
-                    )
-                    .try_fold(init, visit)
-            }
+            Clause::Conditional(package_id, condition) => iter::once(package_id.negative())
+                .chain(
+                    requirements_to_sorted_candidates[&condition]
+                        .iter()
+                        .flatten()
+                        .map(|&s| s.positive()),
+                )
+                .try_fold(init, visit),
         }
     }
 
@@ -478,17 +488,17 @@ impl WatchedLiterals {
     /// conflict.
     pub fn conditional(
         package_id: VariableId,
-        condition: VariableId,
-        then: Requirement,
-        candidates: impl IntoIterator<Item = VariableId>,
+        condition: Requirement,
         decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+        condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Option<Self>, bool, Clause) {
-        let (kind, watched_literals, conflict) = Clause::conditional_impl(
+        let (kind, watched_literals, conflict) = Clause::conditional(
             package_id,
             condition,
-            then,
-            candidates,
             decision_tracker,
+            requirement_candidates,
+            condition_candidates,
         );
 
         (
@@ -690,15 +700,13 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     other,
                 )
             }
-            Clause::Conditional(package_id, condition, then) => {
+            Clause::Conditional(package_id, condition) => {
                 write!(
                     f,
-                    "Conditional({}({:?}), {}({:?}), {})",
+                    "Conditional({}({:?}), {})",
                     package_id.display(self.variable_map, self.interner),
                     package_id,
-                    condition.display(self.variable_map, self.interner), 
-                    condition,
-                    then.display(self.interner)
+                    condition.display(self.interner),
                 )
             }
         }
