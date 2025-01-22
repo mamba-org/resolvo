@@ -37,6 +37,7 @@ mod watch_map;
 #[derive(Default)]
 struct AddClauseOutput {
     new_requires_clauses: Vec<(VariableId, Requirement, ClauseId)>,
+    new_conditional_clauses: Vec<(VariableId, VersionSetId, Requirement, ClauseId)>,
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(VariableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
@@ -151,6 +152,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     pub(crate) clauses: Clauses,
     requires_clauses: IndexMap<VariableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
+    conditional_clauses: IndexMap<VariableId, Vec<(VersionSetId, Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
@@ -201,6 +203,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             clauses: Clauses::default(),
             variable_map: VariableMap::default(),
             requires_clauses: Default::default(),
+            conditional_clauses: Default::default(),
             requirement_to_sorted_candidates: FrozenMap::default(),
             watches: WatchMap::new(),
             negative_assertions: Default::default(),
@@ -281,6 +284,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clauses: self.clauses,
             variable_map: self.variable_map,
             requires_clauses: self.requires_clauses,
+            conditional_clauses: self.conditional_clauses,
             requirement_to_sorted_candidates: self.requirement_to_sorted_candidates,
             watches: self.watches,
             negative_assertions: self.negative_assertions,
@@ -661,6 +665,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .or_default()
                 .push((requirement, clause_id));
         }
+
+        for (solvable_id, condition, requirement, clause_id) in output.new_conditional_clauses {
+            self.conditional_clauses
+                .entry(solvable_id)
+                .or_default()
+                .push((condition, requirement, clause_id));
+        }
+
         self.negative_assertions
             .append(&mut output.negative_assertions);
 
