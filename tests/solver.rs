@@ -22,9 +22,9 @@ use itertools::Itertools;
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
-    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
-    VersionSetUnionId,
+    Candidates, ConditionalRequirement, Dependencies, DependencyProvider, Interner,
+    KnownDependencies, NameId, Problem, Requirement, SolvableId, Solver, SolverCache, StringId,
+    UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
 };
 use tracing_test::traced_test;
 use version_ranges::Ranges;
@@ -123,9 +123,7 @@ impl Spec {
     pub fn parse_union(
         spec: &str,
     ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
-        spec.split('|')
-            .map(str::trim)
-            .map(|dep| Spec::from_str(dep))
+        spec.split('|').map(str::trim).map(Spec::from_str)
     }
 }
 
@@ -386,7 +384,7 @@ impl DependencyProvider for BundleBoxProvider {
         candidates
             .iter()
             .copied()
-            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) == !inverse)
+            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) != inverse)
             .collect()
     }
 
@@ -486,7 +484,7 @@ impl DependencyProvider for BundleBoxProvider {
         };
 
         let mut result = KnownDependencies {
-            requirements: Vec::with_capacity(deps.dependencies.len()),
+            conditional_requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
         for req in &deps.dependencies {
@@ -516,7 +514,12 @@ impl DependencyProvider for BundleBoxProvider {
                     .into()
             };
 
-            result.requirements.push(requirement);
+            result
+                .conditional_requirements
+                .push(ConditionalRequirement {
+                    requirement,
+                    condition: None,
+                });
         }
 
         for req in &deps.constrains {
@@ -538,7 +541,7 @@ impl DependencyProvider for BundleBoxProvider {
 }
 
 /// Create a string from a [`Transaction`]
-fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) -> String {
+fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
     for solvable in solvables
@@ -590,7 +593,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    let problem = Problem::new().requirements(requirements);
+    let problem = Problem::new().requirements(requirements.into_iter().map(|r| r.into()).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
