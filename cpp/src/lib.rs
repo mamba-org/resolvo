@@ -71,7 +71,7 @@ impl From<Option<VersionSetId>> for FfiOptionVersionSetId {
         match opt {
             Some(v) => Self {
                 is_some: true,
-                value: v.into(),
+                value: v,
             },
             None => Self {
                 is_some: false,
@@ -84,7 +84,7 @@ impl From<Option<VersionSetId>> for FfiOptionVersionSetId {
 impl From<FfiOptionVersionSetId> for Option<VersionSetId> {
     fn from(ffi: FfiOptionVersionSetId) -> Self {
         if ffi.is_some {
-            Some(ffi.value.into())
+            Some(ffi.value)
         } else {
             None
         }
