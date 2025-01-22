@@ -1,0 +1,10 @@
+{"run_id":"1737574135-658533000","line":1475,"new":{"module_name":"solver","snapshot_name":"conditional_requirements-2","metadata":{"source":"tests/solver.rs","assertion_line":1475,"expression":"result"},"snapshot":""},"old":{"module_name":"solver","metadata":{},"snapshot":"b=1\nc=1"}}
+{"run_id":"1737574174-973942000","line":1211,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":1428,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":923,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":1254,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":1306,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":885,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":906,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":943,"new":null,"old":null}
+{"run_id":"1737574174-973942000","line":1376,"new":null,"old":null}

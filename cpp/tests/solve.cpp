@@ -48,16 +48,17 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     /**
      * Allocates a new requirement for a single version set.
      */
-    resolvo::Requirement alloc_requirement(std::string_view package, uint32_t version_start,
-                                           uint32_t version_end) {
+    resolvo::ConditionalRequirement alloc_requirement(std::string_view package,
+                                                      uint32_t version_start,
+                                                      uint32_t version_end) {
         auto id = alloc_version_set(package, version_start, version_end);
-        return resolvo::requirement_single(id);
+        return resolvo::conditional_requirement_single(id);
     }
 
     /**
      * Allocates a new requirement for a version set union.
      */
-    resolvo::Requirement alloc_requirement_union(
+    resolvo::ConditionalRequirement alloc_requirement_union(
         std::initializer_list<std::tuple<std::string_view, uint32_t, uint32_t>> version_sets) {
         std::vector<resolvo::VersionSetId> version_set_union{version_sets.size()};
 
@@ -69,7 +70,7 @@ struct PackageDatabase : public resolvo::DependencyProvider {
 
         auto id = resolvo::VersionSetUnionId{static_cast<uint32_t>(version_set_unions.size())};
         version_set_unions.push_back(std::move(version_set_union));
-        return resolvo::requirement_union(id);
+        return resolvo::conditional_requirement_union(id);
     }
 
     /**
@@ -219,7 +220,8 @@ SCENARIO("Solve") {
     const auto d_1 = db.alloc_candidate("d", 1, {});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::Requirement> requirements = {db.alloc_requirement("a", 1, 3)};
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
+        db.alloc_requirement("a", 1, 3)};
     resolvo::Vector<resolvo::VersionSetId> constraints = {
         db.alloc_version_set("b", 1, 3),
         db.alloc_version_set("c", 1, 3),
@@ -263,7 +265,7 @@ SCENARIO("Solve Union") {
         "f", 1, {{db.alloc_requirement("b", 1, 10)}, {db.alloc_version_set("a", 10, 20)}});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::Requirement> requirements = {
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
         db.alloc_requirement_union({{"c", 1, 10}, {"d", 1, 10}}),
         db.alloc_requirement("e", 1, 10),
         db.alloc_requirement("f", 1, 10),

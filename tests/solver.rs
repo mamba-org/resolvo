@@ -1432,6 +1432,77 @@ fn test_explicit_root_requirements() {
     "###);
 }
 
+// #[test]
+// fn test_conditional_requirements() {
+//     let provider = BundleBoxProvider::from_packages(&[
+//         // Package a has a conditional requirement on c only if b is installed
+//         ("a", 1, vec!["b", "c"]), // Regular dependency
+//         ("a", 2, vec!["b"]),      // Version 2 only requires b
+//         ("b", 1, vec![]),         // Simple package b
+//         ("c", 1, vec![]),         // Simple package c
+//     ]);
+
+//     // First test: Basic dependency resolution
+//     let requirements = provider.requirements(&["a"]);
+//     let mut solver = Solver::new(provider);
+//     let problem = Problem::new().requirements(requirements);
+//     let solved = solver.solve(problem).unwrap();
+//     let result = transaction_to_string(solver.provider(), &solved);
+//     insta::assert_snapshot!(result, @r###"
+//         a=2
+//         b=1
+//         "###);
+
+//     // Now test with conditional requirement
+//     let provider = BundleBoxProvider::from_packages(&[
+//         ("b", 1, vec![]), // Simple package b
+//         ("c", 1, vec![]), // Simple package c
+//     ]);
+
+//     let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
+//     let c_spec = Spec::parse_union("c 1").next().unwrap().unwrap();
+
+//     let b_version_set = provider.intern_version_set(&b_spec);
+//     let c_version_set = provider.intern_version_set(&c_spec);
+
+//     let conditional_req = ConditionalRequirement::new(b_version_set, c_version_set.into());
+//     let requirements = vec![conditional_req];
+
+//     let mut solver = Solver::new(provider);
+//     let problem = Problem::new().requirements(requirements);
+//     let solved = solver.solve(problem).unwrap();
+//     let result = transaction_to_string(solver.provider(), &solved);
+//     insta::assert_snapshot!(result, @r###"
+//         b=1
+//         c=1
+//         "###);
+// }
+
+// #[test]
+// fn test_conditional_requirements_not_met() {
+//     let provider = BundleBoxProvider::from_packages(&[
+//         ("b", 2, vec![]), // Different version of b
+//         ("c", 1, vec![]), // Simple package c
+//     ]);
+
+//     let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap(); // Condition requires b=1
+//     let c_spec = Spec::parse_union("c 1").next().unwrap().unwrap();
+
+//     let b_version_set = provider.intern_version_set(&b_spec);
+//     let c_version_set = provider.intern_version_set(&c_spec);
+
+//     let conditional_req = ConditionalRequirement::new(b_version_set, c_version_set.into());
+//     let requirements = vec![conditional_req];
+
+//     let mut solver = Solver::new(provider);
+//     let problem = Problem::new().requirements(requirements);
+//     let solved = solver.solve(problem).unwrap();
+//     let result = transaction_to_string(solver.provider(), &solved);
+//     // Since b=1 is not available, c should not be installed
+//     insta::assert_snapshot!(result, @r###"
+//         "###);
+// }
+
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
