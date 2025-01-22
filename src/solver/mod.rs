@@ -152,7 +152,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     pub(crate) clauses: Clauses,
     requires_clauses: IndexMap<VariableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
-    conditional_clauses: IndexMap<VariableId, Vec<(VersionSetId, Requirement, ClauseId)>, ahash::RandomState>,
+    conditional_clauses:
+        IndexMap<(VariableId, VersionSetId), Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
@@ -668,9 +669,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         for (solvable_id, condition, requirement, clause_id) in output.new_conditional_clauses {
             self.conditional_clauses
-                .entry(solvable_id)
+                .entry((solvable_id, condition))
                 .or_default()
-                .push((condition, requirement, clause_id));
+                .push((requirement, clause_id));
         }
 
         self.negative_assertions
@@ -780,8 +781,39 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         }
 
         let mut best_decision: Option<PossibleDecision> = None;
-        for (&solvable_id, requirements) in self.requires_clauses.iter() {
-            let is_explicit_requirement = solvable_id == VariableId::root();
+
+        // Chain together the requires_clauses and conditional_clauses iterations
+        let requires_iter = self
+            .requires_clauses
+            .iter()
+            .map(|(&solvable_id, requirements)| {
+                (
+                    solvable_id,
+                    None,
+                    requirements
+                        .iter()
+                        .map(|(r, c)| (*r, *c))
+                        .collect::<Vec<_>>(),
+                )
+            });
+
+        let conditional_iter =
+            self.conditional_clauses
+                .iter()
+                .map(|((solvable_id, condition), clauses)| {
+                    (
+                        *solvable_id,
+                        Some(*condition),
+                        clauses.iter().map(|(r, c)| (*r, *c)).collect::<Vec<_>>(),
+                    )
+                });
+
+        for (solvable_id, condition, requirements) in requires_iter.chain(conditional_iter) {
+            let is_explicit_requirement = match condition {
+                None => solvable_id == VariableId::root(),
+                Some(_) => solvable_id == VariableId::root(),
+            };
+
             if let Some(best_decision) = &best_decision {
                 // If we already have an explicit requirement, there is no need to evaluate
                 // non-explicit requirements.
@@ -795,13 +827,28 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 continue;
             }
 
-            for (deps, clause_id) in requirements.iter() {
+            // For conditional clauses, check that at least one conditional variable is true
+            if let Some(condition) = condition {
+                let condition_requirement: Requirement = condition.into();
+                let conditional_candidates =
+                    &self.requirement_to_sorted_candidates[&condition_requirement];
+
+                if !conditional_candidates.iter().any(|candidates| {
+                    candidates.iter().any(|&candidate| {
+                        self.decision_tracker.assigned_value(candidate) == Some(true)
+                    })
+                }) {
+                    continue;
+                }
+            }
+
+            for (requirement, clause_id) in requirements {
                 let mut candidate = ControlFlow::Break(());
 
                 // Get the candidates for the individual version sets.
-                let version_set_candidates = &self.requirement_to_sorted_candidates[deps];
+                let version_set_candidates = &self.requirement_to_sorted_candidates[&requirement];
 
-                let version_sets = deps.version_sets(self.provider());
+                let version_sets = requirement.version_sets(self.provider());
 
                 // Iterate over all version sets in the requirement and find the first version
                 // set that we can act on, or if a single candidate (from any version set) makes
@@ -887,7 +934,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         candidate_count,
                         package_activity,
                     ))) => {
-                        let decision = (candidate, solvable_id, *clause_id);
+                        let decision = (candidate, solvable_id, clause_id);
                         best_decision = Some(match &best_decision {
                             None => PossibleDecision {
                                 is_explicit_requirement,
@@ -925,154 +972,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     }
                 }
             }
-        }
-
-        for (&solvable_id, conditional_clauses) in self.conditional_clauses.iter() {
-            let is_explicit_requirement = solvable_id == VariableId::root();
-            if let Some(best_decision) = &best_decision {
-                // If we already have an explicit requirement, there is no need to evaluate
-                // non-explicit requirements.
-                if best_decision.is_explicit_requirement && !is_explicit_requirement {
-                    continue;
-                }
-            }
-
-            // Consider only clauses in which we have decided to install the solvable
-            if self.decision_tracker.assigned_value(solvable_id) != Some(true) {
-                continue;
-            }
-
-            for (condition, requirement, clause_id) in conditional_clauses.iter() {
-                let mut candidate = ControlFlow::Break(());
-
-                // Get the candidates for the individual version sets.
-                let version_set_candidates = &self.requirement_to_sorted_candidates[condition];
-
-                let version_sets = condition.version_sets(self.provider());
-
-                // Iterate over all version sets in the requirement and find the first version
-                // set that we can act on, or if a single candidate (from any version set) makes
-                // the clause true.
-                //
-                // NOTE: We zip the version sets from the requirements and the variables that we
-                // previously cached. This assumes that the order of the version sets is the
-                // same in both collections.
-                for (version_set, candidates) in version_sets.zip(version_set_candidates) {
-                    // Find the first candidate that is not yet assigned a value or find the first
-                    // value that makes this clause true.
-                    candidate = candidates.iter().try_fold(
-                        match candidate {
-                            ControlFlow::Continue(x) => x,
-                            _ => None,
-                        },
-                        |first_candidate, &candidate| {
-                            let assigned_value = self.decision_tracker.assigned_value(candidate);
-                            ControlFlow::Continue(match assigned_value {
-                                Some(true) => {
-                                    // This candidate has already been assigned so the clause is
-                                    // already true. Skip it.
-                                    return ControlFlow::Break(());
-                                }
-                                Some(false) => {
-                                    // This candidate has already been assigned false, continue the
-                                    // search.
-                                    first_candidate
-                                }
-                                None => match first_candidate {
-                                    Some((
-                                        first_candidate,
-                                        candidate_version_set,
-                                        mut candidate_count,
-                                        package_activity,
-                                    )) => {
-                                        // We found a candidate that has not been assigned yet, but
-                                        // it is not the first candidate.
-                                        if candidate_version_set == version_set {
-                                            // Increment the candidate count if this is a candidate
-                                            // in the same version set.
-                                            candidate_count += 1u32;
-                                        }
-                                        Some((
-                                            first_candidate,
-                                            candidate_version_set,
-                                            candidate_count,
-                                            package_activity,
-                                        ))
-                                    }
-                                    None => {
-                                        // We found the first candidate that has not been assigned
-                                        // yet.
-                                        let package_activity = self.name_activity[self
-                                            .provider()
-                                            .version_set_name(version_set)
-                                            .to_usize()];
-                                        Some((candidate, version_set, 1, package_activity))
-                                    }
-                                },
-                            })
-                        },
-                    );
-
-                    // Stop searching if we found a candidate that makes the clause true.
-                    if candidate.is_break() {
-                        break;
-                    }
-                }
-
-                match candidate {
-                    ControlFlow::Break(_) => {
-                        // A candidate has been assigned true which means the clause is already
-                        // true, and we can skip it.
-                        continue;
-                    }
-                    ControlFlow::Continue(None) => {
-                        unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well.")
-                    }
-                    ControlFlow::Continue(Some((
-                        candidate,
-                        _version_set_id,
-                        candidate_count,
-                        package_activity,
-                    ))) => {
-                        let decision = (candidate, solvable_id, *clause_id);
-                        best_decision = Some(match &best_decision {
-                            None => PossibleDecision {
-                                is_explicit_requirement,
-                                package_activity,
-                                candidate_count,
-                                decision,
-                            },
-                            Some(best_decision) => {
-                                // Prefer decisions on explicit requirements over non-explicit
-                                // requirements. This optimizes direct dependencies over transitive
-                                // dependencies.
-                                if best_decision.is_explicit_requirement && !is_explicit_requirement
-                                {
-                                    continue;
-                                }
-
-                                // Prefer decisions with a higher package activity score to root out
-                                // conflicts faster.
-                                if best_decision.package_activity >= package_activity {
-                                    continue;
-                                }
-
-                                if best_decision.candidate_count <= candidate_count {
-                                    continue;
-                                }
-
-                                PossibleDecision {
-                                    is_explicit_requirement,
-                                    package_activity,
-                                    candidate_count,
-                                    decision,
-                                }
-                            }
-                        })
-                    }
-                }
-            }
-
         }
 
         if let Some(PossibleDecision {
@@ -2018,19 +1917,18 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 }
 
                 if let Some((condition, condition_candidates)) = condition {
-                    let condition_version_set_variables = requirement_to_sorted_candidates
-                        .insert(
-                            condition.into(),
-                            condition_candidates
-                                .iter()
-                                .map(|&candidates| {
-                                    candidates
-                                        .iter()
-                                        .map(|&var| variable_map.intern_solvable(var))
-                                        .collect()
-                                })
-                                .collect(),
-                        );
+                    let condition_version_set_variables = requirement_to_sorted_candidates.insert(
+                        condition.into(),
+                        condition_candidates
+                            .iter()
+                            .map(|&candidates| {
+                                candidates
+                                    .iter()
+                                    .map(|&var| variable_map.intern_solvable(var))
+                                    .collect()
+                            })
+                            .collect(),
+                    );
 
                     // Add a condition clause
                     let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
@@ -2041,7 +1939,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         version_set_variables.iter().flatten().copied(),
                         condition_version_set_variables.iter().flatten().copied(),
                     );
-                    
+
                     // Add the conditional clause
                     let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
 
@@ -2052,9 +1950,12 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         output.clauses_to_watch.push(clause_id);
                     }
 
-                    output
-                        .new_conditional_clauses
-                        .push((variable, condition, requirement, clause_id));
+                    output.new_conditional_clauses.push((
+                        variable,
+                        condition,
+                        requirement,
+                        clause_id,
+                    ));
 
                     if conflict {
                         output.conflicting_clauses.push(clause_id);
@@ -2062,7 +1963,6 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         // Add assertions for unit clauses (i.e. those with no matching candidates)
                         output.negative_assertions.push((variable, clause_id));
                     }
-
                 } else {
                     let (watched_literals, conflict, kind) = WatchedLiterals::requires(
                         variable,
