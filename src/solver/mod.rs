@@ -161,6 +161,10 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     requirement_to_sorted_candidates:
         FrozenMap<Requirement, RequirementCandidateVariables, ahash::RandomState>,
 
+    /// A mapping from version sets to the variables that represent the
+    /// candidates.
+    version_set_to_variables: FrozenMap<VersionSetId, Vec<Vec<VariableId>>, ahash::RandomState>,
+
     pub(crate) variable_map: VariableMap,
 
     negative_assertions: Vec<(VariableId, ClauseId)>,
@@ -206,6 +210,7 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             requires_clauses: Default::default(),
             conditional_clauses: Default::default(),
             requirement_to_sorted_candidates: FrozenMap::default(),
+            version_set_to_variables: FrozenMap::default(),
             watches: WatchMap::new(),
             negative_assertions: Default::default(),
             learnt_clauses: Arena::new(),
@@ -218,7 +223,6 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             clauses_added_for_solvable: Default::default(),
             forbidden_clauses_added: Default::default(),
             name_activity: Default::default(),
-
             activity_add: 1.0,
             activity_decay: 0.95,
         }
@@ -287,6 +291,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             requires_clauses: self.requires_clauses,
             conditional_clauses: self.conditional_clauses,
             requirement_to_sorted_candidates: self.requirement_to_sorted_candidates,
+            version_set_to_variables: self.version_set_to_variables,
             watches: self.watches,
             negative_assertions: self.negative_assertions,
             learnt_clauses: self.learnt_clauses,
@@ -484,6 +489,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     &mut self.clauses_added_for_package,
                     &mut self.forbidden_clauses_added,
                     &mut self.requirement_to_sorted_candidates,
+                    &self.version_set_to_variables,
                     &self.root_requirements,
                     &self.root_constraints,
                 ))?;
@@ -600,6 +606,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 &mut self.clauses_added_for_package,
                 &mut self.forbidden_clauses_added,
                 &mut self.requirement_to_sorted_candidates,
+                &self.version_set_to_variables,
                 &self.root_requirements,
                 &self.root_constraints,
             ))?;
@@ -1200,6 +1207,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     clause,
                     &self.learnt_clauses,
                     &self.requirement_to_sorted_candidates,
+                    &self.version_set_to_variables,
                     self.decision_tracker.map(),
                     watch_index,
                 ) {
@@ -1359,6 +1367,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.clauses.kinds[clause_id.to_usize()].visit_literals(
             &self.learnt_clauses,
             &self.requirement_to_sorted_candidates,
+            &self.version_set_to_variables,
             |literal| {
                 involved.insert(literal.variable());
             },
@@ -1397,6 +1406,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             self.clauses.kinds[why.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.requirement_to_sorted_candidates,
+                &self.version_set_to_variables,
                 |literal| {
                     if literal.eval(self.decision_tracker.map()) == Some(true) {
                         assert_eq!(literal.variable(), decision.variable);
@@ -1444,6 +1454,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clause_kinds[clause_id.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.requirement_to_sorted_candidates,
+                &self.version_set_to_variables,
                 |literal| {
                     if !first_iteration && literal.variable() == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the
@@ -1578,6 +1589,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         RequirementCandidateVariables,
         ahash::RandomState,
     >,
+    version_set_to_variables: &FrozenMap<VersionSetId, Vec<Vec<VariableId>>, ahash::RandomState>,
     root_requirements: &[ConditionalRequirement],
     root_constraints: &[VersionSetId],
 ) -> Result<AddClauseOutput, Box<dyn Any>> {
@@ -1766,18 +1778,15 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 .await?;
 
                             // condition is `VersionSetId` right now but it will become a `Requirement`
-                            // in the future
+                            // in the next versions of resolvo
                             if let Some(condition) = conditional_requirement.condition {
-                                let condition_candidates = vec![
-                                    cache
-                                        .get_or_cache_sorted_candidates_for_version_set(condition)
-                                        .await?,
-                                ];
+                                let condition_candidates =
+                                    cache.get_or_cache_matching_candidates(condition).await?;
 
                                 Ok(TaskResult::SortedCandidates {
                                     solvable_id,
                                     requirement: conditional_requirement.requirement,
-                                    condition: Some((condition, condition_candidates)),
+                                    condition: Some((condition, vec![condition_candidates])),
                                     candidates,
                                 })
                             } else {
@@ -1934,15 +1943,18 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                             .display(cache.provider()),
                     );
 
-                    let condition_version_set_variables: Vec<_> = condition_candidates
+                    let condition_version_set_variables = version_set_to_variables.insert(
+                        condition,
+                        condition_candidates
                             .iter()
                             .map(|&candidates| {
                                 candidates
                                     .iter()
                                     .map(|&var| variable_map.intern_solvable(var))
-                                .collect::<Vec<_>>()
+                                    .collect()
                             })
-                        .collect();
+                            .collect(),
+                    );
 
                     // Add a condition clause
                     let (watched_literals, conflict, kind) = WatchedLiterals::conditional(

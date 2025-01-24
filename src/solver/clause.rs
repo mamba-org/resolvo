@@ -303,6 +303,11 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        version_set_to_variables: &FrozenMap<
+            VersionSetId,
+            Vec<Vec<VariableId>>,
+            ahash::RandomState,
+        >,
         init: C,
         mut visit: F,
     ) -> ControlFlow<B, C>
@@ -336,7 +341,7 @@ impl Clause {
             Clause::Conditional(package_id, condition, requirement) => {
                 iter::once(package_id.negative())
                     .chain(
-                        requirements_to_sorted_candidates[&condition.into()]
+                        version_set_to_variables[&condition]
                             .iter()
                             .flatten()
                             .map(|&s| s.negative()),
@@ -363,11 +368,17 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        version_set_to_variables: &FrozenMap<
+            VersionSetId,
+            Vec<Vec<VariableId>>,
+            ahash::RandomState,
+        >,
         mut visit: impl FnMut(Literal),
     ) {
         self.try_fold_literals(
             learnt_clauses,
             requirements_to_sorted_candidates,
+            version_set_to_variables,
             (),
             |_, lit| {
                 visit(lit);
@@ -543,6 +554,11 @@ impl WatchedLiterals {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        version_set_to_variables: &FrozenMap<
+            VersionSetId,
+            Vec<Vec<VariableId>>,
+            ahash::RandomState,
+        >,
         decision_map: &DecisionMap,
         for_watch_index: usize,
     ) -> Option<Literal> {
@@ -559,6 +575,7 @@ impl WatchedLiterals {
                 let next = clause.try_fold_literals(
                     learnt_clauses,
                     requirement_to_sorted_candidates,
+                    version_set_to_variables,
                     (),
                     |_, lit| {
                         // The next unwatched variable (if available), is a variable that is:
