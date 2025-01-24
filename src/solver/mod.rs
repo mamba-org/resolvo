@@ -1926,12 +1926,12 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     );
                 }
 
-
                 if let Some((condition, condition_candidates)) = condition {
                     tracing::trace!(
                         "Adding conditional clauses for {} with condition {}",
                         requirement.display(cache.provider()),
-                        std::convert::Into::<Requirement>::into(condition).display(cache.provider()),
+                        std::convert::Into::<Requirement>::into(condition)
+                            .display(cache.provider()),
                     );
 
                     let condition_version_set_variables = requirement_to_sorted_candidates.insert(

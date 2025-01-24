@@ -221,7 +221,13 @@ impl DependencySnapshot {
                             }
 
                             for &req in deps.requirements.iter() {
-                                let (_, requirement) = req.into_condition_and_requirement(); // TODO: condition
+                                let (condition, requirement) = req.into_condition_and_requirement();
+
+                                if let Some(condition) = condition {
+                                    if seen.insert(Element::VersionSet(condition)) {
+                                        queue.push_back(Element::VersionSet(condition));
+                                    }
+                                }
 
                                 match requirement {
                                     Requirement::Single(version_set) => {

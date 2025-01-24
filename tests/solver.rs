@@ -514,12 +514,10 @@ impl DependencyProvider for BundleBoxProvider {
                     .into()
             };
 
-            result
-                .requirements
-                .push(ConditionalRequirement {
-                    requirement,
-                    condition: None,
-                });
+            result.requirements.push(ConditionalRequirement {
+                requirement,
+                condition: None,
+            });
         }
 
         for req in &deps.constrains {
