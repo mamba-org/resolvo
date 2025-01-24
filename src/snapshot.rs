@@ -220,7 +220,7 @@ impl DependencySnapshot {
                                 }
                             }
 
-                            for &req in deps.conditional_requirements.iter() {
+                            for &req in deps.requirements.iter() {
                                 let (_, requirement) = req.into_condition_and_requirement(); // TODO: condition
 
                                 match requirement {

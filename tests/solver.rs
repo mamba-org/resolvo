@@ -484,7 +484,7 @@ impl DependencyProvider for BundleBoxProvider {
         };
 
         let mut result = KnownDependencies {
-            conditional_requirements: Vec::with_capacity(deps.dependencies.len()),
+            requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
         for req in &deps.dependencies {
@@ -515,7 +515,7 @@ impl DependencyProvider for BundleBoxProvider {
             };
 
             result
-                .conditional_requirements
+                .requirements
                 .push(ConditionalRequirement {
                     requirement,
                     condition: None,

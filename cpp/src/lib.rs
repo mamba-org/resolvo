@@ -251,7 +251,7 @@ pub struct Dependencies {
     /// A pointer to the first element of a list of requirements. Requirements
     /// defines which packages should be installed alongside the depending
     /// package and the constraints applied to the package.
-    pub conditional_requirements: Vector<ConditionalRequirement>,
+    pub requirements: Vector<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set
@@ -548,8 +548,8 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         };
 
         resolvo::Dependencies::Known(KnownDependencies {
-            conditional_requirements: dependencies
-                .conditional_requirements
+            requirements: dependencies
+                .requirements
                 .into_iter()
                 .map(Into::into)
                 .collect(),

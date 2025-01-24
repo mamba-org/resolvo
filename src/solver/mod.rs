@@ -1643,7 +1643,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 ready(Ok(TaskResult::Dependencies {
                     solvable_id: solvable_or_root,
                     dependencies: Dependencies::Known(KnownDependencies {
-                        conditional_requirements: root_requirements.to_vec(),
+                        requirements: root_requirements.to_vec(),
                         constrains: root_constraints.to_vec(),
                     }),
                 }))
@@ -1676,7 +1676,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 };
 
                 let (conditional_requirements, constrains) = match dependencies {
-                    Dependencies::Known(deps) => (deps.conditional_requirements, deps.constrains),
+                    Dependencies::Known(deps) => (deps.requirements, deps.constrains),
                     Dependencies::Unknown(reason) => {
                         // There is no information about the solvable's dependencies, so we add
                         // an exclusion clause for it
@@ -1926,12 +1926,12 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     );
                 }
 
+
                 if let Some((condition, condition_candidates)) = condition {
                     tracing::trace!(
                         "Adding conditional clauses for {} with condition {}",
                         requirement.display(cache.provider()),
-                        std::convert::Into::<Requirement>::into(condition)
-                            .display(cache.provider()),
+                        std::convert::Into::<Requirement>::into(condition).display(cache.provider()),
                     );
 
                     let condition_version_set_variables = requirement_to_sorted_candidates.insert(
