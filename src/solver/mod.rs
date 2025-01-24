@@ -1934,18 +1934,15 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                             .display(cache.provider()),
                     );
 
-                    let condition_version_set_variables = requirement_to_sorted_candidates.insert(
-                        condition.into(),
-                        condition_candidates
+                    let condition_version_set_variables: Vec<_> = condition_candidates
                             .iter()
                             .map(|&candidates| {
                                 candidates
                                     .iter()
                                     .map(|&var| variable_map.intern_solvable(var))
-                                    .collect()
+                                .collect::<Vec<_>>()
                             })
-                            .collect(),
-                    );
+                        .collect();
 
                     // Add a condition clause
                     let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
