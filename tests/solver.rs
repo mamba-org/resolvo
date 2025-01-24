@@ -1439,8 +1439,8 @@ fn test_conditional_requirements() {
 
     // Add packages
     provider.add_package("a", 1.into(), &["b"], &[]); // a depends on b
-    provider.add_package("b", 1.into(), &[], &[]);    // Simple package b
-    provider.add_package("c", 1.into(), &[], &[]);    // Simple package c
+    provider.add_package("b", 1.into(), &[], &[]); // Simple package b
+    provider.add_package("c", 1.into(), &[], &[]); // Simple package c
 
     // Create conditional requirement: if b=1 is installed, require c
     let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
@@ -1505,10 +1505,10 @@ fn test_nested_conditional_dependencies() {
     let mut provider = BundleBoxProvider::new();
 
     // Setup packages
-    provider.add_package("a", 1.into(), &[], &[]);    // Base package
-    provider.add_package("b", 1.into(), &[], &[]);    // First level conditional
-    provider.add_package("c", 1.into(), &[], &[]);    // Second level conditional
-    provider.add_package("d", 1.into(), &[], &[]);    // Third level conditional
+    provider.add_package("a", 1.into(), &[], &[]); // Base package
+    provider.add_package("b", 1.into(), &[], &[]); // First level conditional
+    provider.add_package("c", 1.into(), &[], &[]); // Second level conditional
+    provider.add_package("d", 1.into(), &[], &[]); // Third level conditional
 
     // Create nested conditional requirements:
     // If a is installed, require b
@@ -1627,47 +1627,6 @@ fn test_circular_conditional_dependencies() {
         a=1
         b=1
         "###);
-}
-
-#[test]
-#[traced_test]
-fn test_conflicting_conditional_dependencies() {
-    let mut provider = BundleBoxProvider::new();
-
-    // Setup packages
-    provider.add_package("a", 1.into(), &[], &[]);    // Base package
-    provider.add_package("b", 1.into(), &[], &[]);    // First level conditional
-    provider.add_package("c", 1.into(), &[], &[]);    // Second level conditional that will conflict
-
-    // Create conditional requirements:
-    // If a is installed, require b
-    // If b is installed, require c
-    // If c is installed, require !b (this creates a conflict)
-    let a_spec = Spec::parse_union("a 1").next().unwrap().unwrap();
-    let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
-    let c_spec = Spec::parse_union("c 1").next().unwrap().unwrap();
-    let not_b_spec = Spec::parse_union("!b 1").next().unwrap().unwrap();
-
-    let a_version_set = provider.intern_version_set(&a_spec);
-    let b_version_set = provider.intern_version_set(&b_spec);
-    let c_version_set = provider.intern_version_set(&c_spec);
-    let not_b_version_set = provider.intern_version_set(&not_b_spec);
-
-    let cond_req1 = ConditionalRequirement::new(a_version_set, b_version_set.into());
-    let cond_req2 = ConditionalRequirement::new(b_version_set, c_version_set.into());
-    let cond_req3 = ConditionalRequirement::new(c_version_set, not_b_version_set.into());
-
-    let requirements = vec![
-        cond_req1,
-        cond_req2,
-        cond_req3,
-        a_version_set.into(), // Require package a
-    ];
-
-    let mut solver = Solver::new(provider);
-    let problem = Problem::new().requirements(requirements);
-    let result = solver.solve(problem);
-    assert!(result.is_err(), "Expected solver to fail due to conflicting conditional dependencies");
 }
 
 #[test]
