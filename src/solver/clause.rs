@@ -268,7 +268,7 @@ impl Clause {
                     // No valid requirement candidate, use first condition candidate and mark conflict
                     (
                         Clause::Conditional(parent_id, condition, requirement),
-                        Some([parent_id.negative(), condition_first_candidate.positive()]),
+                        Some([parent_id.negative(), condition_first_candidate.negative()]),
                         true,
                     )
                 }
