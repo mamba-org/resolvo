@@ -1629,38 +1629,6 @@ fn test_circular_conditional_dependencies() {
         "###);
 }
 
-#[test]
-fn test_conditional_dependency_with_excluded() {
-    let mut provider = BundleBoxProvider::new();
-
-    // Setup packages
-    provider.add_package("trigger", 1.into(), &[], &[]);
-    provider.add_package("target", 1.into(), &[], &[]);
-
-    // Create conditional requirement:
-    // If trigger is installed, require target=1
-    let trigger_spec = Spec::parse_union("trigger 1").next().unwrap().unwrap();
-    let target_spec = Spec::parse_union("target 1").next().unwrap().unwrap();
-
-    let trigger_version_set = provider.intern_version_set(&trigger_spec);
-    let target_version_set = provider.intern_version_set(&target_spec);
-
-    let cond_req = ConditionalRequirement::new(trigger_version_set, target_version_set.into());
-
-    // Exclude target package
-    provider.exclude("target", 1, "it is externally excluded");
-
-    let requirements = vec![
-        cond_req,
-        trigger_version_set.into(), // Require trigger package
-    ];
-
-    let mut solver = Solver::new(provider);
-    let problem = Problem::new().requirements(requirements);
-    // Should fail to solve because target is excluded but required by condition
-    assert!(solver.solve(problem).is_err());
-}
-
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());

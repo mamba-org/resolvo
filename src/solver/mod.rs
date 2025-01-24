@@ -1706,10 +1706,20 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 {
                     let dependency_name = cache.provider().version_set_name(version_set_id);
                     if clauses_added_for_package.insert(dependency_name) {
-                        tracing::trace!(
-                            "┝━ Adding clauses for package '{}'",
-                            cache.provider().display_name(dependency_name),
-                        );
+                        if let Some(condition) = condition {
+                            let condition_name = cache.provider().version_set_name(condition);
+                            tracing::trace!(
+                                "┝━ Adding conditional clauses for package '{}' with condition '{}' and version set '{}'",
+                                cache.provider().display_name(dependency_name),
+                                cache.provider().display_name(condition_name),
+                                cache.provider().display_version_set(condition),
+                            );
+                        } else {
+                            tracing::trace!(
+                                "┝━ Adding clauses for package '{}'",
+                                cache.provider().display_name(dependency_name),
+                            );
+                        }
 
                         pending_futures.push(
                             async move {
@@ -1917,6 +1927,13 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 }
 
                 if let Some((condition, condition_candidates)) = condition {
+                    tracing::trace!(
+                        "Adding conditional clauses for {} with condition {}",
+                        requirement.display(cache.provider()),
+                        std::convert::Into::<Requirement>::into(condition)
+                            .display(cache.provider()),
+                    );
+
                     let condition_version_set_variables = requirement_to_sorted_candidates.insert(
                         condition.into(),
                         condition_candidates
