@@ -1155,40 +1155,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.decide_assertions(level)?;
         self.decide_learned(level)?;
 
-        // Check for conflicts in conditional clauses
-        for ((solvable_id, condition), clauses) in &self.conditional_clauses {
-            // Only check clauses where the parent is true
-            if self.decision_tracker.assigned_value(*solvable_id) != Some(true) {
-                continue;
-            }
-
-            // Check if the condition is true
-            let condition_requirement: Requirement = (*condition).into();
-            let conditional_candidates = &self.requirement_to_sorted_candidates[&condition_requirement];
-            let condition_is_true = conditional_candidates.iter().any(|candidates| {
-                candidates.iter().any(|&candidate| {
-                    self.decision_tracker.assigned_value(candidate) == Some(true)
-                })
-            });
-
-            if condition_is_true {
-                // For each clause, check if all requirement candidates are false
-                for (requirement, clause_id) in clauses {
-                    let requirement_candidates = &self.requirement_to_sorted_candidates[requirement];
-                    let all_candidates_false = requirement_candidates.iter().all(|candidates| {
-                        candidates.iter().all(|&candidate| {
-                            self.decision_tracker.assigned_value(candidate) == Some(false)
-                        })
-                    });
-
-                    if all_candidates_false {
-                        // This is a conflict - we have a true condition but can't satisfy the requirement
-                        return Err(PropagationError::Conflict(*solvable_id, true, *clause_id));
-                    }
-                }
-            }
-        }
-
         // For each decision that has not been propagated yet, we propagate the
         // decision.
         //

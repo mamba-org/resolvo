@@ -265,12 +265,10 @@ impl Clause {
                         false,
                     )
                 } else {
-                    // No valid requirement candidate and condition is true
-                    // This is an immediate conflict - we can't satisfy the requirement
-                    // We need to watch the condition candidate to detect when it becomes true
+                    // No valid requirement candidate, use first condition candidate and mark conflict
                     (
                         Clause::Conditional(parent_id, condition, requirement),
-                        Some([parent_id.negative(), condition_first_candidate.negative()]),
+                        Some([parent_id.negative(), condition_first_candidate.positive()]),
                         true,
                     )
                 }
@@ -286,7 +284,7 @@ impl Clause {
                         false,
                     )
                 } else {
-                    // All conditions false, no conflict
+                    // All conditions false
                     (
                         Clause::Conditional(parent_id, condition, requirement),
                         None,
