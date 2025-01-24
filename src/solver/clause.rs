@@ -243,55 +243,51 @@ impl Clause {
         condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
+        let mut condition_candidates = condition_candidates.into_iter();
+        let mut requirement_candidates = requirement_candidates.into_iter();
 
-        let mut condition_candidates = condition_candidates.into_iter().peekable();
-        let condition_first_candidate = condition_candidates
-            .peek()
-            .copied()
-            .expect("no condition candidates");
-        let mut requirement_candidates = requirement_candidates.into_iter().peekable();
+        // Check if we have any condition candidates
+        let Some(first_condition) = condition_candidates.next() else {
+            // No conditions means this is just an assertion
+            return (
+                Clause::Conditional(parent_id, condition, requirement),
+                None,
+                false,
+            );
+        };
 
-        match condition_candidates
-            .find(|&condition_id| decision_tracker.assigned_value(condition_id) == Some(true))
-        {
-            Some(_) => {
-                // Condition is true, find first requirement candidate not set to false
-                if let Some(req_candidate) = requirement_candidates
-                    .find(|&req_id| decision_tracker.assigned_value(req_id) != Some(false))
-                {
-                    (
-                        Clause::Conditional(parent_id, condition, requirement),
-                        Some([parent_id.negative(), req_candidate.positive()]),
-                        false,
-                    )
-                } else {
-                    // No valid requirement candidate, use first condition candidate and mark conflict
-                    (
-                        Clause::Conditional(parent_id, condition, requirement),
-                        Some([parent_id.negative(), condition_first_candidate.negative()]),
-                        true,
-                    )
-                }
-            }
-            None => {
-                // No true condition, look for unset condition
-                if let Some(unset_condition) = condition_candidates.find(|&condition_id| {
-                    decision_tracker.assigned_value(condition_id) != Some(false)
-                }) {
-                    (
-                        Clause::Conditional(parent_id, condition, requirement),
-                        Some([parent_id.negative(), unset_condition.negative()]),
-                        false,
-                    )
-                } else {
-                    // All conditions false
-                    (
-                        Clause::Conditional(parent_id, condition, requirement),
-                        None,
-                        false,
-                    )
-                }
-            }
+        // Try to find a condition candidate that is undecided or true
+        let condition_literal = std::iter::once(first_condition)
+            .chain(condition_candidates)
+            .find(|&id| {
+                let value = decision_tracker.assigned_value(id);
+                value.is_none() || value == Some(true)
+            });
+
+        // Try to find a requirement candidate that is undecided or true
+        let requirement_literal = requirement_candidates.find(|&id| {
+            let value = decision_tracker.assigned_value(id);
+            value.is_none() || value == Some(true)
+        });
+
+        match (condition_literal, requirement_literal) {
+            // Found valid literals - use them
+            (Some(cond), _) => (
+                Clause::Conditional(parent_id, condition, requirement),
+                Some([parent_id.negative(), cond.negative()]),
+                false,
+            ),
+            (None, Some(req)) => (
+                Clause::Conditional(parent_id, condition, requirement),
+                Some([parent_id.negative(), req.positive()]),
+                false,
+            ),
+            // No valid literals found - conflict case
+            (None, None) => (
+                Clause::Conditional(parent_id, condition, requirement),
+                Some([parent_id.negative(), first_condition.negative()]),
+                true,
+            ),
         }
     }
 
