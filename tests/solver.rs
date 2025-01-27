@@ -217,7 +217,10 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>)>>(&self, requirements: &[&str]) -> Vec<R> {
+    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>)>>(
+        &self,
+        requirements: &[&str],
+    ) -> Vec<R> {
         requirements
             .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
@@ -1512,8 +1515,8 @@ fn test_conditional_requirements_not_met() {
 
     // Create conditional requirement: if b=1 is installed, require c
     let requirements = provider.requirements(&[
-        "a",            // Require package a
-        "c 1; if b 1"  // If b=1 is installed, require c (note the exact version)
+        "a",           // Require package a
+        "c 1; if b 1", // If b=1 is installed, require c (note the exact version)
     ]);
 
     let mut solver = Solver::new(provider);
@@ -1539,10 +1542,10 @@ fn test_nested_conditional_dependencies() {
 
     // Create nested conditional requirements using the parser
     let requirements = provider.requirements(&[
-        "a",                // Require package a
-        "b 1; if a 1",     // If a is installed, require b
-        "c 1; if b 1",     // If b is installed, require c
-        "d 1; if c 1"      // If c is installed, require d
+        "a",           // Require package a
+        "b 1; if a 1", // If a is installed, require b
+        "c 1; if b 1", // If b is installed, require c
+        "d 1; if c 1", // If c is installed, require d
     ]);
 
     let mut solver = Solver::new(provider);
@@ -1570,10 +1573,10 @@ fn test_multiple_conditions_same_package() {
 
     // Create multiple conditions that all require the same package using the parser
     let requirements = provider.requirements(&[
-        "b",                    // Only require package b
-        "target 1; if a 1",    // If a is installed, require target
-        "target 1; if b 1",    // If b is installed, require target
-        "target 1; if c 1"     // If c is installed, require target
+        "b",                // Only require package b
+        "target 1; if a 1", // If a is installed, require target
+        "target 1; if b 1", // If b is installed, require target
+        "target 1; if c 1", // If c is installed, require target
     ]);
 
     let mut solver = Solver::new(provider);
@@ -1597,9 +1600,9 @@ fn test_circular_conditional_dependencies() {
 
     // Create circular conditional dependencies using the parser
     let requirements = provider.requirements(&[
-        "a",                // Require package a
-        "b 1; if a 1",     // If a is installed, require b
-        "a 1; if b 1"      // If b is installed, require a
+        "a",           // Require package a
+        "b 1; if a 1", // If a is installed, require b
+        "a 1; if b 1", // If b is installed, require a
     ]);
 
     let mut solver = Solver::new(provider);

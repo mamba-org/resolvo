@@ -814,7 +814,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         clauses.iter().map(|(r, c)| (*r, *c)).collect::<Vec<_>>(),
                     )
                 });
-        
+
         for (solvable_id, condition, requirements) in requires_iter.chain(conditional_iter) {
             let is_explicit_requirement = solvable_id == VariableId::root();
 
@@ -835,7 +835,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             if let Some(condition) = condition {
                 tracing::trace!("condition o kir: {:?}", condition);
                 let condition_requirement: Requirement = condition.into();
-                let conditional_candidates = match self.requirement_to_sorted_candidates.get(&condition_requirement) {
+                let conditional_candidates = match self
+                    .requirement_to_sorted_candidates
+                    .get(&condition_requirement)
+                {
                     Some(candidates) => candidates,
                     None => continue,
                 };
