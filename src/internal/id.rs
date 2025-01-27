@@ -46,6 +46,12 @@ impl ArenaId for StringId {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct VersionSetId(pub u32);
 
+impl From<(VersionSetId, Option<VersionSetId>)> for VersionSetId {
+    fn from((id, _): (VersionSetId, Option<VersionSetId>)) -> Self {
+        id
+    }
+}
+
 impl ArenaId for VersionSetId {
     fn from_usize(x: usize) -> Self {
         Self(x as u32)

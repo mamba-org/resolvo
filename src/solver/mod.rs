@@ -814,12 +814,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         clauses.iter().map(|(r, c)| (*r, *c)).collect::<Vec<_>>(),
                     )
                 });
-
+        
         for (solvable_id, condition, requirements) in requires_iter.chain(conditional_iter) {
-            let is_explicit_requirement = match condition {
-                None => solvable_id == VariableId::root(),
-                Some(_) => solvable_id == VariableId::root(),
-            };
+            let is_explicit_requirement = solvable_id == VariableId::root();
 
             if let Some(best_decision) = &best_decision {
                 // If we already have an explicit requirement, there is no need to evaluate
@@ -836,15 +833,24 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             // For conditional clauses, check that at least one conditional variable is true
             if let Some(condition) = condition {
+                tracing::trace!("condition o kir: {:?}", condition);
                 let condition_requirement: Requirement = condition.into();
-                let conditional_candidates =
-                    &self.requirement_to_sorted_candidates[&condition_requirement];
+                let conditional_candidates = match self.requirement_to_sorted_candidates.get(&condition_requirement) {
+                    Some(candidates) => candidates,
+                    None => continue,
+                };
 
-                if !conditional_candidates.iter().any(|candidates| {
+                // Check if any candidate that matches the condition's version set is installed
+                let condition_met = conditional_candidates.iter().any(|candidates| {
                     candidates.iter().any(|&candidate| {
+                        // Only consider the condition met if a candidate that exactly matches
+                        // the condition's version set is installed
                         self.decision_tracker.assigned_value(candidate) == Some(true)
                     })
-                }) {
+                });
+
+                // If the condition is not met, skip this requirement entirely
+                if !condition_met {
                     continue;
                 }
             }
@@ -1936,13 +1942,6 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 }
 
                 if let Some((condition, condition_candidates)) = condition {
-                    tracing::trace!(
-                        "Adding conditional clauses for {} with condition {}",
-                        requirement.display(cache.provider()),
-                        std::convert::Into::<Requirement>::into(condition)
-                            .display(cache.provider()),
-                    );
-
                     let condition_version_set_variables = version_set_to_variables.insert(
                         condition,
                         condition_candidates

@@ -71,6 +71,15 @@ impl From<VersionSetUnionId> for ConditionalRequirement {
     }
 }
 
+impl From<(VersionSetId, Option<VersionSetId>)> for ConditionalRequirement {
+    fn from((requirement, condition): (VersionSetId, Option<VersionSetId>)) -> Self {
+        Self {
+            condition,
+            requirement: requirement.into(),
+        }
+    }
+}
+
 /// Specifies the dependency of a solvable on a set of version sets.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

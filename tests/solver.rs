@@ -217,11 +217,16 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements<R: From<VersionSetId>>(&self, requirements: &[&str]) -> Vec<R> {
+    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>)>>(&self, requirements: &[&str]) -> Vec<R> {
         requirements
             .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
-            .map(|spec| self.intern_version_set(&spec))
+            .map(|spec| {
+                (
+                    self.intern_version_set(&spec),
+                    spec.condition.as_ref().map(|c| self.intern_version_set(c)),
+                )
+            })
             .map(From::from)
             .collect()
     }
@@ -1497,23 +1502,28 @@ fn test_conditional_requirements() {
 }
 
 #[test]
+#[traced_test]
 fn test_conditional_requirements_not_met() {
     let mut provider = BundleBoxProvider::new();
     provider.add_package("b", 1.into(), &[], &[]); // Add b=1 as a candidate
     provider.add_package("b", 2.into(), &[], &[]); // Different version of b
     provider.add_package("c", 1.into(), &[], &[]); // Simple package c
-    provider.add_package("a", 1.into(), &["b 2"], &[]); // a depends on b
+    provider.add_package("a", 1.into(), &["b 2"], &[]); // a depends on b=2 specifically
 
     // Create conditional requirement: if b=1 is installed, require c
-    let requirements = provider.requirements(&["a", "c 1; if b 1"]);
+    let requirements = provider.requirements(&[
+        "a",            // Require package a
+        "c 1; if b 1"  // If b=1 is installed, require c (note the exact version)
+    ]);
 
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let result = transaction_to_string(solver.provider(), &solved);
-    // Since b=1 is not installed (b=2 is), c should not be installed
+    // Since b=2 is installed (not b=1), c should not be installed
     insta::assert_snapshot!(result, @r###"
         a=1
+        b=2
         "###);
 }
 
@@ -1527,30 +1537,13 @@ fn test_nested_conditional_dependencies() {
     provider.add_package("c", 1.into(), &[], &[]); // Second level conditional
     provider.add_package("d", 1.into(), &[], &[]); // Third level conditional
 
-    // Create nested conditional requirements:
-    // If a is installed, require b
-    // If b is installed, require c
-    // If c is installed, require d
-    let a_spec = Spec::parse_union("a 1").next().unwrap().unwrap();
-    let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
-    let c_spec = Spec::parse_union("c 1").next().unwrap().unwrap();
-    let d_spec = Spec::parse_union("d 1").next().unwrap().unwrap();
-
-    let a_version_set = provider.intern_version_set(&a_spec);
-    let b_version_set = provider.intern_version_set(&b_spec);
-    let c_version_set = provider.intern_version_set(&c_spec);
-    let d_version_set = provider.intern_version_set(&d_spec);
-
-    let cond_req1 = ConditionalRequirement::new(a_version_set, b_version_set.into());
-    let cond_req2 = ConditionalRequirement::new(b_version_set, c_version_set.into());
-    let cond_req3 = ConditionalRequirement::new(c_version_set, d_version_set.into());
-
-    let requirements = vec![
-        cond_req1,
-        cond_req2,
-        cond_req3,
-        a_version_set.into(), // Require package a
-    ];
+    // Create nested conditional requirements using the parser
+    let requirements = provider.requirements(&[
+        "a",                // Require package a
+        "b 1; if a 1",     // If a is installed, require b
+        "c 1; if b 1",     // If b is installed, require c
+        "d 1; if c 1"      // If c is installed, require d
+    ]);
 
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -1575,28 +1568,13 @@ fn test_multiple_conditions_same_package() {
     provider.add_package("c", 1.into(), &[], &[]);
     provider.add_package("target", 1.into(), &[], &[]);
 
-    // Create multiple conditions that all require the same package
-    let a_spec = Spec::parse_union("a 1").next().unwrap().unwrap();
-    let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
-    let c_spec = Spec::parse_union("c 1").next().unwrap().unwrap();
-    let target_spec = Spec::parse_union("target 1").next().unwrap().unwrap();
-
-    let a_version_set = provider.intern_version_set(&a_spec);
-    let b_version_set = provider.intern_version_set(&b_spec);
-    let c_version_set = provider.intern_version_set(&c_spec);
-    let target_version_set = provider.intern_version_set(&target_spec);
-
-    // If any of a, b, or c is installed, require target
-    let cond_req1 = ConditionalRequirement::new(a_version_set, target_version_set.into());
-    let cond_req2 = ConditionalRequirement::new(b_version_set, target_version_set.into());
-    let cond_req3 = ConditionalRequirement::new(c_version_set, target_version_set.into());
-
-    let requirements = vec![
-        cond_req1,
-        cond_req2,
-        cond_req3,
-        b_version_set.into(), // Only require package b
-    ];
+    // Create multiple conditions that all require the same package using the parser
+    let requirements = provider.requirements(&[
+        "b",                    // Only require package b
+        "target 1; if a 1",    // If a is installed, require target
+        "target 1; if b 1",    // If b is installed, require target
+        "target 1; if c 1"     // If c is installed, require target
+    ]);
 
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -1617,23 +1595,12 @@ fn test_circular_conditional_dependencies() {
     provider.add_package("a", 1.into(), &[], &[]);
     provider.add_package("b", 1.into(), &[], &[]);
 
-    // Create circular conditional dependencies:
-    // If a is installed, require b
-    // If b is installed, require a
-    let a_spec = Spec::parse_union("a 1").next().unwrap().unwrap();
-    let b_spec = Spec::parse_union("b 1").next().unwrap().unwrap();
-
-    let a_version_set = provider.intern_version_set(&a_spec);
-    let b_version_set = provider.intern_version_set(&b_spec);
-
-    let cond_req1 = ConditionalRequirement::new(a_version_set, b_version_set.into());
-    let cond_req2 = ConditionalRequirement::new(b_version_set, a_version_set.into());
-
-    let requirements = vec![
-        cond_req1,
-        cond_req2,
-        a_version_set.into(), // Require package a
-    ];
+    // Create circular conditional dependencies using the parser
+    let requirements = provider.requirements(&[
+        "a",                // Require package a
+        "b 1; if a 1",     // If a is installed, require b
+        "a 1; if b 1"      // If b is installed, require a
+    ]);
 
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
