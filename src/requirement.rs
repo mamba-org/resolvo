@@ -14,9 +14,9 @@ pub struct ConditionalRequirement {
 
 impl ConditionalRequirement {
     /// Creates a new conditional requirement.
-    pub fn new(condition: VersionSetId, requirement: Requirement) -> Self {
+    pub fn new(condition: Option<VersionSetId>, requirement: Requirement) -> Self {
         Self {
-            condition: Some(condition),
+            condition,
             requirement,
         }
     }
@@ -55,6 +55,15 @@ impl From<Requirement> for ConditionalRequirement {
 
 impl From<VersionSetId> for ConditionalRequirement {
     fn from(value: VersionSetId) -> Self {
+        Self {
+            condition: None,
+            requirement: value.into(),
+        }
+    }
+}
+
+impl From<VersionSetUnionId> for ConditionalRequirement {
+    fn from(value: VersionSetUnionId) -> Self {
         Self {
             condition: None,
             requirement: value.into(),
