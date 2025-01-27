@@ -138,12 +138,16 @@ impl FromStr for Spec {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let split = s.split(';').collect::<Vec<_>>(); // c 1; if b 1..2
 
-        if split.len() == 1 { // c 1
+        if split.len() == 1 {
+            // c 1
             let split = s.split(' ').collect::<Vec<_>>();
-            let name = split.first().expect("spec does not have a name").to_string();
+            let name = split
+                .first()
+                .expect("spec does not have a name")
+                .to_string();
             let versions = version_range(split.get(1));
             return Ok(Spec::new(name, versions, None));
-        } 
+        }
 
         let binding = split.get(1).unwrap().replace("if", "");
         let condition = Spec::parse_union(&binding).next().unwrap().unwrap();
@@ -167,7 +171,11 @@ impl FromStr for Spec {
             }
         }
 
-        Ok(Spec::new(spec.name, spec.versions, Some(Box::new(condition))))
+        Ok(Spec::new(
+            spec.name,
+            spec.versions,
+            Some(Box::new(condition)),
+        ))
     }
 }
 
@@ -513,7 +521,7 @@ impl DependencyProvider for BundleBoxProvider {
             let requirement = if remaining_req_specs.len() == 0 {
                 if let Some(condition) = &first.condition {
                     ConditionalRequirement::new(
-                        Some(self.intern_version_set(condition)), 
+                        Some(self.intern_version_set(condition)),
                         first_version_set.into(),
                     )
                 } else {
@@ -522,26 +530,27 @@ impl DependencyProvider for BundleBoxProvider {
             } else {
                 // Check if all specs have the same condition
                 let common_condition = first.condition.as_ref().map(|c| self.intern_version_set(c));
-                
+
                 // Collect version sets for union
                 let mut version_sets = vec![first_version_set];
                 for spec in remaining_req_specs {
                     // Verify condition matches
-                    if spec.condition.as_ref().map(|c| self.intern_version_set(c)) != common_condition {
+                    if spec.condition.as_ref().map(|c| self.intern_version_set(c))
+                        != common_condition
+                    {
                         panic!("All specs in a union must have the same condition");
                     }
-                    
+
                     version_sets.push(self.pool.intern_version_set(
                         self.pool.intern_package_name(&spec.name),
-                        spec.versions.clone()
+                        spec.versions.clone(),
                     ));
                 }
 
                 // Create union and wrap in conditional if needed
-                let union = self.pool.intern_version_set_union(
-                    version_sets[0],
-                    version_sets.into_iter().skip(1)
-                );
+                let union = self
+                    .pool
+                    .intern_version_set_union(version_sets[0], version_sets.into_iter().skip(1));
 
                 if let Some(condition) = common_condition {
                     ConditionalRequirement::new(Some(condition), union.into())
