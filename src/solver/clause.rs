@@ -247,14 +247,7 @@ impl Clause {
         let mut requirement_candidates = requirement_candidates.into_iter();
 
         // Check if we have any condition candidates
-        let Some(first_condition) = condition_candidates.next() else {
-            // No conditions means this is just an assertion
-            return (
-                Clause::Conditional(parent_id, condition, requirement),
-                None,
-                false,
-            );
-        };
+        let first_condition = condition_candidates.next().expect("no condition candidates");
 
         // Try to find a condition candidate that is undecided or true
         let condition_literal = std::iter::once(first_condition)
