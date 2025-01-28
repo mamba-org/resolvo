@@ -244,39 +244,32 @@ impl Clause {
     ) -> (Self, Option<[Literal; 2]>, bool) {
         assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
         let mut condition_candidates = condition_candidates.into_iter();
-        let mut requirement_candidates = requirement_candidates.into_iter();
+        let requirement_candidates = requirement_candidates.into_iter();
 
         // Check if we have any condition candidates
-        let first_condition = condition_candidates.next().expect("no condition candidates");
+        let first_condition = condition_candidates
+            .next()
+            .expect("no condition candidates");
 
-        // Try to find a condition candidate that is undecided or true
-        let condition_literal = std::iter::once(first_condition)
-            .chain(condition_candidates)
-            .find(|&id| {
+        // Map condition candidates to negative literals and requirement candidates to positive literals
+        let condition_literal = condition_candidates
+            .map(|id| (id, id.negative()))
+            .chain(requirement_candidates.map(|id| (id, id.positive())))
+            .find(|&(id, _)| {
                 let value = decision_tracker.assigned_value(id);
                 value.is_none() || value == Some(true)
-            });
+            })
+            .map(|(_, literal)| literal);
 
-        // Try to find a requirement candidate that is undecided or true
-        let requirement_literal = requirement_candidates.find(|&id| {
-            let value = decision_tracker.assigned_value(id);
-            value.is_none() || value == Some(true)
-        });
-
-        match (condition_literal, requirement_literal) {
-            // Found valid literals - use them
-            (Some(cond), _) => (
+        match condition_literal {
+            // Found a valid literal - use it
+            Some(literal) => (
                 Clause::Conditional(parent_id, condition, requirement),
-                Some([parent_id.negative(), cond.negative()]),
-                false,
-            ),
-            (None, Some(req)) => (
-                Clause::Conditional(parent_id, condition, requirement),
-                Some([parent_id.negative(), req.positive()]),
+                Some([parent_id.negative(), literal]),
                 false,
             ),
             // No valid literals found - conflict case
-            (None, None) => (
+            None => (
                 Clause::Conditional(parent_id, condition, requirement),
                 Some([parent_id.negative(), first_condition.negative()]),
                 true,
