@@ -136,11 +136,10 @@ impl FromStr for Spec {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split(';').collect::<Vec<_>>(); // c 1; if b 1..2
+        let (spec, condition) = s.split_once("; if").unwrap();
 
-        if split.len() == 1 {
-            // c 1
-            let split = s.split(' ').collect::<Vec<_>>();
+        if condition.is_empty() {
+            let split = spec.split(' ').collect::<Vec<_>>();
             let name = split
                 .first()
                 .expect("spec does not have a name")
@@ -149,10 +148,9 @@ impl FromStr for Spec {
             return Ok(Spec::new(name, versions, None));
         }
 
-        let binding = split.get(1).unwrap().replace("if", "");
-        let condition = Spec::parse_union(&binding).next().unwrap().unwrap();
+        let condition = Spec::parse_union(condition).next().unwrap().unwrap();
 
-        let spec = Spec::from_str(split.first().unwrap()).unwrap();
+        let spec = Spec::from_str(spec).unwrap();
 
         fn version_range(s: Option<&&str>) -> Ranges<Pack> {
             if let Some(s) = s {
@@ -1613,6 +1611,69 @@ fn test_circular_conditional_dependencies() {
     insta::assert_snapshot!(result, @r###"
         a=1
         b=1
+        "###);
+}
+
+#[test]
+fn test_conditional_requirements_multiple_versions() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[]); // Simple package c
+    provider.add_package("a", 1.into(), &["b 4..6"], &[]); // a depends on b versions 4-5
+
+    // Create conditional requirement: if b=1..3 is installed, require c
+    let requirements = provider.requirements(&[
+        "a",              // Require package a
+        "c 1; if b 1..3", // If b is version 1-2, require c
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=4 is installed (not b 1..3), c should not be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=4
+        "###);
+}
+
+#[test]
+fn test_conditional_requirements_multiple_versions_met() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[]); // Simple package c
+    provider.add_package("a", 1.into(), &["b 1..3"], &[]); // a depends on b versions 1-2
+
+    // Create conditional requirement: if b=1..3 is installed, require c
+    let requirements = provider.requirements(&[
+        "a",              // Require package a
+        "c 1; if b 1..3", // If b is version 1-2, require c
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=2 is installed (within b 1..3), c should be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=2
+        c=1
         "###);
 }
 
