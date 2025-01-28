@@ -1659,26 +1659,59 @@ fn test_conditional_requirements_multiple_versions_met() {
     provider.add_package("b", 5.into(), &[], &[]);
 
     provider.add_package("c", 1.into(), &[], &[]); // Simple package c
-    provider.add_package("a", 1.into(), &["b 1..3"], &[]); // a depends on b versions 1-2
+    provider.add_package("c", 2.into(), &[], &[]); // Version 2 of c
+    provider.add_package("c", 3.into(), &[], &[]); // Version 3 of c
+    provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..3"], &[]); // a depends on b 1-3 and conditionally on c 1-3
 
-    // Create conditional requirement: if b=1..3 is installed, require c
     let requirements = provider.requirements(&[
         "a",              // Require package a
-        "c 1; if b 1..3", // If b is version 1-2, require c
     ]);
 
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
     let solved = solver.solve(problem).unwrap();
     let result = transaction_to_string(solver.provider(), &solved);
-    // Since b=2 is installed (within b 1..3), c should be installed
+    // Since b=2 is installed (within b 1..2), c should be installed
     insta::assert_snapshot!(result, @r###"
         a=1
         b=2
-        c=1
+        c=2
         "###);
 }
 
+/// In this test, the resolver installs the highest available version of b which is b 2
+/// However, the conditional requirement is that if b 1..2 is installed, require c
+/// Since b 2 is installed, c should not be installed
+#[test]
+fn test_conditional_requirements_multiple_versions_not_met() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[]); // Simple package c
+    provider.add_package("c", 2.into(), &[], &[]); // Version 2 of c
+    provider.add_package("c", 3.into(), &[], &[]); // Version 3 of c
+    provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..2"], &[]); // a depends on b 1-3 and conditionally on c 1-3
+
+    let requirements = provider.requirements(&[
+        "a",              // Require package a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=2 is installed (within b 1..2), c should be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=2
+        "###);
+}
 #[cfg(feature = "serde")]
 fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
