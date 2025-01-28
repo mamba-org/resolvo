@@ -14,14 +14,10 @@ use petgraph::{
 use crate::{
     internal::{
         arena::ArenaId,
-        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VariableId, VersionSetId},
+        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{
-        clause::Clause,
-        variable_map::{VariableMap, VariableOrigin},
-        Solver,
-    },
+    solver::{clause::Clause, variable_map::VariableOrigin, Solver},
     DependencyProvider, Interner, Requirement,
 };
 
