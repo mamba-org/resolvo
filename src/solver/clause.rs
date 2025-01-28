@@ -252,15 +252,20 @@ impl Clause {
             .expect("no condition candidates");
 
         // Map condition candidates to negative literals and requirement candidates to positive literals
-        let condition_literal = condition_candidates
+        let mut iter = condition_candidates
             .map(|id| (id, id.negative()))
             .chain(requirement_candidates.map(|id| (id, id.positive())))
-            .find(|&(id, _)| {
+            .peekable();
+
+        let condition_literal = if iter.peek().is_some() {
+            iter.find(|&(id, _)| {
                 let value = decision_tracker.assigned_value(id);
                 value.is_none() || value == Some(true)
             })
-            .map(|(_, literal)| literal);
-
+            .map(|(_, literal)| literal)
+        } else {
+            None
+        };
         match condition_literal {
             // Found a valid literal - use it
             Some(literal) => (
