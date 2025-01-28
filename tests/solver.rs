@@ -136,10 +136,10 @@ impl FromStr for Spec {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (spec, condition) = s.split_once("; if").unwrap();
+        let split = s.split_once("; if");
 
-        if condition.is_empty() {
-            let split = spec.split(' ').collect::<Vec<_>>();
+        if split.is_none() {
+            let split = s.split(' ').collect::<Vec<_>>();
             let name = split
                 .first()
                 .expect("spec does not have a name")
@@ -147,6 +147,8 @@ impl FromStr for Spec {
             let versions = version_range(split.get(1));
             return Ok(Spec::new(name, versions, None));
         }
+
+        let (spec, condition) = split.unwrap();
 
         let condition = Spec::parse_union(condition).next().unwrap().unwrap();
 
@@ -1641,7 +1643,7 @@ fn test_conditional_requirements_multiple_versions() {
     // Since b=4 is installed (not b 1..3), c should not be installed
     insta::assert_snapshot!(result, @r###"
         a=1
-        b=4
+        b=5
         "###);
 }
 

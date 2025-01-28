@@ -14,10 +14,14 @@ use petgraph::{
 use crate::{
     internal::{
         arena::ArenaId,
-        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
+        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VariableId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{clause::Clause, variable_map::VariableOrigin, Solver},
+    solver::{
+        clause::Clause,
+        variable_map::{VariableMap, VariableOrigin},
+        Solver,
+    },
     DependencyProvider, Interner, Requirement,
 };
 
@@ -159,7 +163,12 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
-                &Clause::Conditional(package_id, condition, requirement) => {
+                &Clause::Conditional(
+                    package_id,
+                    condition_variable,
+                    condition_version_set_id,
+                    requirement,
+                ) => {
                     let solvable = package_id
                         .as_solvable_or_root(&solver.variable_map)
                         .expect("only solvables can be excluded");
@@ -176,10 +185,6 @@ impl Conflict {
                             )
                         });
 
-                    let conditional_candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(condition.into())).unwrap_or_else(|_| {
-                        unreachable!("The condition's version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
-                    });
-
                     if requirement_candidates.is_empty() {
                         tracing::trace!(
                             "{package_id:?} conditionally requires {requirement:?}, which has no candidates"
@@ -187,32 +192,27 @@ impl Conflict {
                         graph.add_edge(
                             package_node,
                             unresolved_node,
-                            ConflictEdge::ConditionalRequires(condition, requirement),
-                        );
-                    } else if conditional_candidates.is_empty() {
-                        tracing::trace!(
-                            "{package_id:?} conditionally requires {requirement:?}, but the condition has no candidates"
-                        );
-                        graph.add_edge(
-                            package_node,
-                            unresolved_node,
-                            ConflictEdge::ConditionalRequires(condition, requirement),
+                            ConflictEdge::ConditionalRequires(
+                                condition_version_set_id,
+                                requirement,
+                            ),
                         );
                     } else {
-                        for &candidate_id in conditional_candidates {
-                            tracing::trace!(
-                                "{package_id:?} conditionally requires {requirement:?} if {candidate_id:?}"
-                            );
+                        tracing::trace!(
+                            "{package_id:?} conditionally requires {requirement:?} if {condition_variable:?}"
+                        );
 
-                            for &candidate_id in requirement_candidates {
-                                let candidate_node =
-                                    Self::add_node(&mut graph, &mut nodes, candidate_id.into());
-                                graph.add_edge(
-                                    package_node,
-                                    candidate_node,
-                                    ConflictEdge::ConditionalRequires(condition, requirement),
-                                );
-                            }
+                        for &candidate_id in requirement_candidates {
+                            let candidate_node =
+                                Self::add_node(&mut graph, &mut nodes, candidate_id.into());
+                            graph.add_edge(
+                                package_node,
+                                candidate_node,
+                                ConflictEdge::ConditionalRequires(
+                                    condition_version_set_id,
+                                    requirement,
+                                ),
+                            );
                         }
                     }
                 }
@@ -415,10 +415,10 @@ impl ConflictGraph {
                     ConflictEdge::Requires(requirement) => {
                         requirement.display(interner).to_string()
                     }
-                    ConflictEdge::ConditionalRequires(version_set_id, requirement) => {
+                    ConflictEdge::ConditionalRequires(condition_version_set_id, requirement) => {
                         format!(
                             "if {} then {}",
-                            interner.display_version_set(*version_set_id),
+                            interner.display_version_set(*condition_version_set_id),
                             requirement.display(interner)
                         )
                     }

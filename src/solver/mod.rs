@@ -37,7 +37,7 @@ mod watch_map;
 #[derive(Default)]
 struct AddClauseOutput {
     new_requires_clauses: Vec<(VariableId, Requirement, ClauseId)>,
-    new_conditional_clauses: Vec<(VariableId, VersionSetId, Requirement, ClauseId)>,
+    new_conditional_clauses: Vec<(VariableId, VariableId, Requirement, ClauseId)>,
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(VariableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
@@ -153,17 +153,13 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) clauses: Clauses,
     requires_clauses: IndexMap<VariableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     conditional_clauses:
-        IndexMap<(VariableId, VersionSetId), Vec<(Requirement, ClauseId)>, ahash::RandomState>,
+        IndexMap<(VariableId, VariableId), Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
     /// candidates.
     requirement_to_sorted_candidates:
         FrozenMap<Requirement, RequirementCandidateVariables, ahash::RandomState>,
-
-    /// A mapping from version sets to the variables that represent the
-    /// candidates.
-    version_set_to_variables: FrozenMap<VersionSetId, Vec<Vec<VariableId>>, ahash::RandomState>,
 
     pub(crate) variable_map: VariableMap,
 
@@ -210,7 +206,6 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             requires_clauses: Default::default(),
             conditional_clauses: Default::default(),
             requirement_to_sorted_candidates: FrozenMap::default(),
-            version_set_to_variables: FrozenMap::default(),
             watches: WatchMap::new(),
             negative_assertions: Default::default(),
             learnt_clauses: Arena::new(),
@@ -291,7 +286,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             requires_clauses: self.requires_clauses,
             conditional_clauses: self.conditional_clauses,
             requirement_to_sorted_candidates: self.requirement_to_sorted_candidates,
-            version_set_to_variables: self.version_set_to_variables,
             watches: self.watches,
             negative_assertions: self.negative_assertions,
             learnt_clauses: self.learnt_clauses,
@@ -489,7 +483,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     &mut self.clauses_added_for_package,
                     &mut self.forbidden_clauses_added,
                     &mut self.requirement_to_sorted_candidates,
-                    &self.version_set_to_variables,
                     &self.root_requirements,
                     &self.root_constraints,
                 ))?;
@@ -606,7 +599,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 &mut self.clauses_added_for_package,
                 &mut self.forbidden_clauses_added,
                 &mut self.requirement_to_sorted_candidates,
-                &self.version_set_to_variables,
                 &self.root_requirements,
                 &self.root_constraints,
             ))?;
@@ -674,9 +666,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .push((requirement, clause_id));
         }
 
-        for (solvable_id, condition, requirement, clause_id) in output.new_conditional_clauses {
+        for (solvable_id, condition_variable, requirement, clause_id) in
+            output.new_conditional_clauses
+        {
             self.conditional_clauses
-                .entry((solvable_id, condition))
+                .entry((solvable_id, condition_variable))
                 .or_default()
                 .push((requirement, clause_id));
         }
@@ -832,25 +826,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
 
             // For conditional clauses, check that at least one conditional variable is true
-            if let Some(condition) = condition {
-                tracing::trace!("condition o kir: {:?}", condition);
-                let condition_requirement: Requirement = condition.into();
-                let conditional_candidates = match self
-                    .requirement_to_sorted_candidates
-                    .get(&condition_requirement)
-                {
-                    Some(candidates) => candidates,
-                    None => continue,
-                };
-
+            if let Some(condition_variable) = condition {
                 // Check if any candidate that matches the condition's version set is installed
-                let condition_met = conditional_candidates.iter().any(|candidates| {
-                    candidates.iter().any(|&candidate| {
-                        // Only consider the condition met if a candidate that exactly matches
-                        // the condition's version set is installed
-                        self.decision_tracker.assigned_value(candidate) == Some(true)
-                    })
-                });
+                let condition_met =
+                    self.decision_tracker.assigned_value(condition_variable) == Some(true);
 
                 // If the condition is not met, skip this requirement entirely
                 if !condition_met {
@@ -1216,7 +1195,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     clause,
                     &self.learnt_clauses,
                     &self.requirement_to_sorted_candidates,
-                    &self.version_set_to_variables,
                     self.decision_tracker.map(),
                     watch_index,
                 ) {
@@ -1376,7 +1354,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.clauses.kinds[clause_id.to_usize()].visit_literals(
             &self.learnt_clauses,
             &self.requirement_to_sorted_candidates,
-            &self.version_set_to_variables,
             |literal| {
                 involved.insert(literal.variable());
             },
@@ -1415,7 +1392,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             self.clauses.kinds[why.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.requirement_to_sorted_candidates,
-                &self.version_set_to_variables,
                 |literal| {
                     if literal.eval(self.decision_tracker.map()) == Some(true) {
                         assert_eq!(literal.variable(), decision.variable);
@@ -1463,7 +1439,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clause_kinds[clause_id.to_usize()].visit_literals(
                 &self.learnt_clauses,
                 &self.requirement_to_sorted_candidates,
-                &self.version_set_to_variables,
                 |literal| {
                     if !first_iteration && literal.variable() == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the
@@ -1598,7 +1573,6 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         RequirementCandidateVariables,
         ahash::RandomState,
     >,
-    version_set_to_variables: &FrozenMap<VersionSetId, Vec<Vec<VariableId>>, ahash::RandomState>,
     root_requirements: &[ConditionalRequirement],
     root_constraints: &[VersionSetId],
 ) -> Result<AddClauseOutput, Box<dyn Any>> {
@@ -1614,7 +1588,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         SortedCandidates {
             solvable_id: SolvableOrRootId,
             requirement: Requirement,
-            condition: Option<(VersionSetId, Vec<&'i [SolvableId]>)>,
+            condition: Option<(SolvableId, VersionSetId)>,
             candidates: Vec<&'i [SolvableId]>,
         },
         NonMatchingCandidates {
@@ -1775,40 +1749,48 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 for conditional_requirement in conditional_requirements {
                     // Find all the solvable that match for the given version set
-                    pending_futures.push(
-                        async move {
-                            let version_sets =
-                                conditional_requirement.requirement_version_sets(cache.provider());
-                            let candidates =
-                                futures::future::try_join_all(version_sets.map(|version_set| {
-                                    cache
-                                        .get_or_cache_sorted_candidates_for_version_set(version_set)
-                                }))
-                                .await?;
+                    let version_sets =
+                        conditional_requirement.requirement_version_sets(cache.provider());
+                    let candidates =
+                        futures::future::try_join_all(version_sets.map(|version_set| {
+                            cache.get_or_cache_sorted_candidates_for_version_set(version_set)
+                        }))
+                        .await?;
 
-                            // condition is `VersionSetId` right now but it will become a `Requirement`
-                            // in the next versions of resolvo
-                            if let Some(condition) = conditional_requirement.condition {
-                                let condition_candidates =
-                                    cache.get_or_cache_matching_candidates(condition).await?;
+                    // condition is `VersionSetId` right now but it will become a `Requirement`
+                    // in the next versions of resolvo
+                    if let Some(condition) = conditional_requirement.condition {
+                        let condition_candidates =
+                            cache.get_or_cache_matching_candidates(condition).await?;
 
-                                Ok(TaskResult::SortedCandidates {
-                                    solvable_id,
-                                    requirement: conditional_requirement.requirement,
-                                    condition: Some((condition, vec![condition_candidates])),
-                                    candidates,
-                                })
-                            } else {
+                        for &condition_candidate in condition_candidates {
+                            let candidates = candidates.clone();
+                            pending_futures.push(
+                                async move {
+                                    Ok(TaskResult::SortedCandidates {
+                                        solvable_id,
+                                        requirement: conditional_requirement.requirement,
+                                        condition: Some((condition_candidate, condition)),
+                                        candidates,
+                                    })
+                                }
+                                .boxed_local(),
+                            );
+                        }
+                    } else {
+                        // Add a task result for the condition
+                        pending_futures.push(
+                            async move {
                                 Ok(TaskResult::SortedCandidates {
                                     solvable_id,
                                     requirement: conditional_requirement.requirement,
                                     condition: None,
-                                    candidates,
+                                    candidates: candidates.clone(),
                                 })
                             }
-                        }
-                        .boxed_local(),
-                    );
+                            .boxed_local(),
+                        );
+                    }
                 }
 
                 for version_set_id in constrains {
@@ -1944,28 +1926,17 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     );
                 }
 
-                if let Some((condition, condition_candidates)) = condition {
-                    let condition_version_set_variables = version_set_to_variables.insert(
-                        condition,
-                        condition_candidates
-                            .iter()
-                            .map(|&candidates| {
-                                candidates
-                                    .iter()
-                                    .map(|&var| variable_map.intern_solvable(var))
-                                    .collect()
-                            })
-                            .collect(),
-                    );
+                if let Some((condition, condition_version_set_id)) = condition {
+                    let condition_variable = variable_map.intern_solvable(condition);
 
                     // Add a condition clause
                     let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
                         variable,
                         requirement,
-                        condition,
+                        condition_variable,
+                        condition_version_set_id,
                         decision_tracker,
                         version_set_variables.iter().flatten().copied(),
-                        condition_version_set_variables.iter().flatten().copied(),
                     );
 
                     // Add the conditional clause
@@ -1980,7 +1951,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                     output.new_conditional_clauses.push((
                         variable,
-                        condition,
+                        condition_variable,
                         requirement,
                         clause_id,
                     ));

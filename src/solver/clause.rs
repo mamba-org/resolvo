@@ -80,7 +80,9 @@ pub(crate) enum Clause {
     /// In SAT terms: (¬A ∨ ¬C ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
     /// C is the condition, and B1 to B99 represent the possible candidates for
     /// the provided [`Requirement`].
-    Conditional(VariableId, VersionSetId, Requirement),
+    /// We need to store the version set id because in the conflict graph, the version set id
+    /// is used to identify the condition variable.
+    Conditional(VariableId, VariableId, VersionSetId, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -237,49 +239,38 @@ impl Clause {
     fn conditional(
         parent_id: VariableId,
         requirement: Requirement,
-        condition: VersionSetId,
+        condition_variable: VariableId,
+        condition_version_set_id: VersionSetId,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
-        condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
-        let mut condition_candidates = condition_candidates.into_iter();
-        let requirement_candidates = requirement_candidates.into_iter();
+        let mut requirement_candidates = requirement_candidates.into_iter();
 
-        // Check if we have any condition candidates
-        let first_condition = condition_candidates
-            .next()
-            .expect("no condition candidates");
+        let requirement_literal =
+            if decision_tracker.assigned_value(condition_variable) == Some(true) {
+                // then ~condition is false
+                requirement_candidates
+                    .find(|&id| decision_tracker.assigned_value(id) != Some(false))
+                    .map(|id| id.positive())
+            } else {
+                None
+            };
 
-        // Map condition candidates to negative literals and requirement candidates to positive literals
-        let mut iter = condition_candidates
-            .map(|id| (id, id.negative()))
-            .chain(requirement_candidates.map(|id| (id, id.positive())))
-            .peekable();
-
-        let condition_literal = if iter.peek().is_some() {
-            iter.find(|&(id, _)| {
-                let value = decision_tracker.assigned_value(id);
-                value.is_none() || value == Some(true)
-            })
-            .map(|(_, literal)| literal)
-        } else {
-            None
-        };
-        match condition_literal {
-            // Found a valid literal - use it
-            Some(literal) => (
-                Clause::Conditional(parent_id, condition, requirement),
-                Some([parent_id.negative(), literal]),
-                false,
+        (
+            Clause::Conditional(
+                parent_id,
+                condition_variable,
+                condition_version_set_id,
+                requirement,
             ),
-            // No valid literals found - conflict case
-            None => (
-                Clause::Conditional(parent_id, condition, requirement),
-                Some([parent_id.negative(), first_condition.negative()]),
-                true,
-            ),
-        }
+            Some([
+                parent_id.negative(),
+                requirement_literal.unwrap_or(condition_variable.negative()),
+            ]),
+            requirement_literal.is_none()
+                && decision_tracker.assigned_value(condition_variable) == Some(true),
+        )
     }
 
     /// Tries to fold over all the literals in the clause.
@@ -291,11 +282,6 @@ impl Clause {
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         requirements_to_sorted_candidates: &FrozenMap<
             Requirement,
-            Vec<Vec<VariableId>>,
-            ahash::RandomState,
-        >,
-        version_set_to_variables: &FrozenMap<
-            VersionSetId,
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
@@ -329,14 +315,9 @@ impl Clause {
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
-            Clause::Conditional(package_id, condition, requirement) => {
+            Clause::Conditional(package_id, condition_variable, _, requirement) => {
                 iter::once(package_id.negative())
-                    .chain(
-                        version_set_to_variables[&condition]
-                            .iter()
-                            .flatten()
-                            .map(|&s| s.negative()),
-                    )
+                    .chain(iter::once(condition_variable.negative()))
                     .chain(
                         requirements_to_sorted_candidates[&requirement]
                             .iter()
@@ -359,17 +340,11 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        version_set_to_variables: &FrozenMap<
-            VersionSetId,
-            Vec<Vec<VariableId>>,
-            ahash::RandomState,
-        >,
         mut visit: impl FnMut(Literal),
     ) {
         self.try_fold_literals(
             learnt_clauses,
             requirements_to_sorted_candidates,
-            version_set_to_variables,
             (),
             |_, lit| {
                 visit(lit);
@@ -506,18 +481,18 @@ impl WatchedLiterals {
     pub fn conditional(
         package_id: VariableId,
         requirement: Requirement,
-        condition: VersionSetId,
+        condition_variable: VariableId,
+        condition_version_set_id: VersionSetId,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
-        condition_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::conditional(
             package_id,
             requirement,
-            condition,
+            condition_variable,
+            condition_version_set_id,
             decision_tracker,
             requirement_candidates,
-            condition_candidates,
         );
 
         (
@@ -545,11 +520,6 @@ impl WatchedLiterals {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        version_set_to_variables: &FrozenMap<
-            VersionSetId,
-            Vec<Vec<VariableId>>,
-            ahash::RandomState,
-        >,
         decision_map: &DecisionMap,
         for_watch_index: usize,
     ) -> Option<Literal> {
@@ -566,7 +536,6 @@ impl WatchedLiterals {
                 let next = clause.try_fold_literals(
                     learnt_clauses,
                     requirement_to_sorted_candidates,
-                    version_set_to_variables,
                     (),
                     |_, lit| {
                         // The next unwatched variable (if available), is a variable that is:
@@ -725,13 +694,14 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     other,
                 )
             }
-            Clause::Conditional(package_id, condition, requirement) => {
+            Clause::Conditional(package_id, condition_variable, _, requirement) => {
                 write!(
                     f,
-                    "Conditional({}({:?}), {}, {})",
+                    "Conditional({}({:?}), {}({:?}), {})",
                     package_id.display(self.variable_map, self.interner),
                     package_id,
-                    self.interner.display_version_set(condition),
+                    condition_variable.display(self.variable_map, self.interner),
+                    condition_variable,
                     requirement.display(self.interner),
                 )
             }
