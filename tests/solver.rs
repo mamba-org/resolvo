@@ -1664,7 +1664,7 @@ fn test_conditional_requirements_multiple_versions_met() {
     provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..3"], &[]); // a depends on b 1-3 and conditionally on c 1-3
 
     let requirements = provider.requirements(&[
-        "a",              // Require package a
+        "a", // Require package a
     ]);
 
     let mut solver = Solver::new(provider);
@@ -1699,7 +1699,7 @@ fn test_conditional_requirements_multiple_versions_not_met() {
     provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..2"], &[]); // a depends on b 1-3 and conditionally on c 1-3
 
     let requirements = provider.requirements(&[
-        "a",              // Require package a
+        "a", // Require package a
     ]);
 
     let mut solver = Solver::new(provider);
