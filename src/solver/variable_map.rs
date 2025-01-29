@@ -7,7 +7,7 @@ use crate::{
         arena::ArenaId,
         id::{SolvableOrRootId, VariableId},
     },
-    Interner, NameId, SolvableId,
+    Interner, NameId, SolvableId, StringId,
 };
 
 /// All variables in the solver are stored in a `VariableMap`. This map is used
@@ -22,6 +22,9 @@ pub struct VariableMap {
 
     /// A map from solvable id to variable id.
     solvable_to_variable: HashMap<SolvableId, VariableId>,
+
+    /// A map from extra name to variable id.
+    extra_to_variable: HashMap<StringId, VariableId>,
 
     /// Records the origins of all variables.
     origins: HashMap<VariableId, VariableOrigin>,
@@ -38,6 +41,9 @@ pub enum VariableOrigin {
 
     /// A variable that helps encode an at most one constraint.
     ForbidMultiple(NameId),
+
+    /// A variable that represents an extra variable.
+    Extra(StringId),
 }
 
 impl Default for VariableMap {
@@ -48,6 +54,7 @@ impl Default for VariableMap {
         Self {
             next_id: 1, // The first variable id is 1 because 0 is reserved for the root.
             solvable_to_variable: HashMap::default(),
+            extra_to_variable: HashMap::default(),
             origins,
         }
     }
@@ -75,6 +82,22 @@ impl VariableMap {
         match solvable_or_root_id.solvable() {
             Some(solvable_id) => self.intern_solvable(solvable_id),
             None => VariableId::root(),
+        }
+    }
+
+    /// Allocate a variable that represents an extra variable.
+    pub fn intern_extra(&mut self, extra_name: StringId) -> VariableId {
+        match self.extra_to_variable.entry(extra_name) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let variable_id = VariableId::from_usize(id);
+                entry.insert(variable_id);
+                self.origins
+                    .insert(variable_id, VariableOrigin::Extra(extra_name));
+                variable_id
+            }
         }
     }
 
@@ -140,6 +163,9 @@ impl<'i, I: Interner> Display for VariableDisplay<'i, I> {
             }
             VariableOrigin::ForbidMultiple(name) => {
                 write!(f, "forbid-multiple({})", self.interner.display_name(name))
+            }
+            VariableOrigin::Extra(extra_name) => {
+                write!(f, "extra({})", self.interner.display_string(extra_name))
             }
         }
     }

@@ -83,6 +83,25 @@ pub(crate) enum Clause {
     /// We need to store the version set id because in the conflict graph, the version set id
     /// is used to identify the condition variable.
     Conditional(VariableId, VariableId, VersionSetId, Requirement),
+    /// A conditional clause that requires a feature to be enabled for the requirement to be active.
+    ///
+    /// In SAT terms: (¬A ∨ ¬C ∨ ¬F ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
+    /// C is the condition, F is the feature, and B1 to B99 represent the possible candidates for
+    /// the provided [`Requirement`].
+    ConditionalWithExtra(
+        VariableId,   // solvable
+        VariableId,   // condition
+        VersionSetId, // condition version set
+        VariableId,   // extra
+        StringId,     // extra name
+        Requirement,  // requirement
+    ),
+    /// A requirement that requires a feature to be enabled for the requirement to be active.
+    ///
+    /// In SAT terms: (¬A ∨ ¬F ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
+    /// F is the feature, and B1 to B99 represent the possible candidates for
+    /// the provided [`Requirement`].
+    RequiresWithExtra(VariableId, VariableId, StringId, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -273,6 +292,100 @@ impl Clause {
         )
     }
 
+    fn conditional_with_extra(
+        parent_id: VariableId,
+        requirement: Requirement,
+        condition_variable: VariableId,
+        condition_version_set_id: VersionSetId,
+        extra_variable: VariableId,
+        extra_name: StringId,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Self, Option<[Literal; 2]>, bool) {
+        assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
+        let mut requirement_candidates = requirement_candidates.into_iter();
+
+        let requirement_literal =
+            if decision_tracker.assigned_value(condition_variable) == Some(true) {
+                // then ~condition is false
+                // if the feature is enabled, then we need to watch the requirement candidates
+                if decision_tracker.assigned_value(extra_variable) == Some(true) {
+                    requirement_candidates
+                        .find(|&id| decision_tracker.assigned_value(id) != Some(false))
+                        .map(|id| id.positive())
+                } else {
+                    // if the feature is disabled, then we need to watch the feature variable
+                    Some(extra_variable.negative())
+                }
+            } else {
+                None
+            };
+        (
+            Clause::ConditionalWithExtra(
+                parent_id,
+                condition_variable,
+                condition_version_set_id,
+                extra_variable,
+                extra_name,
+                requirement,
+            ),
+            Some([
+                parent_id.negative(),
+                requirement_literal.unwrap_or(condition_variable.negative()),
+            ]),
+            requirement_literal.is_none()
+                && decision_tracker.assigned_value(condition_variable) == Some(true)
+                && decision_tracker.assigned_value(extra_variable) == Some(true),
+        )
+    }
+
+    fn requires_with_extra(
+        solvable_id: VariableId,
+        extra_variable: VariableId,
+        extra_name: StringId,
+        requirement: Requirement,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Self, Option<[Literal; 2]>, bool) {
+        // It only makes sense to introduce a requires clause when the parent solvable
+        // is undecided or going to be installed
+        assert_ne!(decision_tracker.assigned_value(solvable_id), Some(false));
+
+        let kind = Clause::RequiresWithExtra(solvable_id, extra_variable, extra_name, requirement);
+        let mut candidates = requirement_candidates.into_iter().peekable();
+        let first_candidate = candidates.peek().copied();
+
+        if decision_tracker.assigned_value(extra_variable) == Some(true) {
+            // Feature is enabled, so watch the requirement candidates
+            if let Some(first_candidate) = first_candidate {
+                match candidates.find(|&c| decision_tracker.assigned_value(c) != Some(false)) {
+                    // Watch any candidate that is not assigned to false
+                    Some(watched_candidate) => (
+                        kind,
+                        Some([solvable_id.negative(), watched_candidate.positive()]),
+                        false,
+                    ),
+                    // All candidates are assigned to false - conflict
+                    None => (
+                        kind,
+                        Some([solvable_id.negative(), first_candidate.positive()]),
+                        true,
+                    ),
+                }
+            } else {
+                // No candidates available
+                (kind, None, false)
+            }
+        } else {
+            // Feature is not enabled, so watch the feature variable
+            (
+                kind,
+                Some([solvable_id.negative(), extra_variable.negative()]),
+                false,
+            )
+        }
+    }
+
     /// Tries to fold over all the literals in the clause.
     ///
     /// This function is useful to iterate, find, or filter the literals in a
@@ -318,6 +431,35 @@ impl Clause {
             Clause::Conditional(package_id, condition_variable, _, requirement) => {
                 iter::once(package_id.negative())
                     .chain(iter::once(condition_variable.negative()))
+                    .chain(
+                        requirements_to_sorted_candidates[&requirement]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.positive()),
+                    )
+                    .try_fold(init, visit)
+            }
+            Clause::ConditionalWithExtra(
+                package_id,
+                condition_variable,
+                _,
+                extra_variable,
+                _,
+                requirement,
+            ) => iter::once(package_id.negative())
+                .chain(iter::once(condition_variable.negative()))
+                .chain(iter::once(extra_variable.negative()))
+                .chain(
+                    requirements_to_sorted_candidates[&requirement]
+                        .iter()
+                        .flatten()
+                        .map(|&s| s.positive()),
+                )
+                .try_fold(init, visit),
+            Clause::RequiresWithExtra(solvable_id, extra_variable, _, requirement) => {
+                iter::once(solvable_id.negative())
+                    .chain(iter::once(solvable_id.negative()))
+                    .chain(iter::once(extra_variable.negative()))
                     .chain(
                         requirements_to_sorted_candidates[&requirement]
                             .iter()
@@ -495,6 +637,66 @@ impl WatchedLiterals {
             requirement_candidates,
         );
 
+        (
+            WatchedLiterals::from_kind_and_initial_watches(watched_literals),
+            conflict,
+            kind,
+        )
+    }
+
+    /// Shorthand method to construct a [Clause::ConditionalWithExtra] without requiring
+    /// complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a
+    /// conflict.
+    pub fn conditional_with_extra(
+        package_id: VariableId,
+        requirement: Requirement,
+        condition_variable: VariableId,
+        condition_version_set_id: VersionSetId,
+        extra_variable: VariableId,
+        extra_name: StringId,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Option<Self>, bool, Clause) {
+        let (kind, watched_literals, conflict) = Clause::conditional_with_extra(
+            package_id,
+            requirement,
+            condition_variable,
+            condition_version_set_id,
+            extra_variable,
+            extra_name,
+            decision_tracker,
+            requirement_candidates,
+        );
+        (
+            WatchedLiterals::from_kind_and_initial_watches(watched_literals),
+            conflict,
+            kind,
+        )
+    }
+
+    /// Shorthand method to construct a [Clause::RequiresWithExtra] without requiring
+    /// complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a
+    /// conflict.
+    pub fn requires_with_extra(
+        solvable_id: VariableId,
+        extra_variable: VariableId,
+        extra_name: StringId,
+        requirement: Requirement,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Option<Self>, bool, Clause) {
+        let (kind, watched_literals, conflict) = Clause::requires_with_extra(
+            solvable_id,
+            extra_variable,
+            extra_name,
+            requirement,
+            decision_tracker,
+            requirement_candidates,
+        );
         (
             WatchedLiterals::from_kind_and_initial_watches(watched_literals),
             conflict,
@@ -702,6 +904,37 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     package_id,
                     condition_variable.display(self.variable_map, self.interner),
                     condition_variable,
+                    requirement.display(self.interner),
+                )
+            }
+            Clause::ConditionalWithExtra(
+                package_id,
+                condition_variable,
+                _,
+                extra_variable,
+                _,
+                requirement,
+            ) => {
+                write!(
+                    f,
+                    "ConditionalWithExtra({}({:?}), {}({:?}), {}({:?}), {})",
+                    package_id.display(self.variable_map, self.interner),
+                    package_id,
+                    condition_variable.display(self.variable_map, self.interner),
+                    condition_variable,
+                    extra_variable.display(self.variable_map, self.interner),
+                    extra_variable,
+                    requirement.display(self.interner),
+                )
+            }
+            Clause::RequiresWithExtra(solvable_id, extra_variable, _, requirement) => {
+                write!(
+                    f,
+                    "RequiresWithExtra({}({:?}), {}({:?}), {})",
+                    solvable_id.display(self.variable_map, self.interner),
+                    solvable_id,
+                    extra_variable.display(self.variable_map, self.interner),
+                    extra_variable,
                     requirement.display(self.interner),
                 )
             }

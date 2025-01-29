@@ -22,7 +22,8 @@ use crate::{
     requirement::ConditionalRequirement,
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     solver::binary_encoding::AtMostOnceTracker,
-    Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, StringId,
+    VersionSetId,
 };
 
 mod binary_encoding;
@@ -37,7 +38,15 @@ mod watch_map;
 #[derive(Default)]
 struct AddClauseOutput {
     new_requires_clauses: Vec<(VariableId, Requirement, ClauseId)>,
-    new_conditional_clauses: Vec<(VariableId, VariableId, Requirement, ClauseId)>,
+    /// A vector of tuples from a solvable variable, conditional variable and extra(feature name) variable to
+    /// the clauses that need to be watched.
+    new_conditional_clauses: Vec<(
+        VariableId,
+        Option<VariableId>,
+        Option<VariableId>,
+        Requirement,
+        ClauseId,
+    )>,
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(VariableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
@@ -152,8 +161,14 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     pub(crate) clauses: Clauses,
     requires_clauses: IndexMap<VariableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
-    conditional_clauses:
-        IndexMap<(VariableId, VariableId), Vec<(Requirement, ClauseId)>, ahash::RandomState>,
+
+    /// A map from a solvable variable, conditional variable and extra(feature name) variable to
+    /// the clauses that need to be watched.
+    conditional_clauses: IndexMap<
+        (VariableId, Option<VariableId>, Option<VariableId>),
+        Vec<(Requirement, ClauseId)>,
+        ahash::RandomState,
+    >,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
@@ -666,11 +681,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .push((requirement, clause_id));
         }
 
-        for (solvable_id, condition_variable, requirement, clause_id) in
+        for (solvable_id, condition_variable, extra_variable, requirement, clause_id) in
             output.new_conditional_clauses
         {
             self.conditional_clauses
-                .entry((solvable_id, condition_variable))
+                .entry((solvable_id, condition_variable, extra_variable))
                 .or_default()
                 .push((requirement, clause_id));
         }
@@ -791,6 +806,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 (
                     solvable_id,
                     None,
+                    None,
                     requirements
                         .iter()
                         .map(|(r, c)| (*r, *c))
@@ -801,15 +817,16 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let conditional_iter =
             self.conditional_clauses
                 .iter()
-                .map(|((solvable_id, condition), clauses)| {
+                .map(|((solvable_id, condition, extra), clauses)| {
                     (
                         *solvable_id,
-                        Some(*condition),
+                        *condition,
+                        *extra,
                         clauses.iter().map(|(r, c)| (*r, *c)).collect::<Vec<_>>(),
                     )
                 });
 
-        for (solvable_id, condition, requirements) in requires_iter.chain(conditional_iter) {
+        for (solvable_id, condition, extra, requirements) in requires_iter.chain(conditional_iter) {
             let is_explicit_requirement = solvable_id == VariableId::root();
 
             if let Some(best_decision) = &best_decision {
@@ -833,6 +850,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                 // If the condition is not met, skip this requirement entirely
                 if !condition_met {
+                    continue;
+                }
+            }
+
+            if let Some(extra_variable) = extra {
+                // If the extra is not enabled, skip this requirement entirely
+                if self.decision_tracker.assigned_value(extra_variable) != Some(true) {
                     continue;
                 }
             }
@@ -1589,6 +1613,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
             solvable_id: SolvableOrRootId,
             requirement: Requirement,
             condition: Option<(SolvableId, VersionSetId)>,
+            extra: Option<(VariableId, StringId)>,
             candidates: Vec<&'i [SolvableId]>,
         },
         NonMatchingCandidates {
@@ -1759,37 +1784,83 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                     // condition is `VersionSetId` right now but it will become a `Requirement`
                     // in the next versions of resolvo
-                    if let Some(condition) = conditional_requirement.condition {
-                        let condition_candidates =
-                            cache.get_or_cache_matching_candidates(condition).await?;
+                    match (
+                        conditional_requirement.condition,
+                        conditional_requirement.extra,
+                    ) {
+                        (None, Some(extra)) => {
+                            let extra_variable = variable_map.intern_extra(extra);
 
-                        for &condition_candidate in condition_candidates {
-                            let candidates = candidates.clone();
+                            // Add a task result for the condition
                             pending_futures.push(
                                 async move {
                                     Ok(TaskResult::SortedCandidates {
                                         solvable_id,
                                         requirement: conditional_requirement.requirement,
-                                        condition: Some((condition_candidate, condition)),
-                                        candidates,
+                                        condition: None,
+                                        extra: Some((extra_variable, extra)),
+                                        candidates: candidates.clone(),
                                     })
                                 }
                                 .boxed_local(),
                             );
                         }
-                    } else {
-                        // Add a task result for the condition
-                        pending_futures.push(
-                            async move {
-                                Ok(TaskResult::SortedCandidates {
-                                    solvable_id,
-                                    requirement: conditional_requirement.requirement,
-                                    condition: None,
-                                    candidates: candidates.clone(),
-                                })
+                        (Some(condition), Some(extra)) => {
+                            let condition_candidates =
+                                cache.get_or_cache_matching_candidates(condition).await?;
+                            let extra_variable = variable_map.intern_extra(extra);
+
+                            for &condition_candidate in condition_candidates {
+                                let candidates = candidates.clone();
+                                pending_futures.push(
+                                    async move {
+                                        Ok(TaskResult::SortedCandidates {
+                                            solvable_id,
+                                            requirement: conditional_requirement.requirement,
+                                            condition: Some((condition_candidate, condition)),
+                                            extra: Some((extra_variable, extra)),
+                                            candidates,
+                                        })
+                                    }
+                                    .boxed_local(),
+                                );
                             }
-                            .boxed_local(),
-                        );
+                        }
+                        (Some(condition), None) => {
+                            let condition_candidates =
+                                cache.get_or_cache_matching_candidates(condition).await?;
+
+                            for &condition_candidate in condition_candidates {
+                                let candidates = candidates.clone();
+                                pending_futures.push(
+                                    async move {
+                                        Ok(TaskResult::SortedCandidates {
+                                            solvable_id,
+                                            requirement: conditional_requirement.requirement,
+                                            condition: Some((condition_candidate, condition)),
+                                            extra: None,
+                                            candidates,
+                                        })
+                                    }
+                                    .boxed_local(),
+                                );
+                            }
+                        }
+                        (None, None) => {
+                            // Add a task result for the condition
+                            pending_futures.push(
+                                async move {
+                                    Ok(TaskResult::SortedCandidates {
+                                        solvable_id,
+                                        requirement: conditional_requirement.requirement,
+                                        condition: None,
+                                        extra: None,
+                                        candidates: candidates.clone(),
+                                    })
+                                }
+                                .boxed_local(),
+                            );
+                        }
                     }
                 }
 
@@ -1857,6 +1928,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 solvable_id,
                 requirement,
                 condition,
+                extra,
                 candidates,
             } => {
                 tracing::trace!(
@@ -1926,69 +1998,152 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     );
                 }
 
-                if let Some((condition, condition_version_set_id)) = condition {
-                    let condition_variable = variable_map.intern_solvable(condition);
+                match (condition, extra) {
+                    (
+                        Some((condition_variable, condition_version_set_id)),
+                        Some((extra_variable, extra_name)),
+                    ) => {
+                        let condition_variable = variable_map.intern_solvable(condition_variable);
 
-                    // Add a condition clause
-                    let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
-                        variable,
-                        requirement,
-                        condition_variable,
-                        condition_version_set_id,
-                        decision_tracker,
-                        version_set_variables.iter().flatten().copied(),
-                    );
+                        let (watched_literals, conflict, kind) =
+                            WatchedLiterals::conditional_with_extra(
+                                variable,
+                                requirement,
+                                condition_variable,
+                                condition_version_set_id,
+                                extra_variable,
+                                extra_name,
+                                decision_tracker,
+                                version_set_variables.iter().flatten().copied(),
+                            );
 
-                    // Add the conditional clause
-                    let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
+                        // Add the conditional clause
+                        let no_candidates =
+                            candidates.iter().all(|candidates| candidates.is_empty());
 
-                    let has_watches = watched_literals.is_some();
-                    let clause_id = clauses.alloc(watched_literals, kind);
+                        let has_watches = watched_literals.is_some();
+                        let clause_id = clauses.alloc(watched_literals, kind);
 
-                    if has_watches {
-                        output.clauses_to_watch.push(clause_id);
+                        if has_watches {
+                            output.clauses_to_watch.push(clause_id);
+                        }
+
+                        output.new_conditional_clauses.push((
+                            variable,
+                            Some(condition_variable),
+                            Some(extra_variable),
+                            requirement,
+                            clause_id,
+                        ));
+
+                        if conflict {
+                            output.conflicting_clauses.push(clause_id);
+                        } else if no_candidates {
+                            // Add assertions for unit clauses (i.e. those with no matching candidates)
+                            output.negative_assertions.push((variable, clause_id));
+                        }
                     }
+                    (None, Some((extra_variable, extra_name))) => {
+                        let (watched_literals, conflict, kind) =
+                            WatchedLiterals::requires_with_extra(
+                                variable,
+                                extra_variable,
+                                extra_name,
+                                requirement,
+                                decision_tracker,
+                                version_set_variables.iter().flatten().copied(),
+                            );
 
-                    output.new_conditional_clauses.push((
-                        variable,
-                        condition_variable,
-                        requirement,
-                        clause_id,
-                    ));
+                        // Add the requirements clause
+                        let no_candidates =
+                            candidates.iter().all(|candidates| candidates.is_empty());
 
-                    if conflict {
-                        output.conflicting_clauses.push(clause_id);
-                    } else if no_candidates {
-                        // Add assertions for unit clauses (i.e. those with no matching candidates)
-                        output.negative_assertions.push((variable, clause_id));
+                        let has_watches = watched_literals.is_some();
+                        let clause_id = clauses.alloc(watched_literals, kind);
+
+                        if has_watches {
+                            output.clauses_to_watch.push(clause_id);
+                        }
+
+                        output
+                            .new_requires_clauses
+                            .push((variable, requirement, clause_id));
+
+                        if conflict {
+                            output.conflicting_clauses.push(clause_id);
+                        } else if no_candidates {
+                            // Add assertions for unit clauses (i.e. those with no matching candidates)
+                            output.negative_assertions.push((variable, clause_id));
+                        }
                     }
-                } else {
-                    let (watched_literals, conflict, kind) = WatchedLiterals::requires(
-                        variable,
-                        requirement,
-                        version_set_variables.iter().flatten().copied(),
-                        decision_tracker,
-                    );
+                    (Some((condition, condition_version_set_id)), None) => {
+                        let condition_variable = variable_map.intern_solvable(condition);
 
-                    // Add the requirements clause
-                    let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
+                        // Add a condition clause
+                        let (watched_literals, conflict, kind) = WatchedLiterals::conditional(
+                            variable,
+                            requirement,
+                            condition_variable,
+                            condition_version_set_id,
+                            decision_tracker,
+                            version_set_variables.iter().flatten().copied(),
+                        );
 
-                    let has_watches = watched_literals.is_some();
-                    let clause_id = clauses.alloc(watched_literals, kind);
+                        // Add the conditional clause
+                        let no_candidates =
+                            candidates.iter().all(|candidates| candidates.is_empty());
 
-                    if has_watches {
-                        output.clauses_to_watch.push(clause_id);
+                        let has_watches = watched_literals.is_some();
+                        let clause_id = clauses.alloc(watched_literals, kind);
+
+                        if has_watches {
+                            output.clauses_to_watch.push(clause_id);
+                        }
+
+                        output.new_conditional_clauses.push((
+                            variable,
+                            Some(condition_variable),
+                            None,
+                            requirement,
+                            clause_id,
+                        ));
+
+                        if conflict {
+                            output.conflicting_clauses.push(clause_id);
+                        } else if no_candidates {
+                            // Add assertions for unit clauses (i.e. those with no matching candidates)
+                            output.negative_assertions.push((variable, clause_id));
+                        }
                     }
+                    (None, None) => {
+                        let (watched_literals, conflict, kind) = WatchedLiterals::requires(
+                            variable,
+                            requirement,
+                            version_set_variables.iter().flatten().copied(),
+                            decision_tracker,
+                        );
 
-                    output
-                        .new_requires_clauses
-                        .push((variable, requirement, clause_id));
+                        // Add the requirements clause
+                        let no_candidates =
+                            candidates.iter().all(|candidates| candidates.is_empty());
 
-                    if conflict {
-                        output.conflicting_clauses.push(clause_id);
-                    } else if no_candidates {
-                        // Add assertions for unit clauses (i.e. those with no matching candidates)
-                        output.negative_assertions.push((variable, clause_id));
+                        let has_watches = watched_literals.is_some();
+                        let clause_id = clauses.alloc(watched_literals, kind);
+
+                        if has_watches {
+                            output.clauses_to_watch.push(clause_id);
+                        }
+
+                        output
+                            .new_requires_clauses
+                            .push((variable, requirement, clause_id));
+
+                        if conflict {
+                            output.conflicting_clauses.push(clause_id);
+                        } else if no_candidates {
+                            // Add assertions for unit clauses (i.e. those with no matching candidates)
+                            output.negative_assertions.push((variable, clause_id));
+                        }
                     }
                 }
             }

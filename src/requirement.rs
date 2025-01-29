@@ -1,4 +1,4 @@
-use crate::{Interner, VersionSetId, VersionSetUnionId};
+use crate::{Interner, StringId, VersionSetId, VersionSetUnionId};
 use itertools::Itertools;
 use std::fmt::Display;
 
@@ -10,14 +10,21 @@ pub struct ConditionalRequirement {
     pub condition: Option<VersionSetId>,
     /// The requirement that is only active when the condition is met.
     pub requirement: Requirement,
+    /// The extra that must be enabled for the requirement to be active.
+    pub extra: Option<StringId>,
 }
 
 impl ConditionalRequirement {
     /// Creates a new conditional requirement.
-    pub fn new(condition: Option<VersionSetId>, requirement: Requirement) -> Self {
+    pub fn new(
+        condition: Option<VersionSetId>,
+        requirement: Requirement,
+        extra: Option<StringId>,
+    ) -> Self {
         Self {
             condition,
             requirement,
+            extra,
         }
     }
     /// Returns the version sets that satisfy the requirement.
@@ -49,6 +56,7 @@ impl From<Requirement> for ConditionalRequirement {
         Self {
             condition: None,
             requirement: value,
+            extra: None,
         }
     }
 }
@@ -58,6 +66,7 @@ impl From<VersionSetId> for ConditionalRequirement {
         Self {
             condition: None,
             requirement: value.into(),
+            extra: None,
         }
     }
 }
@@ -67,6 +76,7 @@ impl From<VersionSetUnionId> for ConditionalRequirement {
         Self {
             condition: None,
             requirement: value.into(),
+            extra: None,
         }
     }
 }
@@ -76,6 +86,7 @@ impl From<(VersionSetId, Option<VersionSetId>)> for ConditionalRequirement {
         Self {
             condition,
             requirement: requirement.into(),
+            extra: None,
         }
     }
 }

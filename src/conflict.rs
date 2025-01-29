@@ -212,6 +212,8 @@ impl Conflict {
                         }
                     }
                 }
+                &Clause::RequiresWithExtra(..) => todo!(),
+                &Clause::ConditionalWithExtra(..) => todo!(),
             }
         }
 

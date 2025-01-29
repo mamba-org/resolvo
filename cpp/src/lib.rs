@@ -31,6 +31,41 @@ impl From<SolvableId> for resolvo::SolvableId {
     }
 }
 
+/// A wrapper around an optional string id.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FfiOptionStringId {
+    pub is_some: bool,
+    pub value: StringId,
+}
+
+impl From<Option<resolvo::StringId>> for FfiOptionStringId {
+    fn from(opt: Option<resolvo::StringId>) -> Self {
+        match opt {
+            Some(v) => Self {
+                is_some: true,
+                value: v.into(),
+            },
+            None => Self {
+                is_some: false,
+                value: StringId { id: 0 },
+            },
+        }
+    }
+}
+
+impl From<FfiOptionStringId> for Option<resolvo::StringId> {
+    fn from(ffi: FfiOptionStringId) -> Self {
+        if ffi.is_some {
+            Some(ffi.value.into())
+        } else {
+            None
+        }
+    }
+}
+
 /// A wrapper around an optional version set id.
 /// cbindgen:derive-eq
 /// cbindgen:derive-neq
@@ -100,6 +135,7 @@ impl From<FfiOptionVersionSetId> for Option<VersionSetId> {
 pub struct ConditionalRequirement {
     pub condition: FfiOptionVersionSetId,
     pub requirement: Requirement,
+    pub extra: FfiOptionStringId,
 }
 
 impl From<resolvo::ConditionalRequirement> for ConditionalRequirement {
@@ -107,6 +143,7 @@ impl From<resolvo::ConditionalRequirement> for ConditionalRequirement {
         Self {
             condition: value.condition.into(),
             requirement: value.requirement.into(),
+            extra: value.extra.into(),
         }
     }
 }
@@ -116,6 +153,7 @@ impl From<ConditionalRequirement> for resolvo::ConditionalRequirement {
         Self {
             condition: value.condition.into(),
             requirement: value.requirement.into(),
+            extra: value.extra.into(),
         }
     }
 }
@@ -622,6 +660,7 @@ pub extern "C" fn resolvo_conditional_requirement_single(
     ConditionalRequirement {
         condition: Option::<VersionSetId>::None.into(),
         requirement: Requirement::Single(version_set_id),
+        extra: None.into(),
     }
 }
 
@@ -633,6 +672,7 @@ pub extern "C" fn resolvo_conditional_requirement_union(
     ConditionalRequirement {
         condition: Option::<VersionSetId>::None.into(),
         requirement: Requirement::Union(version_set_union_id),
+        extra: None.into(),
     }
 }
 
