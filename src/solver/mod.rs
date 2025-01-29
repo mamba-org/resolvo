@@ -35,18 +35,21 @@ mod decision_tracker;
 pub(crate) mod variable_map;
 mod watch_map;
 
+/// The output of the `add_clauses_for_solvables` function.
+type AddConditionalClauseOutput = (
+    VariableId,
+    Option<VariableId>,
+    Option<VariableId>,
+    Requirement,
+    ClauseId,
+);
+
 #[derive(Default)]
 struct AddClauseOutput {
     new_requires_clauses: Vec<(VariableId, Requirement, ClauseId)>,
     /// A vector of tuples from a solvable variable, conditional variable and extra(feature name) variable to
     /// the clauses that need to be watched.
-    new_conditional_clauses: Vec<(
-        VariableId,
-        Option<VariableId>,
-        Option<VariableId>,
-        Requirement,
-        ClauseId,
-    )>,
+    new_conditional_clauses: Vec<AddConditionalClauseOutput>,
     conflicting_clauses: Vec<ClauseId>,
     negative_assertions: Vec<(VariableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
@@ -153,6 +156,7 @@ impl Clauses {
 }
 
 type RequirementCandidateVariables = Vec<Vec<VariableId>>;
+type ConditionalClauseMap = (VariableId, Option<VariableId>, Option<VariableId>);
 
 /// Drives the SAT solving process.
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
@@ -164,11 +168,8 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     /// A map from a solvable variable, conditional variable and extra(feature name) variable to
     /// the clauses that need to be watched.
-    conditional_clauses: IndexMap<
-        (VariableId, Option<VariableId>, Option<VariableId>),
-        Vec<(Requirement, ClauseId)>,
-        ahash::RandomState,
-    >,
+    conditional_clauses:
+        IndexMap<ConditionalClauseMap, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the

@@ -292,6 +292,7 @@ impl Clause {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn conditional_with_extra(
         parent_id: VariableId,
         requirement: Requirement,
@@ -649,6 +650,7 @@ impl WatchedLiterals {
     ///
     /// The returned boolean value is true when adding the clause resulted in a
     /// conflict.
+    #[allow(clippy::too_many_arguments)]
     pub fn conditional_with_extra(
         package_id: VariableId,
         requirement: Requirement,
