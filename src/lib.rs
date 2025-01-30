@@ -63,6 +63,7 @@ pub trait Interner {
             .iter()
             .map(|&id| self.display_solvable(id).to_string())
             .sorted()
+            .unique()
             .format(" | ");
 
         let name = self.display_solvable_name(solvables[0]);
