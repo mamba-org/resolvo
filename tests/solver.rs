@@ -1679,6 +1679,53 @@ fn test_conditional_requirements_multiple_versions_met() {
         "###);
 }
 
+#[test]
+fn test_conditional_requirements_conflict() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[]);
+
+    // Package c has two versions with different dependencies
+    provider.add_package("c", 1.into(), &["d 1"], &[]); // c v1 requires d v1
+    provider.add_package("c", 2.into(), &["d 2"], &[]); // c v2 requires d v2
+
+    // Package d has incompatible versions
+    provider.add_package("d", 1.into(), &[], &[]);
+    provider.add_package("d", 2.into(), &[], &[]);
+
+    provider.add_package("a", 1.into(), &["b 1", "c 1; if b 1", "d 2", "c 2; if b 2"], &[]);
+
+    let requirements = provider.requirements(&[
+        "a", // Require package a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+
+    // This should fail to solve because:
+    // 1. When b=1 is chosen, it triggers the conditional requirement for c 1
+    // 2. c 1 requires d 1, but a requires d 2
+    // 3. d 1 and d 2 cannot be installed together
+
+    let solved = solver.solve(problem);
+    assert!(solved.is_err());
+
+    let conflict = solved.unwrap_err();
+    match conflict {
+        UnsolvableOrCancelled::Unsolvable(conflict) => {
+            let graph = conflict.graph(&solver);
+            let mut output = stderr();
+            graph
+                .graphviz(&mut output, solver.provider(), true)
+                .unwrap();
+        }
+        _ => panic!("Expected a conflict"),
+    }
+}
+
 /// In this test, the resolver installs the highest available version of b which is b 2
 /// However, the conditional requirement is that if b 1..2 is installed, require c
 /// Since b 2 is installed, c should not be installed

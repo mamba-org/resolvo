@@ -201,6 +201,7 @@ impl Conflict {
                         for &candidate_id in requirement_candidates {
                             let candidate_node =
                                 Self::add_node(&mut graph, &mut nodes, candidate_id.into());
+
                             graph.add_edge(
                                 package_node,
                                 candidate_node,
@@ -333,6 +334,8 @@ pub(crate) enum ConflictCause {
     ForbidMultipleInstances,
     /// The node was excluded
     Excluded,
+    /// The condition for the dependency is not met
+    ConditionNotMet(VersionSetId),
 }
 
 /// Represents a node that has been merged with others
@@ -402,7 +405,7 @@ impl ConflictGraph {
                     ConflictEdge::ConditionalRequires(_, _)
                         if target != ConflictNode::UnresolvedDependency =>
                     {
-                        "blue"
+                        "blue" // This indicates that the requirement has candidates, but the condition is not met
                     }
                     _ => "red",
                 };
@@ -414,8 +417,14 @@ impl ConflictGraph {
                     ConflictEdge::ConditionalRequires(condition_version_set_id, requirement) => {
                         format!(
                             "if {} then {}",
-                            interner.display_version_set(*condition_version_set_id),
+                            Requirement::from(*condition_version_set_id).display(interner),
                             requirement.display(interner)
+                        )
+                    }
+                    ConflictEdge::Conflict(ConflictCause::ConditionNotMet(version_set_id)) => {
+                        format!(
+                            "condition not met: {}",
+                            interner.display_version_set(*version_set_id)
                         )
                     }
                     ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)) => {
@@ -1121,6 +1130,13 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                             f,
                             "{indent}{} is locked, but another version is required as reported above",
                             self.interner.display_merged_solvables(&[solvable_id]),
+                        )?;
+                    }
+                    ConflictCause::ConditionNotMet(version_set_id) => {
+                        writeln!(
+                            f,
+                            "{indent}condition not met: {}",
+                            self.interner.display_version_set(*version_set_id),
                         )?;
                     }
                     ConflictCause::Excluded => continue,
