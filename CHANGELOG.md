@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.6...resolvo-v0.8.7) - 2025-01-13
+
+### Other
+
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.25 to 0.2.26 (#100)
+- simplify watchmap traversal (#98)
+
 ## [0.8.6](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.5...resolvo-v0.8.6) - 2025-01-08
 
 ### Other
