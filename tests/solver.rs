@@ -1696,7 +1696,12 @@ fn test_conditional_requirements_conflict() {
     provider.add_package("d", 1.into(), &[], &[]);
     provider.add_package("d", 2.into(), &[], &[]);
 
-    provider.add_package("a", 1.into(), &["b 1", "c 1; if b 1", "d 2", "c 2; if b 2"], &[]);
+    provider.add_package(
+        "a",
+        1.into(),
+        &["b 1", "c 1; if b 1", "d 2", "c 2; if b 2"],
+        &[],
+    );
 
     let requirements = provider.requirements(&[
         "a", // Require package a
@@ -1710,20 +1715,29 @@ fn test_conditional_requirements_conflict() {
     // 2. c 1 requires d 1, but a requires d 2
     // 3. d 1 and d 2 cannot be installed together
 
-    let solved = solver.solve(problem);
-    assert!(solved.is_err());
+    let solved = solver
+        .solve(problem)
+        .map_err(|e| match e {
+            UnsolvableOrCancelled::Unsolvable(conflict) => {
+                conflict.display_user_friendly(&solver).to_string()
+            }
+            UnsolvableOrCancelled::Cancelled(_) => "kir".to_string(),
+        })
+        .unwrap_err();
 
-    let conflict = solved.unwrap_err();
-    match conflict {
-        UnsolvableOrCancelled::Unsolvable(conflict) => {
-            let graph = conflict.graph(&solver);
-            let mut output = stderr();
-            graph
-                .graphviz(&mut output, solver.provider(), true)
-                .unwrap();
-        }
-        _ => panic!("Expected a conflict"),
-    }
+    assert_snapshot!(solved, @r"
+    The following packages are incompatible
+    └─ a * cannot be installed because there are no viable options:
+       └─ a 1 would require
+          ├─ b >=1, <2, which can be installed with any of the following options:
+          │  └─ b 1
+          ├─ d >=2, <3, which can be installed with any of the following options:
+          │  └─ d 2
+          └─ c >=1, <2, which cannot be installed because there are no viable options:
+             └─ c 1 would require
+                └─ d >=1, <2, which cannot be installed because there are no viable options:
+                   └─ d 1, which conflicts with the versions reported above.
+    ");
 }
 
 /// In this test, the resolver installs the highest available version of b which is b 2
