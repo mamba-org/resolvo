@@ -13,6 +13,7 @@ use crate::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
+    requirement::Condition,
     solver::{
         decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
         VariableId,
@@ -81,7 +82,7 @@ pub(crate) enum Clause {
     /// In SAT terms: (¬A ∨ (¬C1 v ~C2 v ~C3 v ... v ~Cn) ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
     /// C1 to Cn are the conditions, and B1 to B99 represent the possible candidates for
     /// the provided [`Requirement`].
-    Conditional(VariableId, Vec<VariableId>, Requirement),
+    Conditional(VariableId, Vec<(VariableId, Condition)>, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -238,31 +239,34 @@ impl Clause {
     fn conditional(
         parent_id: VariableId,
         requirement: Requirement,
-        condition_variables: Vec<VariableId>,
+        condition_variables: Vec<(VariableId, Condition)>,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
         let mut requirement_candidates = requirement_candidates.into_iter();
 
-        let requirement_literal =
-            if condition_variables.iter().all(|condition_variable| decision_tracker.assigned_value(*condition_variable) == Some(true)) {
-                // then all of the conditions are true, so we can require the requirement
-                requirement_candidates
-                    .find(|&id| decision_tracker.assigned_value(id) != Some(false))
-                    .map(|id| id.positive())
-            } else {
-                None
-            };
+        let requirement_literal = if condition_variables.iter().all(|condition_variable| {
+            decision_tracker.assigned_value(condition_variable.0) == Some(true)
+        }) {
+            // then all of the conditions are true, so we can require the requirement
+            requirement_candidates
+                .find(|&id| decision_tracker.assigned_value(id) != Some(false))
+                .map(|id| id.positive())
+        } else {
+            None
+        };
 
         (
             Clause::Conditional(parent_id, condition_variables, requirement),
             Some([
                 parent_id.negative(),
-                requirement_literal.unwrap_or(condition_variables.first().unwrap().negative()),
+                requirement_literal.unwrap_or(condition_variables.first().unwrap().0.negative()),
             ]),
             requirement_literal.is_none()
-                && condition_variables.iter().all(|condition_variable| decision_tracker.assigned_value(*condition_variable) == Some(true)),
+                && condition_variables.iter().all(|condition_variable| {
+                    decision_tracker.assigned_value(condition_variable.0) == Some(true)
+                }),
         )
     }
 
@@ -310,7 +314,7 @@ impl Clause {
                 .try_fold(init, visit),
             Clause::Conditional(package_id, condition_variables, requirement) => {
                 iter::once(package_id.negative())
-                    .chain(condition_variables.iter().map(|c| c.negative()))
+                    .chain(condition_variables.iter().map(|c| c.0.negative()))
                     .chain(
                         requirements_to_sorted_candidates[&requirement]
                             .iter()
@@ -474,7 +478,7 @@ impl WatchedLiterals {
     pub fn conditional(
         package_id: VariableId,
         requirement: Requirement,
-        condition_variables: Vec<VariableId>,
+        condition_variables: Vec<(VariableId, Condition)>,
         decision_tracker: &DecisionTracker,
         requirement_candidates: impl IntoIterator<Item = VariableId>,
     ) -> (Option<Self>, bool, Clause) {
@@ -693,7 +697,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     package_id,
                     condition_variables
                         .iter()
-                        .map(|v| v.display(self.variable_map, self.interner))
+                        .map(|v| v.0.display(self.variable_map, self.interner))
                         .join(", "),
                     requirement.display(self.interner),
                 )

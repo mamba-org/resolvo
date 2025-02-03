@@ -19,7 +19,7 @@ use crate::{
         id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
         mapping::Mapping,
     },
-    requirement::ConditionalRequirement,
+    requirement::{Condition, ConditionalRequirement},
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     solver::binary_encoding::AtMostOnceTracker,
     Candidates, Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
@@ -1588,7 +1588,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
         SortedCandidates {
             solvable_id: SolvableOrRootId,
             requirement: Requirement,
-            condition: Option<(SolvableId, VersionSetId)>,
+            condition: Vec<(SolvableId, Condition)>,
             candidates: Vec<&'i [SolvableId]>,
         },
         NonMatchingCandidates {
