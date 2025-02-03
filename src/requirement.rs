@@ -5,7 +5,9 @@ use std::fmt::Display;
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Condition {
+    /// A condition that must be met for the requirement to be active.
     VersionSetId(VersionSetId),
+    /// An extra which if enabled, requires further dependencies to be met.
     Extra(StringId),
 }
 

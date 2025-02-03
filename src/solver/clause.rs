@@ -46,7 +46,7 @@ use crate::{
 /// limited set of clauses. There are thousands of clauses for a particular
 /// dependency resolution problem, and we try to keep the [`Clause`] enum small.
 /// A naive implementation would store a `Vec<Literal>`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Clause {
     /// An assertion that the root solvable must be installed
     ///
@@ -77,12 +77,10 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬A ∨ ¬B)
     Constrains(VariableId, VariableId, VersionSetId),
-    /// In SAT terms: (¬A ∨ ¬C ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
-    /// C is the condition, and B1 to B99 represent the possible candidates for
+    /// In SAT terms: (¬A ∨ (¬C1 v ~C2 v ~C3 v ... v ~Cn) ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
+    /// C1 to Cn are the conditions, and B1 to B99 represent the possible candidates for
     /// the provided [`Requirement`].
-    /// We need to store the version set id because in the conflict graph, the version set id
-    /// is used to identify the condition variable.
-    Conditional(VariableId, VariableId, VersionSetId, Requirement),
+    Conditional(VariableId, Vec<VariableId>, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -258,12 +256,7 @@ impl Clause {
             };
 
         (
-            Clause::Conditional(
-                parent_id,
-                condition_variable,
-                condition_version_set_id,
-                requirement,
-            ),
+            Clause::Conditional(parent_id, condition_variable, requirement),
             Some([
                 parent_id.negative(),
                 requirement_literal.unwrap_or(condition_variable.negative()),

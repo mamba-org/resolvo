@@ -22,7 +22,7 @@ use itertools::{ExactlyOneError, Itertools};
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
-    Candidates, ConditionalRequirement, Dependencies, DependencyProvider, ExtraId, Interner,
+    Candidates, ConditionalRequirement, Dependencies, DependencyProvider, Interner,
     KnownDependencies, NameId, Problem, Requirement, SolvableId, Solver, SolverCache, StringId,
     UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
 };
@@ -74,6 +74,14 @@ impl Pack {
         self
     }
 
+    fn with_extra(mut self, extra: impl Into<String>, value: impl Into<String>) -> Pack {
+        self.extra
+            .entry(extra.into())
+            .or_default()
+            .push(value.into());
+        self
+    }
+
     fn offset(&self, version_offset: i32) -> Pack {
         let mut pack = *self;
         pack.version = pack.version.wrapping_add_signed(version_offset);
@@ -113,7 +121,9 @@ impl FromStr for Pack {
 struct Spec {
     name: String,
     versions: Ranges<Pack>,
-    condition: Option<Box<Spec>>,
+    /// c 1; if a 1 and b 1 (conditions are a, b)
+    conditions: Vec<Box<Spec>>,
+    /// a[b,c] 1; if d 1 and c 1 (extras are b, c)
     extras: Vec<String>,
 }
 
@@ -121,13 +131,13 @@ impl Spec {
     pub fn new(
         name: String,
         versions: Ranges<Pack>,
-        condition: Option<Box<Spec>>,
+        conditions: Vec<Box<Spec>>,
         extras: Vec<String>,
     ) -> Self {
         Self {
             name,
             versions,
-            condition,
+            conditions,
             extras,
         }
     }
@@ -223,7 +233,7 @@ struct BundleBoxProvider {
 struct BundleBoxPackageDependencies {
     dependencies: Vec<Vec<Spec>>,
     constrains: Vec<Spec>,
-    extras: HashMap<ExtraId, Vec<Vec<Spec>>>,
+    extras: HashMap<StringId, Vec<Spec>>,
 }
 
 impl BundleBoxProvider {
@@ -237,7 +247,7 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>)>>(
+    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>, Vec<String>)>>(
         &self,
         requirements: &[&str],
     ) -> Vec<R> {
@@ -247,14 +257,18 @@ impl BundleBoxProvider {
             .map(|spec| {
                 (
                     self.intern_version_set(&spec),
-                    spec.condition.as_ref().map(|c| self.intern_version_set(c)),
+                    spec.conditions
+                        .iter()
+                        .as_ref()
+                        .map(|c| self.intern_version_set(c)),
+                    spec.extras.iter().map(|e| e.to_string()),
                 )
             })
             .map(From::from)
             .collect()
     }
 
-    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<Requirement> {
+    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<ConditionalRequirement> {
         requirements
             .iter()
             .map(|deps| {
@@ -289,6 +303,7 @@ impl BundleBoxProvider {
         result
     }
 
+    /// TODO: we should be able to set packages with extras as favored or excluded as well
     pub fn set_favored(&mut self, package_name: &str, version: u32) {
         self.favored
             .insert(package_name.to_owned(), Pack::new(version));
@@ -325,7 +340,7 @@ impl BundleBoxProvider {
         let extras = extras
             .iter()
             .map(|(key, values)| {
-                (self.pool.intern_extra(package_id, key), {
+                (self.pool.intern_string(key), {
                     values
                         .iter()
                         .map(|dep| Spec::parse_union(dep).collect())
@@ -440,13 +455,22 @@ impl DependencyProvider for BundleBoxProvider {
         &self,
         candidates: &[SolvableId],
         version_set: VersionSetId,
+        extra: Option<StringId>,
         inverse: bool,
     ) -> Vec<SolvableId> {
         let range = self.pool.resolve_version_set(version_set);
         candidates
             .iter()
             .copied()
-            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) != inverse)
+            .map(|s| self.pool.resolve_solvable(s))
+            .filter(|s| range.contains(&s.record) != inverse)
+            .filter(|s| {
+                if let Some(extra) = extra {
+                    s.record.extra.contains(&self.pool.resolve_string(extra))
+                } else {
+                    true
+                }
+            })
             .collect()
     }
 
@@ -503,7 +527,11 @@ impl DependencyProvider for BundleBoxProvider {
         self.maybe_delay(Some(candidates)).await
     }
 
-    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
+    async fn get_dependencies(
+        &self,
+        solvable: SolvableId,
+        extra: Option<StringId>,
+    ) -> Dependencies {
         tracing::info!(
             "get dependencies for {}",
             self.pool
@@ -545,6 +573,12 @@ impl DependencyProvider for BundleBoxProvider {
                 .await;
         };
 
+        let extra_deps = if let Some(extra) = extra {
+            deps.extras.get(&extra)
+        } else {
+            None
+        };
+
         let mut result = KnownDependencies {
             requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
@@ -562,14 +596,11 @@ impl DependencyProvider for BundleBoxProvider {
                 .intern_version_set(first_name, first.versions.clone());
 
             let requirement = if remaining_req_specs.len() == 0 {
+                let mut conditions = vec![];
                 if let Some(condition) = &first.condition {
-                    ConditionalRequirement::new(
-                        Some(self.intern_version_set(condition)),
-                        first_version_set.into(),
-                    )
-                } else {
-                    first_version_set.into()
+                    conditions.push(self.intern_version_set(condition));
                 }
+                ConditionalRequirement::new(conditions, first_version_set.into())
             } else {
                 // Check if all specs have the same condition
                 let common_condition = first.condition.as_ref().map(|c| self.intern_version_set(c));
@@ -595,11 +626,37 @@ impl DependencyProvider for BundleBoxProvider {
                     .pool
                     .intern_version_set_union(version_sets[0], version_sets.into_iter().skip(1));
 
+                let mut conditions = vec![];
                 if let Some(condition) = common_condition {
-                    ConditionalRequirement::new(Some(condition), union.into())
-                } else {
-                    union.into()
+                    conditions.push(condition);
                 }
+                ConditionalRequirement::new(conditions, union.into())
+            };
+
+            result.requirements.push(requirement);
+        }
+
+        for req in extra_deps {
+            let mut remaining_req_specs = req.iter();
+
+            let first = remaining_req_specs
+                .next()
+                .expect("Dependency spec must have at least one constraint");
+
+            let first_name = self.pool.intern_package_name(&first.name);
+            let first_version_set = self
+                .pool
+                .intern_version_set(first_name, first.versions.clone());
+
+            let requirement = if remaining_req_specs.len() == 0 {
+                let mut conditions = vec![Condition::Extra(extra)];
+                if let Some(condition) = &first.condition {
+                    conditions.push(self.intern_version_set(condition));
+                }
+                ConditionalRequirement::new(conditions, first_version_set.into())
+            } else {
+                // TODO: Implement extra deps for union
+                todo!("extra deps for union not implemented")
             };
 
             result.requirements.push(requirement);

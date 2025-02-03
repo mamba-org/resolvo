@@ -42,14 +42,6 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
 
     /// Map from package names to the id of their interned counterpart
     pub(crate) string_to_ids: FrozenCopyMap<String, StringId, ahash::RandomState>,
-
-    /// Interned extras
-    extras: Arena<ExtraId, (NameId, String)>,
-
-    /// Map from package names and their extras to the id of their interned counterpart
-    pub(crate) extra_to_ids: FrozenCopyMap<(NameId, String), ExtraId, ahash::RandomState>,
-
-    /// Interned match specs
     pub(crate) version_sets: Arena<VersionSetId, (NameId, VS)>,
 
     /// Map from version set to the id of their interned counterpart
@@ -132,23 +124,23 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
     /// [`Self::resolve_extra`] function.
     pub fn intern_extra(
         &self,
-        package_id: NameId,
+        solvable_id: SolvableId,
         extra_name: impl Into<String> + AsRef<str>,
     ) -> ExtraId {
         if let Some(id) = self
             .extra_to_ids
-            .get_copy(&(package_id, extra_name.as_ref().to_string()))
+            .get_copy(&(solvable_id, extra_name.as_ref().to_string()))
         {
             return id;
         }
 
         let extra = extra_name.into();
-        let id = self.extras.alloc((package_id, extra));
-        self.extra_to_ids.insert_copy((package_id, extra), id);
+        let id = self.extras.alloc((solvable_id, extra));
+        self.extra_to_ids.insert_copy((solvable_id, extra), id);
         id
     }
 
-    pub fn resolve_extra(&self, extra_id: ExtraId) -> &(NameId, String) {
+    pub fn resolve_extra(&self, extra_id: ExtraId) -> &(SolvableId, String) {
         &self.extras[extra_id]
     }
 
