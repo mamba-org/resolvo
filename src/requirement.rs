@@ -1,22 +1,29 @@
-use crate::{Interner, VersionSetId, VersionSetUnionId};
+use crate::{Interner, StringId, VersionSetId, VersionSetUnionId};
 use itertools::Itertools;
 use std::fmt::Display;
 
-/// Specifies a conditional requirement, where the requirement is only active when the condition is met.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Condition {
+    VersionSetId(VersionSetId),
+    Extra(StringId),
+}
+
+/// Specifies a conditional requirement, where the requirement is only active when the condition is met.
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConditionalRequirement {
-    /// The condition that must be met for the requirement to be active.
-    pub condition: Option<VersionSetId>,
+    /// The conditions that must be met for the requirement to be active.
+    pub conditions: Vec<Condition>,
     /// The requirement that is only active when the condition is met.
     pub requirement: Requirement,
 }
 
 impl ConditionalRequirement {
     /// Creates a new conditional requirement.
-    pub fn new(condition: Option<VersionSetId>, requirement: Requirement) -> Self {
+    pub fn new(conditions: Vec<Condition>, requirement: Requirement) -> Self {
         Self {
-            condition,
+            conditions,
             requirement,
         }
     }
@@ -32,22 +39,22 @@ impl ConditionalRequirement {
     pub fn version_sets_with_condition<'i>(
         &'i self,
         interner: &'i impl Interner,
-    ) -> impl Iterator<Item = (VersionSetId, Option<VersionSetId>)> + 'i {
+    ) -> impl Iterator<Item = (VersionSetId, Vec<Condition>)> + 'i {
         self.requirement
             .version_sets(interner)
-            .map(move |vs| (vs, self.condition))
+            .map(move |vs| (vs, self.conditions.clone()))
     }
 
     /// Returns the condition and requirement.
-    pub fn into_condition_and_requirement(self) -> (Option<VersionSetId>, Requirement) {
-        (self.condition, self.requirement)
+    pub fn into_condition_and_requirement(self) -> (Vec<Condition>, Requirement) {
+        (self.conditions, self.requirement)
     }
 }
 
 impl From<Requirement> for ConditionalRequirement {
     fn from(value: Requirement) -> Self {
         Self {
-            condition: None,
+            conditions: vec![],
             requirement: value,
         }
     }
@@ -56,7 +63,7 @@ impl From<Requirement> for ConditionalRequirement {
 impl From<VersionSetId> for ConditionalRequirement {
     fn from(value: VersionSetId) -> Self {
         Self {
-            condition: None,
+            conditions: vec![],
             requirement: value.into(),
         }
     }
@@ -65,16 +72,16 @@ impl From<VersionSetId> for ConditionalRequirement {
 impl From<VersionSetUnionId> for ConditionalRequirement {
     fn from(value: VersionSetUnionId) -> Self {
         Self {
-            condition: None,
+            conditions: vec![],
             requirement: value.into(),
         }
     }
 }
 
-impl From<(VersionSetId, Option<VersionSetId>)> for ConditionalRequirement {
-    fn from((requirement, condition): (VersionSetId, Option<VersionSetId>)) -> Self {
+impl From<(VersionSetId, Vec<Condition>)> for ConditionalRequirement {
+    fn from((requirement, conditions): (VersionSetId, Vec<Condition>)) -> Self {
         Self {
-            condition,
+            conditions,
             requirement: requirement.into(),
         }
     }

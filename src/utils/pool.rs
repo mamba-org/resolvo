@@ -6,7 +6,7 @@ use std::{
 use crate::internal::{
     arena::Arena,
     frozen_copy_map::FrozenCopyMap,
-    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
+    id::{ExtraId, NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     small_vec::SmallVec,
 };
 
@@ -43,6 +43,12 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
     /// Map from package names to the id of their interned counterpart
     pub(crate) string_to_ids: FrozenCopyMap<String, StringId, ahash::RandomState>,
 
+    /// Interned extras
+    extras: Arena<ExtraId, (NameId, String)>,
+
+    /// Map from package names and their extras to the id of their interned counterpart
+    pub(crate) extra_to_ids: FrozenCopyMap<(NameId, String), ExtraId, ahash::RandomState>,
+
     /// Interned match specs
     pub(crate) version_sets: Arena<VersionSetId, (NameId, VS)>,
 
@@ -62,6 +68,8 @@ impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
             package_names: Arena::new(),
             strings: Arena::new(),
             string_to_ids: Default::default(),
+            extras: Arena::new(),
+            extra_to_ids: Default::default(),
             version_set_to_id: Default::default(),
             version_sets: Arena::new(),
             version_set_unions: Arena::new(),
@@ -116,12 +124,47 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         next_id
     }
 
+    /// Interns an extra into the [`Pool`], returning its [`StringId`]. Extras
+    /// are deduplicated. If the same extra is inserted twice the same
+    /// [`StringId`] will be returned.
+    ///
+    /// The original extra can be resolved using the
+    /// [`Self::resolve_extra`] function.
+    pub fn intern_extra(
+        &self,
+        package_id: NameId,
+        extra_name: impl Into<String> + AsRef<str>,
+    ) -> ExtraId {
+        if let Some(id) = self
+            .extra_to_ids
+            .get_copy(&(package_id, extra_name.as_ref().to_string()))
+        {
+            return id;
+        }
+
+        let extra = extra_name.into();
+        let id = self.extras.alloc((package_id, extra));
+        self.extra_to_ids.insert_copy((package_id, extra), id);
+        id
+    }
+
+    pub fn resolve_extra(&self, extra_id: ExtraId) -> &(NameId, String) {
+        &self.extras[extra_id]
+    }
+
     /// Returns the package name associated with the provided [`NameId`].
     ///
     /// Panics if the package name is not found in the pool.
     pub fn resolve_package_name(&self, name_id: NameId) -> &N {
         &self.package_names[name_id]
     }
+
+    /// Returns the extra associated with the provided [`StringId`].
+    ///
+    /// Panics if the extra is not found in the pool.
+    // pub fn resolve_extra(&self, package_id: NameId, extra_id: StringId) -> &str {
+    //     &self.strings[self.extra_to_ids.get_copy(&(package_id, extra_id)).unwrap()]
+    // }
 
     /// Returns the [`NameId`] associated with the specified name or `None` if
     /// the name has not previously been interned using
