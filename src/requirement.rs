@@ -11,6 +11,27 @@ pub enum Condition {
     Extra(StringId),
 }
 
+impl From<VersionSetId> for Condition {
+    fn from(value: VersionSetId) -> Self {
+        Condition::VersionSetId(value)
+    }
+}
+
+impl From<StringId> for Condition {
+    fn from(value: StringId) -> Self {
+        Condition::Extra(value)
+    }
+}
+
+impl From<Condition> for VersionSetId {
+    fn from(value: Condition) -> Self {
+        match value {
+            Condition::VersionSetId(id) => id,
+            Condition::Extra(_) => panic!("Cannot convert Extra to VersionSetId"),
+        }
+    }
+}
+
 /// Specifies a conditional requirement, where the requirement is only active when the condition is met.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

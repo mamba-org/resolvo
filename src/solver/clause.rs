@@ -258,7 +258,7 @@ impl Clause {
         };
 
         (
-            Clause::Conditional(parent_id, condition_variables, requirement),
+            Clause::Conditional(parent_id, condition_variables.clone(), requirement),
             Some([
                 parent_id.negative(),
                 requirement_literal.unwrap_or(condition_variables.first().unwrap().0.negative()),
@@ -288,10 +288,10 @@ impl Clause {
     where
         F: FnMut(C, Literal) -> ControlFlow<B, C>,
     {
-        match *self {
+        match self {
             Clause::InstallRoot => unreachable!(),
             Clause::Excluded(solvable, _) => visit(init, solvable.negative()),
-            Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
+            Clause::Learnt(learnt_id) => learnt_clauses[*learnt_id]
                 .iter()
                 .copied()
                 .try_fold(init, visit),
@@ -307,7 +307,7 @@ impl Clause {
                 .into_iter()
                 .try_fold(init, visit),
             Clause::ForbidMultipleInstances(s1, s2, _) => {
-                [s1.negative(), s2].into_iter().try_fold(init, visit)
+                [s1.negative(), *s2].into_iter().try_fold(init, visit)
             }
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
@@ -357,7 +357,7 @@ impl Clause {
         interner: &'i I,
     ) -> ClauseDisplay<'i, I> {
         ClauseDisplay {
-            kind: *self,
+            kind: self.clone(),
             variable_map,
             interner,
         }
@@ -636,7 +636,7 @@ pub(crate) struct ClauseDisplay<'i, I: Interner> {
 
 impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
+        match &self.kind {
             Clause::InstallRoot => write!(f, "InstallRoot"),
             Clause::Excluded(variable, reason) => {
                 write!(
@@ -644,7 +644,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     "Excluded({}({:?}), {})",
                     variable.display(self.variable_map, self.interner),
                     variable,
-                    self.interner.display_string(reason)
+                    self.interner.display_string(*reason)
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
@@ -665,7 +665,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     v1,
                     v2.display(self.variable_map, self.interner),
                     v2,
-                    self.interner.display_version_set(version_set_id)
+                    self.interner.display_version_set(*version_set_id)
                 )
             }
             Clause::ForbidMultipleInstances(v1, v2, name) => {
@@ -676,7 +676,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     v1,
                     v2.variable().display(self.variable_map, self.interner),
                     v2,
-                    self.interner.display_name(name)
+                    self.interner.display_name(*name)
                 )
             }
             Clause::Lock(locked, other) => {

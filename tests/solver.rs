@@ -18,7 +18,7 @@ use std::{
 use ahash::HashMap;
 use indexmap::IndexMap;
 use insta::assert_snapshot;
-use itertools::{ExactlyOneError, Itertools};
+use itertools::{Itertools};
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
@@ -425,6 +425,17 @@ impl Interner for BundleBoxProvider {
 
     fn display_name(&self, name: NameId) -> impl Display + '_ {
         self.pool.resolve_package_name(name).clone()
+    }
+
+    fn display_condition(&self, condition: Condition) -> impl Display + '_ {
+        match condition {
+            Condition::Extra(extra) => self.display_string(extra),
+            Condition::VersionSet(version_set) => format!(
+                "{} {}",
+                self.display_name(self.version_set_name(version_set)),
+                self.display_version_set(version_set)
+            ),
+        }
     }
 
     fn display_version_set(&self, version_set: VersionSetId) -> impl Display + '_ {

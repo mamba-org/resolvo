@@ -7,8 +7,26 @@ use crate::{
         arena::ArenaId,
         id::{SolvableOrRootId, VariableId},
     },
-    Interner, NameId, SolvableId,
+    Interner, NameId, SolvableId, StringId,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SolvableOrStringId {
+    Solvable(SolvableId),
+    String(StringId),
+}
+
+impl From<SolvableId> for SolvableOrStringId {
+    fn from(solvable_id: SolvableId) -> Self {
+        Self::Solvable(solvable_id)
+    }
+}
+
+impl From<StringId> for SolvableOrStringId {
+    fn from(string_id: StringId) -> Self {
+        Self::String(string_id)
+    }
+}
 
 /// All variables in the solver are stored in a `VariableMap`. This map is used
 /// to keep track of the semantics of a variable, e.g. what a specific variable
@@ -21,7 +39,7 @@ pub struct VariableMap {
     next_id: usize,
 
     /// A map from solvable id to variable id.
-    solvable_to_variable: HashMap<SolvableId, VariableId>,
+    solvable_or_string_id_to_variable: HashMap<SolvableOrStringId, VariableId>,
 
     /// Records the origins of all variables.
     origins: HashMap<VariableId, VariableOrigin>,
@@ -38,6 +56,9 @@ pub enum VariableOrigin {
 
     /// A variable that helps encode an at most one constraint.
     ForbidMultiple(NameId),
+
+    /// The variable represents a specific string.
+    String(StringId),
 }
 
 impl Default for VariableMap {
@@ -47,7 +68,7 @@ impl Default for VariableMap {
 
         Self {
             next_id: 1, // The first variable id is 1 because 0 is reserved for the root.
-            solvable_to_variable: HashMap::default(),
+            solvable_or_string_id_to_variable: HashMap::default(),
             origins,
         }
     }
@@ -55,16 +76,30 @@ impl Default for VariableMap {
 
 impl VariableMap {
     /// Allocate a variable for a new variable or reuse an existing one.
-    pub fn intern_solvable(&mut self, solvable_id: SolvableId) -> VariableId {
-        match self.solvable_to_variable.entry(solvable_id) {
+    pub fn intern_solvable_or_string(
+        &mut self,
+        solvable_or_string_id: SolvableOrStringId,
+    ) -> VariableId {
+        match self
+            .solvable_or_string_id_to_variable
+            .entry(solvable_or_string_id)
+        {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 let id = self.next_id;
                 self.next_id += 1;
                 let variable_id = VariableId::from_usize(id);
                 entry.insert(variable_id);
-                self.origins
-                    .insert(variable_id, VariableOrigin::Solvable(solvable_id));
+                match solvable_or_string_id {
+                    SolvableOrStringId::Solvable(solvable_id) => {
+                        self.origins
+                            .insert(variable_id, VariableOrigin::Solvable(solvable_id));
+                    }
+                    SolvableOrStringId::String(string_id) => {
+                        self.origins
+                            .insert(variable_id, VariableOrigin::String(string_id));
+                    }
+                }
                 variable_id
             }
         }
@@ -73,7 +108,7 @@ impl VariableMap {
     /// Allocate a variable for a solvable or the root.
     pub fn intern_solvable_or_root(&mut self, solvable_or_root_id: SolvableOrRootId) -> VariableId {
         match solvable_or_root_id.solvable() {
-            Some(solvable_id) => self.intern_solvable(solvable_id),
+            Some(solvable_id) => self.intern_solvable_or_string(solvable_id.into()),
             None => VariableId::root(),
         }
     }
@@ -140,6 +175,9 @@ impl<'i, I: Interner> Display for VariableDisplay<'i, I> {
             }
             VariableOrigin::ForbidMultiple(name) => {
                 write!(f, "forbid-multiple({})", self.interner.display_name(name))
+            }
+            VariableOrigin::String(string_id) => {
+                write!(f, "{}", self.interner.display_string(string_id))
             }
         }
     }

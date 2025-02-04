@@ -6,7 +6,7 @@ use std::{
 use crate::internal::{
     arena::Arena,
     frozen_copy_map::FrozenCopyMap,
-    id::{ExtraId, NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
+    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     small_vec::SmallVec,
 };
 
@@ -60,8 +60,6 @@ impl<VS: VersionSet, N: PackageName> Default for Pool<VS, N> {
             package_names: Arena::new(),
             strings: Arena::new(),
             string_to_ids: Default::default(),
-            extras: Arena::new(),
-            extra_to_ids: Default::default(),
             version_set_to_id: Default::default(),
             version_sets: Arena::new(),
             version_set_unions: Arena::new(),
@@ -114,34 +112,6 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
         let next_id = self.package_names.alloc(name.clone());
         self.names_to_ids.insert_copy(name, next_id);
         next_id
-    }
-
-    /// Interns an extra into the [`Pool`], returning its [`StringId`]. Extras
-    /// are deduplicated. If the same extra is inserted twice the same
-    /// [`StringId`] will be returned.
-    ///
-    /// The original extra can be resolved using the
-    /// [`Self::resolve_extra`] function.
-    pub fn intern_extra(
-        &self,
-        solvable_id: SolvableId,
-        extra_name: impl Into<String> + AsRef<str>,
-    ) -> ExtraId {
-        if let Some(id) = self
-            .extra_to_ids
-            .get_copy(&(solvable_id, extra_name.as_ref().to_string()))
-        {
-            return id;
-        }
-
-        let extra = extra_name.into();
-        let id = self.extras.alloc((solvable_id, extra));
-        self.extra_to_ids.insert_copy((solvable_id, extra), id);
-        id
-    }
-
-    pub fn resolve_extra(&self, extra_id: ExtraId) -> &(SolvableId, String) {
-        &self.extras[extra_id]
     }
 
     /// Returns the package name associated with the provided [`NameId`].

@@ -15,10 +15,7 @@ use crate::{
     internal::{
         arena::ArenaId,
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
-    },
-    runtime::AsyncRuntime,
-    solver::{clause::Clause, variable_map::VariableOrigin, Solver},
-    DependencyProvider, Interner, Requirement,
+    }, requirement::Condition, runtime::AsyncRuntime, solver::{clause::Clause, variable_map::VariableOrigin, Solver}, DependencyProvider, Interner, Requirement
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -159,10 +156,9 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
-                &Clause::Conditional(
+                Clause::Conditional(
                     package_id,
-                    condition_variable,
-                    condition_version_set_id,
+                    condition_variables,
                     requirement,
                 ) => {
                     let solvable = package_id
@@ -173,7 +169,7 @@ impl Conflict {
                     let requirement_candidates = solver
                         .async_runtime
                         .block_on(solver.cache.get_or_cache_sorted_candidates(
-                            requirement,
+                            *requirement,
                         ))
                         .unwrap_or_else(|_| {
                             unreachable!(
@@ -189,13 +185,13 @@ impl Conflict {
                             package_node,
                             unresolved_node,
                             ConflictEdge::ConditionalRequires(
-                                condition_version_set_id,
-                                requirement,
+                                *requirement,
+                                condition_variables.iter().map(|(_, condition)| *condition).collect(),
                             ),
                         );
                     } else {
                         tracing::trace!(
-                            "{package_id:?} conditionally requires {requirement:?} if {condition_variable:?}"
+                            "{package_id:?} conditionally requires {requirement:?} if {condition_variables:?}"
                         );
 
                         for &candidate_id in requirement_candidates {
@@ -206,8 +202,8 @@ impl Conflict {
                                 package_node,
                                 candidate_node,
                                 ConflictEdge::ConditionalRequires(
-                                    condition_version_set_id,
-                                    requirement,
+                                    *requirement,
+                                    condition_variables.iter().map(|(_, condition)| *condition).collect(),
                                 ),
                             );
                         }
@@ -292,7 +288,7 @@ impl ConflictNode {
 }
 
 /// An edge in the graph representation of a [`Conflict`]
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub(crate) enum ConflictEdge {
     /// The target node is a candidate for the dependency specified by the
     /// [`Requirement`]
@@ -300,25 +296,25 @@ pub(crate) enum ConflictEdge {
     /// The target node is involved in a conflict, caused by `ConflictCause`
     Conflict(ConflictCause),
     /// The target node is a candidate for a conditional dependency
-    ConditionalRequires(VersionSetId, Requirement),
+    ConditionalRequires(Requirement, Vec<Condition>),
 }
 
 impl ConflictEdge {
-    fn try_requires_or_conditional(self) -> Option<(Requirement, Option<VersionSetId>)> {
+    fn try_requires_or_conditional(self) -> Option<(Requirement, Vec<Condition>)> {
         match self {
-            ConflictEdge::Requires(match_spec_id) => Some((match_spec_id, None)),
-            ConflictEdge::ConditionalRequires(version_set_id, match_spec_id) => {
-                Some((match_spec_id, Some(version_set_id)))
+            ConflictEdge::Requires(match_spec_id) => Some((match_spec_id, vec![])),
+            ConflictEdge::ConditionalRequires(match_spec_id, conditions) => {
+                Some((match_spec_id, conditions))
             }
             ConflictEdge::Conflict(_) => None,
         }
     }
 
-    fn requires_or_conditional(self) -> (Requirement, Option<VersionSetId>) {
+    fn requires_or_conditional(self) -> (Requirement, Vec<Condition>) {
         match self {
-            ConflictEdge::Requires(match_spec_id) => (match_spec_id, None),
-            ConflictEdge::ConditionalRequires(version_set_id, match_spec_id) => {
-                (match_spec_id, Some(version_set_id))
+            ConflictEdge::Requires(match_spec_id) => (match_spec_id, vec![]),
+            ConflictEdge::ConditionalRequires(match_spec_id, conditions) => {
+                (match_spec_id, conditions)
             }
             ConflictEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
         }
@@ -414,10 +410,13 @@ impl ConflictGraph {
                     ConflictEdge::Requires(requirement) => {
                         requirement.display(interner).to_string()
                     }
-                    ConflictEdge::ConditionalRequires(condition_version_set_id, requirement) => {
+                    ConflictEdge::ConditionalRequires(requirement, conditions) => {
                         format!(
                             "if {} then {}",
-                            Requirement::from(*condition_version_set_id).display(interner),
+                            conditions.iter()
+                                .map(|c| interner.display_condition(*c).to_string())
+                                .collect::<Vec<_>>()
+                                .join(" and "),
                             requirement.display(interner)
                         )
                     }
@@ -566,15 +565,15 @@ impl ConflictGraph {
                 .graph
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
-                    ConflictEdge::Requires(req) => ((req, None), e.target()),
-                    ConflictEdge::ConditionalRequires(condition, req) => {
-                        ((req, Some(condition)), e.target())
+                    ConflictEdge::Requires(req) => ((req, vec![]), e.target()),
+                    ConflictEdge::ConditionalRequires(req, conditions) => {
+                        ((req, conditions.clone()), e.target())
                     }
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
-                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, *condition));
+                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, condition.clone()));
 
             for (_, mut deps) in &dependencies {
                 if deps.all(|(_, target)| !installable.contains(&target)) {
@@ -617,15 +616,15 @@ impl ConflictGraph {
                 .graph
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
-                    ConflictEdge::Requires(version_set_id) => ((version_set_id, None), e.target()),
-                    ConflictEdge::ConditionalRequires(condition, version_set_id) => {
-                        ((version_set_id, Some(condition)), e.target())
+                    ConflictEdge::Requires(version_set_id) => ((version_set_id, vec![]), e.target()),
+                    ConflictEdge::ConditionalRequires(reqs, conditions) => {
+                        ((reqs, conditions.clone()), e.target())
                     }
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
-                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, *condition));
+                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, condition.clone()));
 
             // Missing if at least one dependency is missing
             if dependencies
@@ -744,7 +743,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
         top_level_indent: bool,
     ) -> fmt::Result {
         pub enum DisplayOp {
-            ConditionalRequirement((Requirement, VersionSetId), Vec<EdgeIndex>),
+            ConditionalRequirement((Requirement, Vec<Condition>), Vec<EdgeIndex>),
             Requirement(Requirement, Vec<EdgeIndex>),
             Candidate(NodeIndex),
         }
@@ -758,8 +757,8 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
         let indenter = Indenter::new(top_level_indent);
         let mut stack = top_level_edges
             .iter()
-            .filter(|e| e.weight().try_requires_or_conditional().is_some())
-            .chunk_by(|e| e.weight().requires_or_conditional())
+            .filter(|e| e.weight().clone().try_requires_or_conditional().is_some())
+            .chunk_by(|e| e.weight().clone().requires_or_conditional())
             .into_iter()
             .map(|(version_set_id_with_condition, group)| {
                 let edges: Vec<_> = group.map(|e| e.id()).collect();
@@ -772,7 +771,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
             })
             .map(|((version_set_id, condition), edges)| {
                 (
-                    if let Some(condition) = condition {
+                    if !condition.is_empty() {
                         println!("conditional requirement");
                         DisplayOp::ConditionalRequirement((version_set_id, condition), edges)
                     } else {
@@ -1011,7 +1010,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         writeln!(f, "{indent}{version} would require",)?;
                         let mut requirements = graph
                             .edges(candidate)
-                            .chunk_by(|e| e.weight().requires_or_conditional())
+                            .chunk_by(|e| e.weight().clone().requires_or_conditional())
                             .into_iter()
                             .map(|(version_set_id, group)| {
                                 let edges: Vec<_> = group.map(|e| e.id()).collect();
@@ -1025,7 +1024,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                             })
                             .map(|((version_set_id, condition), edges)| {
                                 (
-                                    if let Some(condition) = condition {
+                                    if !condition.is_empty() {
                                         DisplayOp::ConditionalRequirement(
                                             (version_set_id, condition),
                                             edges,
@@ -1054,7 +1053,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                     });
 
                     let req = requirement.display(self.interner).to_string();
-                    let condition = self.interner.display_version_set(condition);
+                    let condition = condition.iter().map(|c| self.interner.display_condition(*c).to_string()).collect::<Vec<_>>().join(" and ");
 
                     let target_nx = graph.edge_endpoints(edges[0]).unwrap().1;
                     let missing =
