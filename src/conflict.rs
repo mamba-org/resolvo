@@ -14,7 +14,6 @@ use petgraph::{
 use crate::solver::variable_map::VariableOrigin;
 use crate::{
     internal::{
-        arena::ArenaId,
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
@@ -58,8 +57,8 @@ impl Conflict {
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
         let mut last_node_by_name = HashMap::default();
 
-        for clause_id in &self.clauses {
-            let clause = &state.clauses.kinds[clause_id.to_usize()];
+        for &clause_id in &self.clauses {
+            let clause = &state.clauses.kinds[clause_id];
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {

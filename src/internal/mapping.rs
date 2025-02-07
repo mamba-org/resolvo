@@ -124,7 +124,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
             .get_unchecked(chunk)
             .get_unchecked(offset)
             .as_ref()
-            .unwrap()
+            .unwrap_unchecked()
     }
 
     /// Get a specific value in the mapping without bound checks
@@ -139,7 +139,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
             .get_unchecked_mut(chunk)
             .get_unchecked_mut(offset)
             .as_mut()
-            .unwrap()
+            .unwrap_unchecked()
     }
 
     /// Returns the number of mapped items
