@@ -440,15 +440,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 let output = self.async_runtime.block_on(add_clauses_for_solvables(
                     [root_solvable],
                     &self.cache,
-                    &mut self.state.clauses,
-                    &self.state.decision_tracker,
-                    &mut self.state.variable_map,
-                    &mut self.state.clauses_added_for_solvable,
-                    &mut self.state.clauses_added_for_package,
-                    &mut self.state.forbidden_clauses_added,
-                    &mut self.state.requirement_to_sorted_candidates,
-                    &self.state.root_requirements,
-                    &self.state.root_constraints,
+                    &mut self.state
                 ))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
                     return self.run_sat_process_unsolvable(
@@ -562,15 +554,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     })
                     .collect::<Vec<_>>(),
                 &self.cache,
-                &mut self.state.clauses,
-                &self.state.decision_tracker,
-                &mut self.state.variable_map,
-                &mut self.state.clauses_added_for_solvable,
-                &mut self.state.clauses_added_for_package,
-                &mut self.state.forbidden_clauses_added,
-                &mut self.state.requirement_to_sorted_candidates,
-                &self.state.root_requirements,
-                &self.state.root_constraints,
+                &mut self.state,
             ))?;
 
             // Serially process the outputs, to reduce the need for synchronization
@@ -1503,19 +1487,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 async fn add_clauses_for_solvables<D: DependencyProvider>(
     solvable_ids: impl IntoIterator<Item = SolvableOrRootId>,
     cache: &SolverCache<D>,
-    clauses: &mut Clauses,
-    decision_tracker: &DecisionTracker,
-    variable_map: &mut VariableMap,
-    clauses_added_for_solvable: &mut HashSet<SolvableOrRootId>,
-    clauses_added_for_package: &mut HashSet<NameId>,
-    forbidden_clauses_added: &mut HashMap<NameId, AtMostOnceTracker<VariableId>>,
-    requirement_to_sorted_candidates: &mut FrozenMap<
-        Requirement,
-        RequirementCandidateVariables,
-        ahash::RandomState,
-    >,
-    root_requirements: &[Requirement],
-    root_constraints: &[VersionSetId],
+    state: &mut SolverState,
 ) -> Result<AddClauseOutput, Box<dyn Any>> {
     let mut output = AddClauseOutput::default();
 
@@ -1546,7 +1518,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
     let mut pending_solvables = vec![];
     {
         for solvable_id in solvable_ids {
-            if clauses_added_for_solvable.insert(solvable_id) {
+            if state.clauses_added_for_solvable.insert(solvable_id) {
                 pending_solvables.push(solvable_id);
             }
         }
@@ -1578,8 +1550,8 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                 ready(Ok(TaskResult::Dependencies {
                     solvable_id: solvable_or_root,
                     dependencies: Dependencies::Known(KnownDependencies {
-                        requirements: root_requirements.to_vec(),
-                        constrains: root_constraints.to_vec(),
+                        requirements: state.root_requirements.to_vec(),
+                        constrains: state.root_constraints.to_vec(),
                     }),
                 }))
                 .right_future()
@@ -1606,8 +1578,8 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Allocate a variable for the solvable
                 let variable = match solvable_id.solvable() {
-                    Some(solvable_id) => variable_map.intern_solvable(solvable_id),
-                    None => variable_map.root(),
+                    Some(solvable_id) => state.variable_map.intern_solvable(solvable_id),
+                    None => state.variable_map.root(),
                 };
 
                 let (requirements, constrains) = match dependencies {
@@ -1616,15 +1588,15 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                         // There is no information about the solvable's dependencies, so we add
                         // an exclusion clause for it
 
-                        let (state, kind) = WatchedLiterals::exclude(variable, reason);
-                        let clause_id = clauses.alloc(state, kind);
+                        let (watched_literals, kind) = WatchedLiterals::exclude(variable, reason);
+                        let clause_id = state.clauses.alloc(watched_literals, kind);
 
                         // Exclusions are negative assertions, tracked outside the watcher
                         // system
                         output.negative_assertions.push((variable, clause_id));
 
                         // There might be a conflict now
-                        if decision_tracker.assigned_value(variable) == Some(true) {
+                        if state.decision_tracker.assigned_value(variable) == Some(true) {
                             output.conflicting_clauses.push(clause_id);
                         }
 
@@ -1638,7 +1610,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     .chain(constrains.iter().copied())
                 {
                     let dependency_name = cache.provider().version_set_name(version_set_id);
-                    if clauses_added_for_package.insert(dependency_name) {
+                    if state.clauses_added_for_package.insert(dependency_name) {
                         tracing::trace!(
                             "┝━ Adding clauses for package '{}'",
                             cache.provider().display_name(dependency_name),
@@ -1716,15 +1688,19 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // If there is a locked solvable, forbid other solvables.
                 if let Some(locked_solvable_id) = package_candidates.locked {
-                    let locked_solvable_var = variable_map.intern_solvable(locked_solvable_id);
+                    let locked_solvable_var =
+                        state.variable_map.intern_solvable(locked_solvable_id);
                     for &other_candidate in candidates {
                         if other_candidate != locked_solvable_id {
-                            let other_candidate_var = variable_map.intern_solvable(other_candidate);
+                            let other_candidate_var =
+                                state.variable_map.intern_solvable(other_candidate);
                             let (watched_literals, kind) =
                                 WatchedLiterals::lock(locked_solvable_var, other_candidate_var);
-                            let clause_id = clauses.alloc(watched_literals, kind);
+                            let clause_id = state.clauses.alloc(watched_literals, kind);
 
-                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].is_some());
+                            debug_assert!(
+                                state.clauses.watched_literals[clause_id.to_usize()].is_some()
+                            );
                             output.clauses_to_watch.push(clause_id);
                         }
                     }
@@ -1732,15 +1708,17 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Add a clause for solvables that are externally excluded.
                 for (solvable, reason) in package_candidates.excluded.iter().copied() {
-                    let solvable_var = variable_map.intern_solvable(solvable);
+                    let solvable_var = state.variable_map.intern_solvable(solvable);
                     let (watched_literals, kind) = WatchedLiterals::exclude(solvable_var, reason);
-                    let clause_id = clauses.alloc(watched_literals, kind);
+                    let clause_id = state.clauses.alloc(watched_literals, kind);
 
                     // Exclusions are negative assertions, tracked outside the watcher system
                     output.negative_assertions.push((solvable_var, clause_id));
 
                     // Conflicts should be impossible here
-                    debug_assert!(decision_tracker.assigned_value(solvable_var) != Some(true));
+                    debug_assert!(
+                        state.decision_tracker.assigned_value(solvable_var) != Some(true)
+                    );
                 }
             }
             TaskResult::SortedCandidates {
@@ -1755,19 +1733,19 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Allocate a variable for the solvable
                 let variable = match solvable_id.solvable() {
-                    Some(solvable_id) => variable_map.intern_solvable(solvable_id),
-                    None => variable_map.root(),
+                    Some(solvable_id) => state.variable_map.intern_solvable(solvable_id),
+                    None => state.variable_map.root(),
                 };
 
                 // Intern all the solvables of the candidates.
-                let version_set_variables = requirement_to_sorted_candidates.insert(
+                let version_set_variables = state.requirement_to_sorted_candidates.insert(
                     requirement,
                     candidates
                         .iter()
                         .map(|&candidates| {
                             candidates
                                 .iter()
-                                .map(|&var| variable_map.intern_solvable(var))
+                                .map(|&var| state.variable_map.intern_solvable(var))
                                 .collect()
                         })
                         .collect(),
@@ -1789,7 +1767,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     // If the dependencies are already available for the
                     // candidate, queue the candidate for processing.
                     if cache.are_dependencies_available_for(candidate)
-                        && clauses_added_for_solvable.insert(candidate.into())
+                        && state.clauses_added_for_solvable.insert(candidate.into())
                     {
                         pending_solvables.push(candidate.into());
                     }
@@ -1798,7 +1776,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     // solvables that have been visited already for the same
                     // version set name.
                     let name_id = cache.provider().solvable_name(candidate);
-                    let other_solvables = forbidden_clauses_added.entry(name_id).or_default();
+                    let other_solvables = state.forbidden_clauses_added.entry(name_id).or_default();
                     other_solvables.add(
                         candidate_var,
                         |a, b, positive| {
@@ -1807,11 +1785,13 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                                 if positive { b.positive() } else { b.negative() },
                                 name_id,
                             );
-                            let clause_id = clauses.alloc(watched_literals, kind);
-                            debug_assert!(clauses.watched_literals[clause_id.to_usize()].is_some());
+                            let clause_id = state.clauses.alloc(watched_literals, kind);
+                            debug_assert!(
+                                state.clauses.watched_literals[clause_id.to_usize()].is_some()
+                            );
                             output.clauses_to_watch.push(clause_id);
                         },
-                        || variable_map.alloc_forbid_multiple_variable(name_id),
+                        || state.variable_map.alloc_forbid_multiple_variable(name_id),
                     );
                 }
 
@@ -1821,10 +1801,10 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     variable,
                     requirement,
                     version_set_variables.iter().flatten().copied(),
-                    decision_tracker,
+                    &mut state.decision_tracker,
                 );
                 let has_watches = watched_literals.is_some();
-                let clause_id = clauses.alloc(watched_literals, kind);
+                let clause_id = state.clauses.alloc(watched_literals, kind);
 
                 if has_watches {
                     output.clauses_to_watch.push(clause_id);
@@ -1856,21 +1836,22 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
 
                 // Allocate a variable for the solvable
                 let variable = match solvable_id.solvable() {
-                    Some(solvable_id) => variable_map.intern_solvable(solvable_id),
-                    None => variable_map.root(),
+                    Some(solvable_id) => state.variable_map.intern_solvable(solvable_id),
+                    None => state.variable_map.root(),
                 };
 
                 // Add forbidden clauses for the candidates
                 for &forbidden_candidate in non_matching_candidates {
-                    let forbidden_candidate_var = variable_map.intern_solvable(forbidden_candidate);
-                    let (state, conflict, kind) = WatchedLiterals::constrains(
+                    let forbidden_candidate_var =
+                        state.variable_map.intern_solvable(forbidden_candidate);
+                    let (watched_literals, conflict, kind) = WatchedLiterals::constrains(
                         variable,
                         forbidden_candidate_var,
                         version_set_id,
-                        decision_tracker,
+                        &state.decision_tracker,
                     );
 
-                    let clause_id = clauses.alloc(state, kind);
+                    let clause_id = state.clauses.alloc(watched_literals, kind);
                     output.clauses_to_watch.push(clause_id);
 
                     if conflict {
