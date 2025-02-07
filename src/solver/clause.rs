@@ -671,17 +671,11 @@ mod test {
             clause.as_ref().unwrap().watched_literals[0].variable(),
             parent
         );
-        assert_eq!(
-            clause.unwrap().watched_literals[1].variable(),
-            candidate1
-        );
+        assert_eq!(clause.unwrap().watched_literals[1].variable(), candidate1);
 
         // No conflict, still one candidate available
         decisions
-            .try_add_decision(
-                Decision::new(candidate1, false, ClauseId::from_usize(0)),
-                1,
-            )
+            .try_add_decision(Decision::new(candidate1, false, ClauseId::from_usize(0)), 1)
             .unwrap();
         let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,

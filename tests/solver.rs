@@ -123,9 +123,7 @@ impl Spec {
     pub fn parse_union(
         spec: &str,
     ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
-        spec.split('|')
-            .map(str::trim)
-            .map(Spec::from_str)
+        spec.split('|').map(str::trim).map(Spec::from_str)
     }
 }
 
