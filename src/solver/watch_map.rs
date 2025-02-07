@@ -5,6 +5,7 @@ use crate::{
 
 /// A map from literals to the clauses that are watching them. Each literal
 /// forms a linked list of clauses that are all watching that literal.
+#[derive(Default)]
 pub(crate) struct WatchMap {
     // Note: the map is to a single clause, but clauses form a linked list, so
     // it is possible to go from one to the next
@@ -12,12 +13,6 @@ pub(crate) struct WatchMap {
 }
 
 impl WatchMap {
-    pub(crate) fn new() -> Self {
-        Self {
-            map: Mapping::new(),
-        }
-    }
-
     /// Add the clause to the linked list of the literals that the clause is
     /// watching.
     pub(crate) fn start_watching(&mut self, clause: &mut WatchedLiterals, clause_id: ClauseId) {

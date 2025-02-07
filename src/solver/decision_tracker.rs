@@ -3,6 +3,7 @@ use crate::solver::{decision::Decision, decision_map::DecisionMap};
 
 /// Tracks the assignments to solvables, keeping a log that can be used to backtrack, and a map that
 /// can be used to query the current value assigned
+#[derive(Default)]
 pub(crate) struct DecisionTracker {
     map: DecisionMap,
     stack: Vec<Decision>,
@@ -10,18 +11,8 @@ pub(crate) struct DecisionTracker {
 }
 
 impl DecisionTracker {
-    pub(crate) fn new() -> Self {
-        Self {
-            map: DecisionMap::new(),
-            stack: Vec::new(),
-            propagate_index: 0,
-        }
-    }
-
     pub(crate) fn clear(&mut self) {
-        self.map = DecisionMap::new();
-        self.stack = Vec::new();
-        self.propagate_index = 0;
+        *self = Default::default();
     }
 
     #[inline(always)]

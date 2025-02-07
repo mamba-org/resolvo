@@ -632,7 +632,7 @@ mod test {
 
     #[test]
     fn test_literal_eval() {
-        let mut decision_map = DecisionMap::new();
+        let mut decision_map = DecisionMap::default();
 
         let literal = VariableId::root().positive();
         let negated_literal = VariableId::root().negative();
@@ -653,7 +653,7 @@ mod test {
 
     #[test]
     fn test_requires_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
+        let mut decisions = DecisionTracker::default();
 
         let parent = VariableId::from_usize(1);
         let candidate1 = VariableId::from_usize(2);
@@ -740,7 +740,7 @@ mod test {
 
     #[test]
     fn test_constrains_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
+        let mut decisions = DecisionTracker::default();
 
         let parent = VariableId::from_usize(1);
         let forbidden = VariableId::from_usize(2);

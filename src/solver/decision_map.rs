@@ -37,17 +37,12 @@ impl DecisionAndLevel {
 }
 
 /// A map of the assignments to solvables.
+#[derive(Default)]
 pub(crate) struct DecisionMap {
     map: Vec<DecisionAndLevel>,
 }
 
 impl DecisionMap {
-    pub fn new() -> Self {
-        Self {
-            map: Default::default(),
-        }
-    }
-
     pub fn reset(&mut self, variable_id: VariableId) {
         let variable_id = variable_id.to_usize();
         if variable_id < self.map.len() {
