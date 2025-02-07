@@ -154,12 +154,6 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     /// Holds the current state of the solver.
     pub(crate) state: SolverState,
 
-    /// The [`Requirement`]s that must be installed as part of the solution.
-    root_requirements: Vec<Requirement>,
-
-    /// Additional constraints imposed by the root.
-    root_constraints: Vec<VersionSetId>,
-
     /// The activity add factor. This is a value that is added to the activity
     /// score of each package that is part of a conflict.
     activity_add: f32,
@@ -197,6 +191,12 @@ pub(crate) struct SolverState {
 
     /// Activity score per package.
     name_activity: Vec<f32>,
+
+    /// The [`Requirement`]s that must be installed as part of the solution.
+    root_requirements: Vec<Requirement>,
+
+    /// Additional constraints imposed by the root.
+    root_constraints: Vec<VersionSetId>,
 }
 
 impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
@@ -207,8 +207,6 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             cache: SolverCache::new(provider),
             async_runtime: NowOrNeverRuntime,
             state: SolverState::default(),
-            root_requirements: Vec::new(),
-            root_constraints: Vec::new(),
             activity_add: 1.0,
             activity_decay: 0.95,
         }
@@ -273,8 +271,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             async_runtime: runtime,
             cache: self.cache,
             state: self.state,
-            root_requirements: vec![],
-            root_constraints: vec![],
             activity_decay: self.activity_decay,
             activity_add: self.activity_add,
         }
@@ -323,9 +319,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         &mut self,
         problem: Problem<impl IntoIterator<Item = SolvableId>>,
     ) -> Result<Vec<SolvableId>, UnsolvableOrCancelled> {
-        self.state = SolverState::default();
-        self.root_requirements = problem.requirements;
-        self.root_constraints = problem.constraints;
+        // Re-initialize the solver state.
+        self.state = SolverState {
+            root_requirements: problem.requirements,
+            root_constraints: problem.constraints,
+            ..SolverState::default()
+        };
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
@@ -448,8 +447,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     &mut self.state.clauses_added_for_package,
                     &mut self.state.forbidden_clauses_added,
                     &mut self.state.requirement_to_sorted_candidates,
-                    &self.root_requirements,
-                    &self.root_constraints,
+                    &self.state.root_requirements,
+                    &self.state.root_constraints,
                 ))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
                     return self.run_sat_process_unsolvable(
@@ -570,8 +569,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 &mut self.state.clauses_added_for_package,
                 &mut self.state.forbidden_clauses_added,
                 &mut self.state.requirement_to_sorted_candidates,
-                &self.root_requirements,
-                &self.root_constraints,
+                &self.state.root_requirements,
+                &self.state.root_constraints,
             ))?;
 
             // Serially process the outputs, to reduce the need for synchronization
