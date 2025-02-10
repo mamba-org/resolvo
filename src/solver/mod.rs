@@ -572,6 +572,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         self.clauses.kinds[derived_from.to_usize()]
                             .display(&self.variable_map, self.provider()),
                     )))
+                    .to_string()
             );
             tracing::debug!("====");
 
