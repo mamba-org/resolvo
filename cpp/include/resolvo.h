@@ -4,6 +4,7 @@
 #include "resolvo_internal.h"
 
 namespace resolvo {
+using cbindgen_private::ConditionalRequirement;
 using cbindgen_private::Problem;
 using cbindgen_private::Requirement;
 
@@ -22,6 +23,23 @@ inline Requirement requirement_single(VersionSetId id) {
  */
 inline Requirement requirement_union(VersionSetUnionId id) {
     return cbindgen_private::resolvo_requirement_union(id);
+}
+
+/**
+ * Specifies a conditional requirement (dependency) of a single version set.
+ * A solvable belonging to the version set satisfies the requirement if the condition is true.
+ */
+inline ConditionalRequirement conditional_requirement_single(VersionSetId id) {
+    return cbindgen_private::resolvo_conditional_requirement_single(id);
+}
+
+/**
+ * Specifies a conditional requirement (dependency) of the union (logical OR) of multiple version
+ * sets. A solvable belonging to any of the version sets contained in the union satisfies the
+ * requirement if the condition is true.
+ */
+inline ConditionalRequirement conditional_requirement_union(VersionSetUnionId id) {
+    return cbindgen_private::resolvo_conditional_requirement_union(id);
 }
 
 /**

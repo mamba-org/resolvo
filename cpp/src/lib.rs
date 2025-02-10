@@ -31,6 +31,95 @@ impl From<SolvableId> for resolvo::SolvableId {
     }
 }
 
+/// A wrapper around an optional version set id.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FfiOptionVersionSetId {
+    pub is_some: bool,
+    pub value: VersionSetId,
+}
+
+impl From<Option<resolvo::VersionSetId>> for FfiOptionVersionSetId {
+    fn from(opt: Option<resolvo::VersionSetId>) -> Self {
+        match opt {
+            Some(v) => Self {
+                is_some: true,
+                value: v.into(),
+            },
+            None => Self {
+                is_some: false,
+                value: VersionSetId { id: 0 },
+            },
+        }
+    }
+}
+
+impl From<FfiOptionVersionSetId> for Option<resolvo::VersionSetId> {
+    fn from(ffi: FfiOptionVersionSetId) -> Self {
+        if ffi.is_some {
+            Some(ffi.value.into())
+        } else {
+            None
+        }
+    }
+}
+
+impl From<Option<VersionSetId>> for FfiOptionVersionSetId {
+    fn from(opt: Option<VersionSetId>) -> Self {
+        match opt {
+            Some(v) => Self {
+                is_some: true,
+                value: v,
+            },
+            None => Self {
+                is_some: false,
+                value: VersionSetId { id: 0 },
+            },
+        }
+    }
+}
+
+impl From<FfiOptionVersionSetId> for Option<VersionSetId> {
+    fn from(ffi: FfiOptionVersionSetId) -> Self {
+        if ffi.is_some {
+            Some(ffi.value)
+        } else {
+            None
+        }
+    }
+}
+
+/// Specifies a conditional requirement, where the requirement is only active when the condition is met.
+/// First VersionSetId is the condition, second is the requirement.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ConditionalRequirement {
+    pub condition: FfiOptionVersionSetId,
+    pub requirement: Requirement,
+}
+
+impl From<resolvo::ConditionalRequirement> for ConditionalRequirement {
+    fn from(value: resolvo::ConditionalRequirement) -> Self {
+        Self {
+            condition: value.condition.into(),
+            requirement: value.requirement.into(),
+        }
+    }
+}
+
+impl From<ConditionalRequirement> for resolvo::ConditionalRequirement {
+    fn from(value: ConditionalRequirement) -> Self {
+        Self {
+            condition: value.condition.into(),
+            requirement: value.requirement.into(),
+        }
+    }
+}
+
 /// Specifies the dependency of a solvable on a set of version sets.
 /// cbindgen:derive-eq
 /// cbindgen:derive-neq
@@ -162,7 +251,7 @@ pub struct Dependencies {
     /// A pointer to the first element of a list of requirements. Requirements
     /// defines which packages should be installed alongside the depending
     /// package and the constraints applied to the package.
-    pub requirements: Vector<Requirement>,
+    pub requirements: Vector<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set
@@ -475,7 +564,7 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
 
 #[repr(C)]
 pub struct Problem<'a> {
-    pub requirements: Slice<'a, Requirement>,
+    pub requirements: Slice<'a, ConditionalRequirement>,
     pub constraints: Slice<'a, VersionSetId>,
     pub soft_requirements: Slice<'a, SolvableId>,
 }
@@ -522,6 +611,28 @@ pub extern "C" fn resolvo_solve(
             *error = String::from("cancelled");
             false
         }
+    }
+}
+
+#[no_mangle]
+#[allow(unused)]
+pub extern "C" fn resolvo_conditional_requirement_single(
+    version_set_id: VersionSetId,
+) -> ConditionalRequirement {
+    ConditionalRequirement {
+        condition: Option::<VersionSetId>::None.into(),
+        requirement: Requirement::Single(version_set_id),
+    }
+}
+
+#[no_mangle]
+#[allow(unused)]
+pub extern "C" fn resolvo_conditional_requirement_union(
+    version_set_union_id: VersionSetUnionId,
+) -> ConditionalRequirement {
+    ConditionalRequirement {
+        condition: Option::<VersionSetId>::None.into(),
+        requirement: Requirement::Union(version_set_union_id),
     }
 }
 

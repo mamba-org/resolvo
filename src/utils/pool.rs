@@ -42,8 +42,6 @@ pub struct Pool<VS: VersionSet, N: PackageName = String> {
 
     /// Map from package names to the id of their interned counterpart
     pub(crate) string_to_ids: FrozenCopyMap<String, StringId, ahash::RandomState>,
-
-    /// Interned match specs
     pub(crate) version_sets: Arena<VersionSetId, (NameId, VS)>,
 
     /// Map from version set to the id of their interned counterpart
@@ -122,6 +120,13 @@ impl<VS: VersionSet, N: PackageName> Pool<VS, N> {
     pub fn resolve_package_name(&self, name_id: NameId) -> &N {
         &self.package_names[name_id]
     }
+
+    /// Returns the extra associated with the provided [`StringId`].
+    ///
+    /// Panics if the extra is not found in the pool.
+    // pub fn resolve_extra(&self, package_id: NameId, extra_id: StringId) -> &str {
+    //     &self.strings[self.extra_to_ids.get_copy(&(package_id, extra_id)).unwrap()]
+    // }
 
     /// Returns the [`NameId`] associated with the specified name or `None` if
     /// the name has not previously been interned using

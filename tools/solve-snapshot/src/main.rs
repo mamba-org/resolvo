@@ -128,7 +128,8 @@ fn main() {
 
         let start = Instant::now();
 
-        let problem = Problem::default().requirements(requirements);
+        let problem =
+            Problem::default().requirements(requirements.into_iter().map(Into::into).collect());
         let mut solver = Solver::new(provider);
         let mut records = None;
         let mut error = None;

@@ -18,13 +18,13 @@ use std::{
 use ahash::HashMap;
 use indexmap::IndexMap;
 use insta::assert_snapshot;
-use itertools::Itertools;
+use itertools::{Itertools};
 use resolvo::{
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
-    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
-    VersionSetUnionId,
+    Candidates, ConditionalRequirement, Dependencies, DependencyProvider, Interner,
+    KnownDependencies, NameId, Problem, Requirement, SolvableId, Solver, SolverCache, StringId,
+    UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
 };
 use tracing_test::traced_test;
 use version_ranges::Ranges;
@@ -74,6 +74,14 @@ impl Pack {
         self
     }
 
+    fn with_extra(mut self, extra: impl Into<String>, value: impl Into<String>) -> Pack {
+        self.extra
+            .entry(extra.into())
+            .or_default()
+            .push(value.into());
+        self
+    }
+
     fn offset(&self, version_offset: i32) -> Pack {
         let mut pack = *self;
         pack.version = pack.version.wrapping_add_signed(version_offset);
@@ -113,19 +121,31 @@ impl FromStr for Pack {
 struct Spec {
     name: String,
     versions: Ranges<Pack>,
+    /// c 1; if a 1 and b 1 (conditions are a, b)
+    conditions: Vec<Box<Spec>>,
+    /// a[b,c] 1; if d 1 and c 1 (extras are b, c)
+    extras: Vec<String>,
 }
 
 impl Spec {
-    pub fn new(name: String, versions: Ranges<Pack>) -> Self {
-        Self { name, versions }
+    pub fn new(
+        name: String,
+        versions: Ranges<Pack>,
+        conditions: Vec<Box<Spec>>,
+        extras: Vec<String>,
+    ) -> Self {
+        Self {
+            name,
+            versions,
+            conditions,
+            extras,
+        }
     }
 
     pub fn parse_union(
         spec: &str,
     ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
-        spec.split('|')
-            .map(str::trim)
-            .map(|dep| Spec::from_str(dep))
+        spec.split('|').map(str::trim).map(Spec::from_str)
     }
 }
 
@@ -133,11 +153,34 @@ impl FromStr for Spec {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split(' ').collect::<Vec<_>>();
-        let name = split
-            .first()
-            .expect("spec does not have a name")
-            .to_string();
+        let split = s.split_once("; if");
+
+        if split.is_none() {
+            let split = s.split(' ').collect::<Vec<_>>();
+
+            // Extract feature name from brackets if present
+            let name_parts: Vec<_> = split[0].split('[').collect();
+            let (name, extras) = if name_parts.len() > 1 {
+                // Has features in brackets
+                let extras = name_parts[1]
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|f| f.trim().to_string())
+                    .collect::<Vec<_>>();
+                (name_parts[0].to_string(), extras)
+            } else {
+                (name_parts[0].to_string(), vec![])
+            };
+
+            let versions = version_range(split.get(1));
+            return Ok(Spec::new(name, versions, None, extras));
+        }
+
+        let (spec, condition) = split.unwrap();
+
+        let condition = Spec::parse_union(condition).next().unwrap().unwrap();
+
+        let spec = Spec::from_str(spec).unwrap();
 
         fn version_range(s: Option<&&str>) -> Ranges<Pack> {
             if let Some(s) = s {
@@ -156,9 +199,12 @@ impl FromStr for Spec {
             }
         }
 
-        let versions = version_range(split.get(1));
-
-        Ok(Spec::new(name, versions))
+        Ok(Spec::new(
+            spec.name,
+            spec.versions,
+            Some(Box::new(condition)),
+            spec.extras,
+        ))
     }
 }
 
@@ -187,6 +233,7 @@ struct BundleBoxProvider {
 struct BundleBoxPackageDependencies {
     dependencies: Vec<Vec<Spec>>,
     constrains: Vec<Spec>,
+    extras: HashMap<StringId, Vec<Spec>>,
 }
 
 impl BundleBoxProvider {
@@ -200,16 +247,28 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
-    pub fn requirements<R: From<VersionSetId>>(&self, requirements: &[&str]) -> Vec<R> {
+    pub fn requirements<R: From<(VersionSetId, Option<VersionSetId>, Vec<String>)>>(
+        &self,
+        requirements: &[&str],
+    ) -> Vec<R> {
         requirements
             .iter()
             .map(|dep| Spec::from_str(dep).unwrap())
-            .map(|spec| self.intern_version_set(&spec))
+            .map(|spec| {
+                (
+                    self.intern_version_set(&spec),
+                    spec.conditions
+                        .iter()
+                        .as_ref()
+                        .map(|c| self.intern_version_set(c)),
+                    spec.extras.iter().map(|e| e.to_string()),
+                )
+            })
             .map(From::from)
             .collect()
     }
 
-    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<Requirement> {
+    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<ConditionalRequirement> {
         requirements
             .iter()
             .map(|deps| {
@@ -236,14 +295,15 @@ impl BundleBoxProvider {
             .intern_version_set_union(specs.next().unwrap(), specs)
     }
 
-    pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
+    pub fn from_packages(packages: &[(&str, u32, Vec<&str>, &[(&str, &[&str])])]) -> Self {
         let mut result = Self::new();
-        for (name, version, deps) in packages {
-            result.add_package(name, Pack::new(*version), deps, &[]);
+        for (name, version, deps, extras) in packages {
+            result.add_package(name, Pack::new(*version), deps, &[], extras);
         }
         result
     }
 
+    /// TODO: we should be able to set packages with extras as favored or excluded as well
     pub fn set_favored(&mut self, package_name: &str, version: u32) {
         self.favored
             .insert(package_name.to_owned(), Pack::new(version));
@@ -267,14 +327,28 @@ impl BundleBoxProvider {
         package_version: Pack,
         dependencies: &[&str],
         constrains: &[&str],
+        extras: &[(&str, &[&str])],
     ) {
-        self.pool.intern_package_name(package_name);
+        let package_id = self.pool.intern_package_name(package_name);
 
         let dependencies = dependencies
             .iter()
             .map(|dep| Spec::parse_union(dep).collect())
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
+
+        let extras = extras
+            .iter()
+            .map(|(key, values)| {
+                (self.pool.intern_string(key), {
+                    values
+                        .iter()
+                        .map(|dep| Spec::parse_union(dep).collect())
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap()
+                })
+            })
+            .collect::<HashMap<_, _>>();
 
         let constrains = constrains
             .iter()
@@ -290,6 +364,7 @@ impl BundleBoxProvider {
                 BundleBoxPackageDependencies {
                     dependencies,
                     constrains,
+                    extras,
                 },
             );
     }
@@ -352,6 +427,17 @@ impl Interner for BundleBoxProvider {
         self.pool.resolve_package_name(name).clone()
     }
 
+    fn display_condition(&self, condition: Condition) -> impl Display + '_ {
+        match condition {
+            Condition::Extra(extra) => self.display_string(extra),
+            Condition::VersionSet(version_set) => format!(
+                "{} {}",
+                self.display_name(self.version_set_name(version_set)),
+                self.display_version_set(version_set)
+            ),
+        }
+    }
+
     fn display_version_set(&self, version_set: VersionSetId) -> impl Display + '_ {
         self.pool.resolve_version_set(version_set).clone()
     }
@@ -380,13 +466,22 @@ impl DependencyProvider for BundleBoxProvider {
         &self,
         candidates: &[SolvableId],
         version_set: VersionSetId,
+        extra: Option<StringId>,
         inverse: bool,
     ) -> Vec<SolvableId> {
         let range = self.pool.resolve_version_set(version_set);
         candidates
             .iter()
             .copied()
-            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) == !inverse)
+            .map(|s| self.pool.resolve_solvable(s))
+            .filter(|s| range.contains(&s.record) != inverse)
+            .filter(|s| {
+                if let Some(extra) = extra {
+                    s.record.extra.contains(&self.pool.resolve_string(extra))
+                } else {
+                    true
+                }
+            })
             .collect()
     }
 
@@ -443,7 +538,11 @@ impl DependencyProvider for BundleBoxProvider {
         self.maybe_delay(Some(candidates)).await
     }
 
-    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
+    async fn get_dependencies(
+        &self,
+        solvable: SolvableId,
+        extra: Option<StringId>,
+    ) -> Dependencies {
         tracing::info!(
             "get dependencies for {}",
             self.pool
@@ -485,6 +584,12 @@ impl DependencyProvider for BundleBoxProvider {
                 .await;
         };
 
+        let extra_deps = if let Some(extra) = extra {
+            deps.extras.get(&extra)
+        } else {
+            None
+        };
+
         let mut result = KnownDependencies {
             requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
@@ -502,18 +607,67 @@ impl DependencyProvider for BundleBoxProvider {
                 .intern_version_set(first_name, first.versions.clone());
 
             let requirement = if remaining_req_specs.len() == 0 {
-                first_version_set.into()
+                let mut conditions = vec![];
+                if let Some(condition) = &first.condition {
+                    conditions.push(self.intern_version_set(condition));
+                }
+                ConditionalRequirement::new(conditions, first_version_set.into())
             } else {
-                let other_version_sets = remaining_req_specs.map(|spec| {
-                    self.pool.intern_version_set(
+                // Check if all specs have the same condition
+                let common_condition = first.condition.as_ref().map(|c| self.intern_version_set(c));
+
+                // Collect version sets for union
+                let mut version_sets = vec![first_version_set];
+                for spec in remaining_req_specs {
+                    // Verify condition matches
+                    if spec.condition.as_ref().map(|c| self.intern_version_set(c))
+                        != common_condition
+                    {
+                        panic!("All specs in a union must have the same condition");
+                    }
+
+                    version_sets.push(self.pool.intern_version_set(
                         self.pool.intern_package_name(&spec.name),
                         spec.versions.clone(),
-                    )
-                });
+                    ));
+                }
 
-                self.pool
-                    .intern_version_set_union(first_version_set, other_version_sets)
-                    .into()
+                // Create union and wrap in conditional if needed
+                let union = self
+                    .pool
+                    .intern_version_set_union(version_sets[0], version_sets.into_iter().skip(1));
+
+                let mut conditions = vec![];
+                if let Some(condition) = common_condition {
+                    conditions.push(condition);
+                }
+                ConditionalRequirement::new(conditions, union.into())
+            };
+
+            result.requirements.push(requirement);
+        }
+
+        for req in extra_deps {
+            let mut remaining_req_specs = req.iter();
+
+            let first = remaining_req_specs
+                .next()
+                .expect("Dependency spec must have at least one constraint");
+
+            let first_name = self.pool.intern_package_name(&first.name);
+            let first_version_set = self
+                .pool
+                .intern_version_set(first_name, first.versions.clone());
+
+            let requirement = if remaining_req_specs.len() == 0 {
+                let mut conditions = vec![Condition::Extra(extra)];
+                if let Some(condition) = &first.condition {
+                    conditions.push(self.intern_version_set(condition));
+                }
+                ConditionalRequirement::new(conditions, first_version_set.into())
+            } else {
+                // TODO: Implement extra deps for union
+                todo!("extra deps for union not implemented")
             };
 
             result.requirements.push(requirement);
@@ -538,7 +692,7 @@ impl DependencyProvider for BundleBoxProvider {
 }
 
 /// Create a string from a [`Transaction`]
-fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) -> String {
+fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
     for solvable in solvables
@@ -590,7 +744,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     let requirements = provider.parse_requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
-    let problem = Problem::new().requirements(requirements);
+    let problem = Problem::new().requirements(requirements.into_iter().map(|r| r.into()).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
         Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
@@ -703,12 +857,12 @@ fn test_resolve_with_concurrent_metadata_fetching() {
 #[test]
 fn test_resolve_with_conflict() {
     let provider = BundleBoxProvider::from_packages(&[
-        ("asdf", 4, vec!["conflicting 1"]),
-        ("asdf", 3, vec!["conflicting 0"]),
-        ("efgh", 7, vec!["conflicting 0"]),
-        ("efgh", 6, vec!["conflicting 0"]),
-        ("conflicting", 1, vec![]),
-        ("conflicting", 0, vec![]),
+        ("asdf", 4, vec!["conflicting 1"], &[]),
+        ("asdf", 3, vec!["conflicting 0"], &[]),
+        ("efgh", 7, vec!["conflicting 0"], &[]),
+        ("efgh", 6, vec!["conflicting 0"], &[]),
+        ("conflicting", 1, vec![], &[]),
+        ("conflicting", 0, vec![], &[]),
     ]);
     let result = solve_snapshot(provider, &["asdf", "efgh"]);
     insta::assert_snapshot!(result);
@@ -719,9 +873,9 @@ fn test_resolve_with_conflict() {
 #[traced_test]
 fn test_resolve_with_nonexisting() {
     let provider = BundleBoxProvider::from_packages(&[
-        ("asdf", 4, vec!["b"]),
-        ("asdf", 3, vec![]),
-        ("b", 1, vec!["idontexist"]),
+        ("asdf", 4, vec!["b"], &[]),
+        ("asdf", 3, vec![], &[]),
+        ("b", 1, vec!["idontexist"], &[]),
     ]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
@@ -745,18 +899,25 @@ fn test_resolve_with_nested_deps() {
             "apache-airflow",
             3,
             vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"],
+            &[],
         ),
         (
             "apache-airflow",
             2,
             vec!["opentelemetry-api 2..4", "opentelemetry-exporter-otlp"],
+            &[],
         ),
-        ("apache-airflow", 1, vec![]),
-        ("opentelemetry-api", 3, vec!["opentelemetry-sdk"]),
-        ("opentelemetry-api", 2, vec![]),
-        ("opentelemetry-api", 1, vec![]),
-        ("opentelemetry-exporter-otlp", 1, vec!["opentelemetry-grpc"]),
-        ("opentelemetry-grpc", 1, vec!["opentelemetry-api 1"]),
+        ("apache-airflow", 1, vec![], &[]),
+        ("opentelemetry-api", 3, vec!["opentelemetry-sdk"], &[]),
+        ("opentelemetry-api", 2, vec![], &[]),
+        ("opentelemetry-api", 1, vec![], &[]),
+        (
+            "opentelemetry-exporter-otlp",
+            1,
+            vec!["opentelemetry-grpc"],
+            &[],
+        ),
+        ("opentelemetry-grpc", 1, vec!["opentelemetry-api 1"], &[]),
     ]);
     let requirements = provider.requirements(&["apache-airflow"]);
     let mut solver = Solver::new(provider);
@@ -781,8 +942,9 @@ fn test_resolve_with_unknown_deps() {
         Pack::new(3).with_unknown_deps(),
         &[],
         &[],
+        &[],
     );
-    provider.add_package("opentelemetry-api", Pack::new(2), &[], &[]);
+    provider.add_package("opentelemetry-api", Pack::new(2), &[], &[], &[]);
     let requirements = provider.requirements(&["opentelemetry-api"]);
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -809,10 +971,12 @@ fn test_resolve_and_cancel() {
         Pack::new(3).with_unknown_deps(),
         &[],
         &[],
+        &[],
     );
     provider.add_package(
         "opentelemetry-api",
         Pack::new(2).cancel_during_get_dependencies(),
+        &[],
         &[],
         &[],
     );
@@ -825,7 +989,7 @@ fn test_resolve_and_cancel() {
 #[test]
 fn test_resolve_locked_top_level() {
     let mut provider =
-        BundleBoxProvider::from_packages(&[("asdf", 4, vec![]), ("asdf", 3, vec![])]);
+        BundleBoxProvider::from_packages(&[("asdf", 4, vec![], &[]), ("asdf", 3, vec![], &[])]);
     provider.set_locked("asdf", 3);
 
     let requirements = provider.requirements(&["asdf"]);
@@ -845,9 +1009,9 @@ fn test_resolve_locked_top_level() {
 #[test]
 fn test_resolve_ignored_locked_top_level() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("asdf", 4, vec![]),
-        ("asdf", 3, vec!["fgh"]),
-        ("fgh", 1, vec![]),
+        ("asdf", 4, vec![], &[]),
+        ("asdf", 3, vec!["fgh"], &[]),
+        ("fgh", 1, vec![], &[]),
     ]);
 
     provider.set_locked("fgh", 1);
@@ -869,10 +1033,10 @@ fn test_resolve_ignored_locked_top_level() {
 #[test]
 fn test_resolve_favor_without_conflict() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("a", 1, vec![]),
-        ("a", 2, vec![]),
-        ("b", 1, vec![]),
-        ("b", 2, vec![]),
+        ("a", 1, vec![], &[]),
+        ("a", 2, vec![], &[]),
+        ("b", 1, vec![], &[]),
+        ("b", 2, vec![], &[]),
     ]);
     provider.set_favored("a", 1);
     provider.set_favored("b", 1);
@@ -888,12 +1052,12 @@ fn test_resolve_favor_without_conflict() {
 #[test]
 fn test_resolve_favor_with_conflict() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("a", 1, vec!["c 1"]),
-        ("a", 2, vec![]),
-        ("b", 1, vec!["c 1"]),
-        ("b", 2, vec!["c 2"]),
-        ("c", 1, vec![]),
-        ("c", 2, vec![]),
+        ("a", 1, vec!["c 1"], &[]),
+        ("a", 2, vec![], &[]),
+        ("b", 1, vec!["c 1"], &[]),
+        ("b", 2, vec!["c 2"], &[]),
+        ("c", 1, vec![], &[]),
+        ("c", 2, vec![], &[]),
     ]);
     provider.set_favored("a", 1);
     provider.set_favored("b", 1);
@@ -909,8 +1073,10 @@ fn test_resolve_favor_with_conflict() {
 
 #[test]
 fn test_resolve_cyclic() {
-    let provider =
-        BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
+    let provider = BundleBoxProvider::from_packages(&[
+        ("a", 2, vec!["b 0..10"], &[]),
+        ("b", 5, vec!["a 2..4"], &[]),
+    ]);
     let requirements = provider.requirements(&["a 0..100"]);
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -926,15 +1092,15 @@ fn test_resolve_cyclic() {
 #[test]
 fn test_resolve_union_requirements() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("a", 1, vec![]),
-        ("b", 1, vec![]),
-        ("c", 1, vec!["a"]),
-        ("d", 1, vec!["b"]),
-        ("e", 1, vec!["a | b"]),
+        ("a", 1, vec![], &[]),
+        ("b", 1, vec![], &[]),
+        ("c", 1, vec!["a"], &[]),
+        ("d", 1, vec!["b"], &[]),
+        ("e", 1, vec!["a | b"], &[]),
     ]);
 
     // Make d conflict with a=1
-    provider.add_package("f", 1.into(), &["b"], &["a 2"]);
+    provider.add_package("f", 1.into(), &["b"], &["a 2"], &["b"]);
 
     let result = solve_snapshot(provider, &["c | d", "e", "f"]);
     assert_snapshot!(result, @r###"
@@ -1079,8 +1245,8 @@ fn test_unsat_constrains() {
         ("b", 42, vec![]),
     ]);
 
-    provider.add_package("c", 10.into(), &[], &["b 0..50"]);
-    provider.add_package("c", 8.into(), &[], &["b 0..50"]);
+    provider.add_package("c", 10.into(), &[], &["b 0..50"], &[]);
+    provider.add_package("c", 8.into(), &[], &["b 0..50"], &[]);
     let error = solve_unsat(provider, &["a", "c"]);
     insta::assert_snapshot!(error);
 }
@@ -1095,8 +1261,8 @@ fn test_unsat_constrains_2() {
         ("b", 2, vec!["c 2"]),
     ]);
 
-    provider.add_package("c", 1.into(), &[], &["a 3"]);
-    provider.add_package("c", 2.into(), &[], &["a 3"]);
+    provider.add_package("c", 1.into(), &[], &["a 3"], &[]);
+    provider.add_package("c", 2.into(), &[], &["a 3"], &[]);
     let error = solve_unsat(provider, &["a"]);
     insta::assert_snapshot!(error);
 }
@@ -1270,13 +1436,13 @@ fn test_solve_with_additional_with_constrains() {
         ("e", 1, vec!["c"]),
     ]);
 
-    provider.add_package("f", 1.into(), &[], &["c 2..3"]);
-    provider.add_package("g", 1.into(), &[], &["b 2..3"]);
-    provider.add_package("h", 1.into(), &[], &["b 1..2"]);
-    provider.add_package("i", 1.into(), &[], &[]);
-    provider.add_package("j", 1.into(), &["i"], &[]);
-    provider.add_package("k", 1.into(), &["i"], &[]);
-    provider.add_package("l", 1.into(), &["j", "k"], &[]);
+    provider.add_package("f", 1.into(), &[], &["c 2..3"], &[]);
+    provider.add_package("g", 1.into(), &[], &["b 2..3"], &[]);
+    provider.add_package("h", 1.into(), &[], &["b 1..2"], &[]);
+    provider.add_package("i", 1.into(), &[], &[], &[]);
+    provider.add_package("j", 1.into(), &["i"], &[], &[]);
+    provider.add_package("k", 1.into(), &["i"], &[], &[]);
+    provider.add_package("l", 1.into(), &["j", "k"], &[], &[]);
 
     let requirements = provider.requirements(&["a 0..10", "e"]);
     let constraints = provider.requirements(&["b 1..2", "c", "k 2..3"]);
@@ -1427,6 +1593,364 @@ fn test_explicit_root_requirements() {
     b=1
     c=5
     "###);
+}
+
+#[test]
+#[traced_test]
+fn test_conditional_requirements() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add packages
+    provider.add_package("a", 1.into(), &["b"], &[], &[]); // a depends on b
+    provider.add_package("b", 1.into(), &[], &[], &[]); // Simple package b
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Simple package c
+
+    // Create problem with both regular and conditional requirements
+    let requirements = provider.requirements(&["a", "c 1; if b 1..2"]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        "###);
+}
+
+#[test]
+#[traced_test]
+fn test_conditional_requirements_not_met() {
+    let mut provider = BundleBoxProvider::new();
+    provider.add_package("b", 1.into(), &[], &[], &[]); // Add b=1 as a candidate
+    provider.add_package("b", 2.into(), &[], &[], &[]); // Different version of b
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Simple package c
+    provider.add_package("a", 1.into(), &["b 2"], &[], &[]); // a depends on b=2 specifically
+
+    // Create conditional requirement: if b=1 is installed, require c
+    let requirements = provider.requirements(&[
+        "a",           // Require package a
+        "c 1; if b 1", // If b=1 is installed, require c (note the exact version)
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=2 is installed (not b=1), c should not be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=2
+        "###);
+}
+
+#[test]
+fn test_nested_conditional_dependencies() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Setup packages
+    provider.add_package("a", 1.into(), &[], &[], &[]); // Base package
+    provider.add_package("b", 1.into(), &[], &[], &[]); // First level conditional
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Second level conditional
+    provider.add_package("d", 1.into(), &[], &[], &[]); // Third level conditional
+
+    // Create nested conditional requirements using the parser
+    let requirements = provider.requirements(&[
+        "a",           // Require package a
+        "b 1; if a 1", // If a is installed, require b
+        "c 1; if b 1", // If b is installed, require c
+        "d 1; if c 1", // If c is installed, require d
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // All packages should be installed due to chain reaction
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        d=1
+        "###);
+}
+
+#[test]
+fn test_multiple_conditions_same_package() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Setup packages
+    provider.add_package("a", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("c", 1.into(), &[], &[], &[]);
+    provider.add_package("target", 1.into(), &[], &[], &[]);
+
+    // Create multiple conditions that all require the same package using the parser
+    let requirements = provider.requirements(&[
+        "b",                // Only require package b
+        "target 1; if a 1", // If a is installed, require target
+        "target 1; if b 1", // If b is installed, require target
+        "target 1; if c 1", // If c is installed, require target
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // b and target should be installed
+    insta::assert_snapshot!(result, @r###"
+        b=1
+        target=1
+        "###);
+}
+
+#[test]
+fn test_circular_conditional_dependencies() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Setup packages
+    provider.add_package("a", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+
+    // Create circular conditional dependencies using the parser
+    let requirements = provider.requirements(&[
+        "a",           // Require package a
+        "b 1; if a 1", // If a is installed, require b
+        "a 1; if b 1", // If b is installed, require a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Both packages should be installed due to circular dependency
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        "###);
+}
+
+#[test]
+fn test_conditional_requirements_multiple_versions() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Simple package c
+    provider.add_package("a", 1.into(), &["b 4..6"], &[], &[]); // a depends on b versions 4-5
+
+    // Create conditional requirement: if b=1..3 is installed, require c
+    let requirements = provider.requirements(&[
+        "a",              // Require package a
+        "c 1; if b 1..3", // If b is version 1-2, require c
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=4 is installed (not b 1..3), c should not be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=5
+        "###);
+}
+
+#[test]
+fn test_conditional_requirements_multiple_versions_met() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Simple package c
+    provider.add_package("c", 2.into(), &[], &[], &[]); // Version 2 of c
+    provider.add_package("c", 3.into(), &[], &[], &[]); // Version 3 of c
+    provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..3"], &[], &[]); // a depends on b 1-3 and conditionally on c 1-3
+
+    let requirements = provider.requirements(&[
+        "a", // Require package a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=2 is installed (within b 1..2), c should be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=2
+        c=2
+        "###);
+}
+
+#[test]
+fn test_conditional_requirements_conflict() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[], &[]);
+
+    // Package c has two versions with different dependencies
+    provider.add_package("c", 1.into(), &["d 1"], &[], &[]); // c v1 requires d v1
+    provider.add_package("c", 2.into(), &["d 2"], &[], &[]); // c v2 requires d v2
+
+    // Package d has incompatible versions
+    provider.add_package("d", 1.into(), &[], &[], &[]);
+    provider.add_package("d", 2.into(), &[], &[], &[]);
+
+    provider.add_package(
+        "a",
+        1.into(),
+        &["b 1", "c 1; if b 1", "d 2", "c 2; if b 2"],
+        &[],
+        &[],
+    );
+
+    let requirements = provider.requirements(&[
+        "a", // Require package a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+
+    // This should fail to solve because:
+    // 1. When b=1 is chosen, it triggers the conditional requirement for c 1
+    // 2. c 1 requires d 1, but a requires d 2
+    // 3. d 1 and d 2 cannot be installed together
+
+    let solved = solver
+        .solve(problem)
+        .map_err(|e| match e {
+            UnsolvableOrCancelled::Unsolvable(conflict) => {
+                conflict.display_user_friendly(&solver).to_string()
+            }
+            UnsolvableOrCancelled::Cancelled(_) => "kir".to_string(),
+        })
+        .unwrap_err();
+
+    assert_snapshot!(solved, @r"
+    The following packages are incompatible
+    └─ a * cannot be installed because there are no viable options:
+       └─ a 1 would require
+          ├─ b >=1, <2, which can be installed with any of the following options:
+          │  └─ b 1
+          ├─ d >=2, <3, which can be installed with any of the following options:
+          │  └─ d 2
+          └─ c >=1, <2, which cannot be installed because there are no viable options:
+             └─ c 1 would require
+                └─ d >=1, <2, which cannot be installed because there are no viable options:
+                   └─ d 1, which conflicts with the versions reported above.
+    ");
+}
+
+/// In this test, the resolver installs the highest available version of b which is b 2
+/// However, the conditional requirement is that if b 1..2 is installed, require c
+/// Since b 2 is installed, c should not be installed
+#[test]
+fn test_conditional_requirements_multiple_versions_not_met() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add multiple versions of package b
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[], &[]);
+    provider.add_package("b", 3.into(), &[], &[], &[]);
+    provider.add_package("b", 4.into(), &[], &[], &[]);
+    provider.add_package("b", 5.into(), &[], &[], &[]);
+
+    provider.add_package("c", 1.into(), &[], &[], &[]); // Simple package c
+    provider.add_package("c", 2.into(), &[], &[], &[]); // Version 2 of c
+    provider.add_package("c", 3.into(), &[], &[], &[]); // Version 3 of c
+    provider.add_package("a", 1.into(), &["b 1..3", "c 1..3; if b 1..2"], &[], &[]); // a depends on b 1-3 and conditionally on c 1-3
+
+    let requirements = provider.requirements(&[
+        "a", // Require package a
+    ]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    // Since b=2 is installed (within b 1..2), c should be installed
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=2
+        "###);
+}
+
+#[test]
+fn test_optional_dependencies() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Add package a with base dependency on b and optional dependencies via features
+    provider.add_package(
+        "a",
+        1.into(),
+        &["b 1"],
+        &[],
+        &[("feat1", &["c"]), ("feat2", &["d"])],
+    );
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("c", 1.into(), &[], &[], &[]);
+    provider.add_package("d", 1.into(), &[], &[], &[]);
+
+    // Request package a with both optional features enabled
+    let requirements = provider.requirements(&["a[feat2]"]);
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        d=1
+        "###);
+}
+
+#[test]
+fn test_conditonal_requirements_with_extras() {
+    let mut provider = BundleBoxProvider::new();
+
+    // Package a has both optional dependencies (via features) and conditional dependencies
+    provider.add_package(
+        "a",
+        1.into(),
+        &["b 1"],
+        &[],
+        &[("feat1", &["c"]), ("feat2", &["d"])],
+    );
+    provider.add_package("b", 1.into(), &[], &[], &[]);
+    provider.add_package("b", 2.into(), &[], &[], &[]);
+    provider.add_package("c", 1.into(), &[], &[], &[]);
+    provider.add_package("d", 1.into(), &[], &[], &[]);
+    provider.add_package("e", 1.into(), &[], &[], &[]);
+
+    // Request package a with feat1 enabled, which will pull in c
+    // This should trigger the conditional requirement on e
+    let requirements = provider.requirements(&["a[feat1]", "e 1; if c 1"]);
+
+    let mut solver = Solver::new(provider);
+    let problem = Problem::new().requirements(requirements);
+    let solved = solver.solve(problem).unwrap();
+    let result = transaction_to_string(solver.provider(), &solved);
+    insta::assert_snapshot!(result, @r###"
+        a=1
+        b=1
+        c=1
+        e=1
+        "###);
 }
 
 #[cfg(feature = "serde")]

@@ -11,15 +11,11 @@ use petgraph::{
     Direction,
 };
 
-use crate::solver::variable_map::VariableOrigin;
 use crate::{
     internal::{
         arena::ArenaId,
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
-    },
-    runtime::AsyncRuntime,
-    solver::{clause::Clause, Solver},
-    DependencyProvider, Interner, Requirement,
+    }, requirement::Condition, runtime::AsyncRuntime, solver::{clause::Clause, variable_map::VariableOrigin, Solver}, DependencyProvider, Interner, Requirement
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -160,6 +156,59 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
+                Clause::Conditional(
+                    package_id,
+                    condition_variables,
+                    requirement,
+                ) => {
+                    let solvable = package_id
+                        .as_solvable_or_root(&solver.variable_map)
+                        .expect("only solvables can be excluded");
+                    let package_node = Self::add_node(&mut graph, &mut nodes, solvable);
+
+                    let requirement_candidates = solver
+                        .async_runtime
+                        .block_on(solver.cache.get_or_cache_sorted_candidates(
+                            *requirement,
+                        ))
+                        .unwrap_or_else(|_| {
+                            unreachable!(
+                                "The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`"
+                            )
+                        });
+
+                    if requirement_candidates.is_empty() {
+                        tracing::trace!(
+                            "{package_id:?} conditionally requires {requirement:?}, which has no candidates"
+                        );
+                        graph.add_edge(
+                            package_node,
+                            unresolved_node,
+                            ConflictEdge::ConditionalRequires(
+                                *requirement,
+                                condition_variables.iter().map(|(_, condition)| *condition).collect(),
+                            ),
+                        );
+                    } else {
+                        tracing::trace!(
+                            "{package_id:?} conditionally requires {requirement:?} if {condition_variables:?}"
+                        );
+
+                        for &candidate_id in requirement_candidates {
+                            let candidate_node =
+                                Self::add_node(&mut graph, &mut nodes, candidate_id.into());
+
+                            graph.add_edge(
+                                package_node,
+                                candidate_node,
+                                ConflictEdge::ConditionalRequires(
+                                    *requirement,
+                                    condition_variables.iter().map(|(_, condition)| *condition).collect(),
+                                ),
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -210,7 +259,7 @@ impl Conflict {
 }
 
 /// A node in the graph representation of a [`Conflict`]
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) enum ConflictNode {
     /// Node corresponding to a solvable
     Solvable(SolvableOrRootId),
@@ -239,33 +288,41 @@ impl ConflictNode {
 }
 
 /// An edge in the graph representation of a [`Conflict`]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub(crate) enum ConflictEdge {
     /// The target node is a candidate for the dependency specified by the
     /// [`Requirement`]
     Requires(Requirement),
     /// The target node is involved in a conflict, caused by `ConflictCause`
     Conflict(ConflictCause),
+    /// The target node is a candidate for a conditional dependency
+    ConditionalRequires(Requirement, Vec<Condition>),
 }
 
 impl ConflictEdge {
-    fn try_requires(self) -> Option<Requirement> {
+    fn try_requires_or_conditional(self) -> Option<(Requirement, Vec<Condition>)> {
         match self {
-            ConflictEdge::Requires(match_spec_id) => Some(match_spec_id),
+            ConflictEdge::Requires(match_spec_id) => Some((match_spec_id, vec![])),
+            ConflictEdge::ConditionalRequires(match_spec_id, conditions) => {
+                Some((match_spec_id, conditions))
+            }
             ConflictEdge::Conflict(_) => None,
         }
     }
 
-    fn requires(self) -> Requirement {
+    fn requires_or_conditional(self) -> (Requirement, Vec<Condition>) {
         match self {
-            ConflictEdge::Requires(match_spec_id) => match_spec_id,
+            ConflictEdge::Requires(match_spec_id) => (match_spec_id, vec![]),
+            ConflictEdge::ConditionalRequires(match_spec_id, conditions) => {
+                (match_spec_id, conditions)
+            }
             ConflictEdge::Conflict(_) => panic!("expected requires edge, found conflict"),
         }
     }
 }
 
 /// Conflict causes
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub(crate) enum ConflictCause {
     /// The solvable is locked
     Locked(SolvableId),
@@ -341,12 +398,27 @@ impl ConflictGraph {
                     ConflictEdge::Requires(_) if target != ConflictNode::UnresolvedDependency => {
                         "black"
                     }
+                    ConflictEdge::ConditionalRequires(_, _)
+                        if target != ConflictNode::UnresolvedDependency =>
+                    {
+                        "blue" // This indicates that the requirement has candidates, but the condition is not met
+                    }
                     _ => "red",
                 };
 
                 let label = match edge.weight() {
                     ConflictEdge::Requires(requirement) => {
                         requirement.display(interner).to_string()
+                    }
+                    ConflictEdge::ConditionalRequires(requirement, conditions) => {
+                        format!(
+                            "if {} then {}",
+                            conditions.iter()
+                                .map(|c| interner.display_condition(*c).to_string())
+                                .collect::<Vec<_>>()
+                                .join(" and "),
+                            requirement.display(interner)
+                        )
                     }
                     ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)) => {
                         interner.display_version_set(*version_set_id).to_string()
@@ -493,10 +565,15 @@ impl ConflictGraph {
                 .graph
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
-                    ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
+                    ConflictEdge::Requires(req) => ((req, vec![]), e.target()),
+                    ConflictEdge::ConditionalRequires(req, conditions) => {
+                        ((req, conditions.clone()), e.target())
+                    }
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .collect::<Vec<_>>()
+                .into_iter()
+                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, condition.clone()));
 
             for (_, mut deps) in &dependencies {
                 if deps.all(|(_, target)| !installable.contains(&target)) {
@@ -539,10 +616,15 @@ impl ConflictGraph {
                 .graph
                 .edges_directed(nx, Direction::Outgoing)
                 .map(|e| match e.weight() {
-                    ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
+                    ConflictEdge::Requires(version_set_id) => ((version_set_id, vec![]), e.target()),
+                    ConflictEdge::ConditionalRequires(reqs, conditions) => {
+                        ((reqs, conditions.clone()), e.target())
+                    }
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .collect::<Vec<_>>()
+                .into_iter()
+                .chunk_by(|((&version_set_id, condition), _)| (version_set_id, condition.clone()));
 
             // Missing if at least one dependency is missing
             if dependencies
@@ -629,42 +711,6 @@ impl Indenter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_indenter_without_top_level_indent() {
-        let indenter = Indenter::new(false);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-    }
-
-    #[test]
-    fn test_indenter_with_multiple_siblings() {
-        let indenter = Indenter::new(true);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   ├─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │  └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │     └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   │        ├─ ");
-    }
-}
-
 /// A struct implementing [`fmt::Display`] that generates a user-friendly
 /// representation of a conflict graph
 pub struct DisplayUnsat<'i, I: Interner> {
@@ -697,11 +743,13 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
         top_level_indent: bool,
     ) -> fmt::Result {
         pub enum DisplayOp {
+            ConditionalRequirement((Requirement, Vec<Condition>), Vec<EdgeIndex>),
             Requirement(Requirement, Vec<EdgeIndex>),
             Candidate(NodeIndex),
         }
 
         let graph = &self.graph.graph;
+        println!("graph {:?}", graph);
         let installable_nodes = &self.installable_set;
         let mut reported: HashSet<SolvableOrRootId> = HashSet::new();
 
@@ -709,21 +757,26 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
         let indenter = Indenter::new(top_level_indent);
         let mut stack = top_level_edges
             .iter()
-            .filter(|e| e.weight().try_requires().is_some())
-            .chunk_by(|e| e.weight().requires())
+            .filter(|e| e.weight().clone().try_requires_or_conditional().is_some())
+            .chunk_by(|e| e.weight().clone().requires_or_conditional())
             .into_iter()
-            .map(|(version_set_id, group)| {
+            .map(|(version_set_id_with_condition, group)| {
                 let edges: Vec<_> = group.map(|e| e.id()).collect();
-                (version_set_id, edges)
+                (version_set_id_with_condition, edges)
             })
-            .sorted_by_key(|(_version_set_id, edges)| {
+            .sorted_by_key(|(_version_set_id_with_condition, edges)| {
                 edges
                     .iter()
                     .any(|&edge| installable_nodes.contains(&graph.edge_endpoints(edge).unwrap().1))
             })
-            .map(|(version_set_id, edges)| {
+            .map(|((version_set_id, condition), edges)| {
                 (
-                    DisplayOp::Requirement(version_set_id, edges),
+                    if !condition.is_empty() {
+                        println!("conditional requirement");
+                        DisplayOp::ConditionalRequirement((version_set_id, condition), edges)
+                    } else {
+                        DisplayOp::Requirement(version_set_id, edges)
+                    },
                     indenter.push_level(),
                 )
             })
@@ -957,7 +1010,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         writeln!(f, "{indent}{version} would require",)?;
                         let mut requirements = graph
                             .edges(candidate)
-                            .chunk_by(|e| e.weight().requires())
+                            .chunk_by(|e| e.weight().clone().requires_or_conditional())
                             .into_iter()
                             .map(|(version_set_id, group)| {
                                 let edges: Vec<_> = group.map(|e| e.id()).collect();
@@ -969,9 +1022,16 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                                         .contains(&graph.edge_endpoints(edge).unwrap().1)
                                 })
                             })
-                            .map(|(version_set_id, edges)| {
+                            .map(|((version_set_id, condition), edges)| {
                                 (
-                                    DisplayOp::Requirement(version_set_id, edges),
+                                    if !condition.is_empty() {
+                                        DisplayOp::ConditionalRequirement(
+                                            (version_set_id, condition),
+                                            edges,
+                                        )
+                                    } else {
+                                        DisplayOp::Requirement(version_set_id, edges)
+                                    },
                                     indenter.push_level(),
                                 )
                             })
@@ -982,6 +1042,132 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         }
 
                         stack.extend(requirements);
+                    }
+                }
+                DisplayOp::ConditionalRequirement((requirement, condition), edges) => {
+                    debug_assert!(!edges.is_empty());
+
+                    let installable = edges.iter().any(|&e| {
+                        let (_, target) = graph.edge_endpoints(e).unwrap();
+                        installable_nodes.contains(&target)
+                    });
+
+                    let req = requirement.display(self.interner).to_string();
+                    let condition = condition.iter().map(|c| self.interner.display_condition(*c).to_string()).collect::<Vec<_>>().join(" and ");
+
+                    let target_nx = graph.edge_endpoints(edges[0]).unwrap().1;
+                    let missing =
+                        edges.len() == 1 && graph[target_nx] == ConflictNode::UnresolvedDependency;
+                    if missing {
+                        // No candidates for requirement
+                        if top_level {
+                            writeln!(f, "{indent} the condition {condition} is true but no candidates were found for {req}.")?;
+                        } else {
+                            writeln!(f, "{indent}{req}, for which no candidates were found.",)?;
+                        }
+                    } else if installable {
+                        // Package can be installed (only mentioned for top-level requirements)
+                        if top_level {
+                            writeln!(
+                                f,
+                                "{indent}due to the condition {condition}, {req} can be installed with any of the following options:"
+                            )?;
+                        } else {
+                            writeln!(f, "{indent}{req}, which can be installed with any of the following options:")?;
+                        }
+
+                        let children: Vec<_> = edges
+                            .iter()
+                            .filter(|&&e| {
+                                installable_nodes.contains(&graph.edge_endpoints(e).unwrap().1)
+                            })
+                            .map(|&e| {
+                                (
+                                    DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
+                                    indenter.push_level(),
+                                )
+                            })
+                            .collect();
+
+                        // TODO: this is an utterly ugly hack that should be burnt to ashes
+                        let mut deduplicated_children = Vec::new();
+                        let mut merged_and_seen = HashSet::new();
+                        for child in children {
+                            let (DisplayOp::Candidate(child_node), _) = child else {
+                                unreachable!()
+                            };
+                            let solvable_id = graph[child_node].solvable_or_root();
+                            let Some(solvable_id) = solvable_id.solvable() else {
+                                continue;
+                            };
+
+                            let merged = self.merged_candidates.get(&solvable_id);
+
+                            // Skip merged stuff that we have already seen
+                            if merged_and_seen.contains(&solvable_id) {
+                                continue;
+                            }
+
+                            if let Some(merged) = merged {
+                                merged_and_seen.extend(merged.ids.iter().copied())
+                            }
+
+                            deduplicated_children.push(child);
+                        }
+
+                        if !deduplicated_children.is_empty() {
+                            deduplicated_children[0].1.set_last();
+                        }
+
+                        stack.extend(deduplicated_children);
+                    } else {
+                        // Package cannot be installed (the conflicting requirement is further down
+                        // the tree)
+                        if top_level {
+                            writeln!(f, "{indent}The condition {condition} is true but {req} cannot be installed because there are no viable options:")?;
+                        } else {
+                            writeln!(f, "{indent}{req}, which cannot be installed because there are no viable options:")?;
+                        }
+
+                        let children: Vec<_> = edges
+                            .iter()
+                            .map(|&e| {
+                                (
+                                    DisplayOp::Candidate(graph.edge_endpoints(e).unwrap().1),
+                                    indenter.push_level(),
+                                )
+                            })
+                            .collect();
+
+                        // TODO: this is an utterly ugly hack that should be burnt to ashes
+                        let mut deduplicated_children = Vec::new();
+                        let mut merged_and_seen = HashSet::new();
+                        for child in children {
+                            let (DisplayOp::Candidate(child_node), _) = child else {
+                                unreachable!()
+                            };
+                            let Some(solvable_id) = graph[child_node].solvable() else {
+                                continue;
+                            };
+                            let merged = self.merged_candidates.get(&solvable_id);
+
+                            // Skip merged stuff that we have already seen
+                            if merged_and_seen.contains(&solvable_id) {
+                                continue;
+                            }
+
+                            if let Some(merged) = merged {
+                                merged_and_seen.extend(merged.ids.iter().copied())
+                            }
+
+                            deduplicated_children.push(child);
+                        }
+
+                        if !deduplicated_children.is_empty() {
+                            deduplicated_children[0].1.set_last();
+                        }
+
+                        stack.extend(deduplicated_children);
                     }
                 }
             }
@@ -1020,6 +1206,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                 let conflict = match e.weight() {
                     ConflictEdge::Requires(_) => continue,
                     ConflictEdge::Conflict(conflict) => conflict,
+                    ConflictEdge::ConditionalRequires(_, _) => continue,
                 };
 
                 // The only possible conflict at the root level is a Locked conflict
@@ -1050,5 +1237,41 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indenter_without_top_level_indent() {
+        let indenter = Indenter::new(false);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+    }
+
+    #[test]
+    fn test_indenter_with_multiple_siblings() {
+        let indenter = Indenter::new(true);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   ├─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │  └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │     └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   │        ├─ ");
     }
 }
