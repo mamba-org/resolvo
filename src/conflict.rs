@@ -13,10 +13,7 @@ use petgraph::{
 
 use crate::solver::variable_map::VariableOrigin;
 use crate::{
-    internal::{
-        arena::ArenaId,
-        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
-    },
+    internal::id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     runtime::AsyncRuntime,
     solver::{clause::Clause, Solver},
     DependencyProvider, Interner, Requirement,
@@ -48,6 +45,8 @@ impl Conflict {
         &self,
         solver: &Solver<D, RT>,
     ) -> ConflictGraph {
+        let state = &solver.state;
+
         let mut graph = DiGraph::<ConflictNode, ConflictEdge>::default();
         let mut nodes: HashMap<SolvableOrRootId, NodeIndex> = HashMap::default();
         let mut excluded_nodes: HashMap<StringId, NodeIndex> = HashMap::default();
@@ -56,14 +55,14 @@ impl Conflict {
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
         let mut last_node_by_name = HashMap::default();
 
-        for clause_id in &self.clauses {
-            let clause = &solver.clauses.kinds[clause_id.to_usize()];
+        for &clause_id in &self.clauses {
+            let clause = &state.clauses.kinds[clause_id];
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
                     tracing::trace!("{solvable:?} is excluded");
                     let solvable = solvable
-                        .as_solvable(&solver.variable_map)
+                        .as_solvable(&state.variable_map)
                         .expect("only solvables can be excluded");
 
                     let package_node = Self::add_node(&mut graph, &mut nodes, solvable.into());
@@ -80,7 +79,7 @@ impl Conflict {
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
                     let solvable = package_id
-                        .as_solvable_or_root(&solver.variable_map)
+                        .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");
                     let package_node = Self::add_node(&mut graph, &mut nodes, solvable);
 
@@ -112,10 +111,10 @@ impl Conflict {
                 }
                 &Clause::Lock(locked, forbidden) => {
                     let locked_solvable = locked
-                        .as_solvable(&solver.variable_map)
+                        .as_solvable(&state.variable_map)
                         .expect("only solvables can be excluded");
                     let forbidden_solvable = forbidden
-                        .as_solvable(&solver.variable_map)
+                        .as_solvable(&state.variable_map)
                         .expect("only solvables can be excluded");
                     let node2_id =
                         Self::add_node(&mut graph, &mut nodes, forbidden_solvable.into());
@@ -124,12 +123,12 @@ impl Conflict {
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id, _) => {
                     let solvable1 = instance1_id
-                        .as_solvable_or_root(&solver.variable_map)
+                        .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");
                     let node1_id = Self::add_node(&mut graph, &mut nodes, solvable1);
 
                     let VariableOrigin::ForbidMultiple(name) =
-                        solver.variable_map.origin(instance2_id.variable())
+                        state.variable_map.origin(instance2_id.variable())
                     else {
                         unreachable!("expected only forbid variables")
                     };
@@ -145,10 +144,10 @@ impl Conflict {
                 }
                 &Clause::Constrains(package_id, dep_id, version_set_id) => {
                     let package_solvable = package_id
-                        .as_solvable_or_root(&solver.variable_map)
+                        .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");
                     let dependency_solvable = dep_id
-                        .as_solvable_or_root(&solver.variable_map)
+                        .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");
 
                     let package_node = Self::add_node(&mut graph, &mut nodes, package_solvable);
@@ -629,42 +628,6 @@ impl Indenter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_indenter_without_top_level_indent() {
-        let indenter = Indenter::new(false);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-    }
-
-    #[test]
-    fn test_indenter_with_multiple_siblings() {
-        let indenter = Indenter::new(true);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   ├─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │  └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │     └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   │        ├─ ");
-    }
-}
-
 /// A struct implementing [`fmt::Display`] that generates a user-friendly
 /// representation of a conflict graph
 pub struct DisplayUnsat<'i, I: Interner> {
@@ -1050,5 +1013,41 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indenter_without_top_level_indent() {
+        let indenter = Indenter::new(false);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+    }
+
+    #[test]
+    fn test_indenter_with_multiple_siblings() {
+        let indenter = Indenter::new(true);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   ├─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │  └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │     └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   │        ├─ ");
     }
 }
