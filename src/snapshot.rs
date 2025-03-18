@@ -15,8 +15,7 @@ use ahash::HashSet;
 use futures::FutureExt;
 
 use crate::{
-    internal::arena::ArenaId, Candidates, Dependencies, DependencyProvider, Interner, Mapping,
-    NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
+    internal::arena::ArenaId, requirement::Condition, Candidates, Dependencies, DependencyProvider, Interner, Mapping, NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -220,7 +219,24 @@ impl DependencySnapshot {
                                 }
                             }
 
-                            for &requirement in deps.requirements.iter() {
+                            for req in deps.requirements.iter() {
+                                let (conditions, requirement) = req.clone().into_condition_and_requirement();
+
+                                for condition in conditions {
+                                    match condition {
+                                        Condition::Extra(string_id) => {
+                                            if seen.insert(Element::String(string_id)) {
+                                                queue.push_back(Element::String(string_id));
+                                            }
+                                        }
+                                        Condition::VersionSetId(version_set_id) => {
+                                            if seen.insert(Element::VersionSet(version_set_id)) {
+                                                queue.push_back(Element::VersionSet(version_set_id));
+                                            }
+                                        }
+                                    }
+                                }
+
                                 match requirement {
                                     Requirement::Single(version_set) => {
                                         if seen.insert(Element::VersionSet(version_set)) {
@@ -427,6 +443,13 @@ impl<'s> Interner for SnapshotProvider<'s> {
 
     fn display_string(&self, string_id: StringId) -> impl Display + '_ {
         self.string(string_id)
+    }
+
+    fn display_condition(&self, condition: Condition) -> impl Display + '_ {
+        match condition {
+            Condition::Extra(string_id) => format!("{}", self.display_string(string_id)),
+            Condition::VersionSetId(version_set_id) => format!("{} {}", self.display_name(self.version_set_name(version_set_id)), self.display_version_set(version_set_id)),
+        }
     }
 
     fn version_set_name(&self, version_set: VersionSetId) -> NameId {

@@ -6,12 +6,14 @@ use std::{
 };
 
 use elsa::FrozenMap;
+use itertools::Itertools;
 
 use crate::{
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
+    requirement::Condition,
     solver::{
         decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
         VariableId,
@@ -46,7 +48,7 @@ use crate::{
 /// limited set of clauses. There are thousands of clauses for a particular
 /// dependency resolution problem, and we try to keep the [`Clause`] enum small.
 /// A naive implementation would store a `Vec<Literal>`.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Clause {
     /// An assertion that the root solvable must be installed
     ///
@@ -77,6 +79,10 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬A ∨ ¬B)
     Constrains(VariableId, VariableId, VersionSetId),
+    /// In SAT terms: (¬A ∨ (¬C1 v ~C2 v ~C3 v ... v ~Cn) ∨ B1 ∨ B2 ∨ ... ∨ B99), where A is the solvable,
+    /// C1 to Cn are the conditions, and B1 to B99 represent the possible candidates for
+    /// the provided [`Requirement`].
+    Conditional(VariableId, Vec<(VariableId, Condition)>, Requirement),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -230,6 +236,40 @@ impl Clause {
         )
     }
 
+    fn conditional(
+        parent_id: VariableId,
+        requirement: Requirement,
+        condition_variables: Vec<(VariableId, Condition)>,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Self, Option<[Literal; 2]>, bool) {
+        assert_ne!(decision_tracker.assigned_value(parent_id), Some(false));
+        let mut requirement_candidates = requirement_candidates.into_iter();
+
+        let requirement_literal = if condition_variables.iter().all(|condition_variable| {
+            decision_tracker.assigned_value(condition_variable.0) == Some(true)
+        }) {
+            // then all of the conditions are true, so we can require the requirement
+            requirement_candidates
+                .find(|&id| decision_tracker.assigned_value(id) != Some(false))
+                .map(|id| id.positive())
+        } else {
+            None
+        };
+
+        (
+            Clause::Conditional(parent_id, condition_variables.clone(), requirement),
+            Some([
+                parent_id.negative(),
+                requirement_literal.unwrap_or(condition_variables.first().unwrap().0.negative()),
+            ]),
+            requirement_literal.is_none()
+                && condition_variables.iter().all(|condition_variable| {
+                    decision_tracker.assigned_value(condition_variable.0) == Some(true)
+                }),
+        )
+    }
+
     /// Tries to fold over all the literals in the clause.
     ///
     /// This function is useful to iterate, find, or filter the literals in a
@@ -248,10 +288,10 @@ impl Clause {
     where
         F: FnMut(C, Literal) -> ControlFlow<B, C>,
     {
-        match *self {
+        match self {
             Clause::InstallRoot => unreachable!(),
             Clause::Excluded(solvable, _) => visit(init, solvable.negative()),
-            Clause::Learnt(learnt_id) => learnt_clauses[learnt_id]
+            Clause::Learnt(learnt_id) => learnt_clauses[*learnt_id]
                 .iter()
                 .copied()
                 .try_fold(init, visit),
@@ -267,11 +307,22 @@ impl Clause {
                 .into_iter()
                 .try_fold(init, visit),
             Clause::ForbidMultipleInstances(s1, s2, _) => {
-                [s1.negative(), s2].into_iter().try_fold(init, visit)
+                [s1.negative(), *s2].into_iter().try_fold(init, visit)
             }
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
+            Clause::Conditional(package_id, condition_variables, requirement) => {
+                iter::once(package_id.negative())
+                    .chain(condition_variables.iter().map(|c| c.0.negative()))
+                    .chain(
+                        requirements_to_sorted_candidates[&requirement]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.positive()),
+                    )
+                    .try_fold(init, visit)
+            }
         }
     }
 
@@ -306,7 +357,7 @@ impl Clause {
         interner: &'i I,
     ) -> ClauseDisplay<'i, I> {
         ClauseDisplay {
-            kind: *self,
+            kind: self.clone(),
             variable_map,
             interner,
         }
@@ -417,6 +468,33 @@ impl WatchedLiterals {
     pub fn exclude(candidate: VariableId, reason: StringId) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::exclude(candidate, reason);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
+    }
+
+    /// Shorthand method to construct a [Clause::Conditional] without requiring
+    /// complicated arguments.
+    ///
+    /// The returned boolean value is true when adding the clause resulted in a
+    /// conflict.
+    pub fn conditional(
+        package_id: VariableId,
+        requirement: Requirement,
+        condition_variables: Vec<(VariableId, Condition)>,
+        decision_tracker: &DecisionTracker,
+        requirement_candidates: impl IntoIterator<Item = VariableId>,
+    ) -> (Option<Self>, bool, Clause) {
+        let (kind, watched_literals, conflict) = Clause::conditional(
+            package_id,
+            requirement,
+            condition_variables,
+            decision_tracker,
+            requirement_candidates,
+        );
+
+        (
+            WatchedLiterals::from_kind_and_initial_watches(watched_literals),
+            conflict,
+            kind,
+        )
     }
 
     fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Option<Self> {
@@ -558,7 +636,7 @@ pub(crate) struct ClauseDisplay<'i, I: Interner> {
 
 impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
+        match &self.kind {
             Clause::InstallRoot => write!(f, "InstallRoot"),
             Clause::Excluded(variable, reason) => {
                 write!(
@@ -566,7 +644,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     "Excluded({}({:?}), {})",
                     variable.display(self.variable_map, self.interner),
                     variable,
-                    self.interner.display_string(reason)
+                    self.interner.display_string(*reason)
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
@@ -587,7 +665,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     v1,
                     v2.display(self.variable_map, self.interner),
                     v2,
-                    self.interner.display_version_set(version_set_id)
+                    self.interner.display_version_set(*version_set_id)
                 )
             }
             Clause::ForbidMultipleInstances(v1, v2, name) => {
@@ -598,7 +676,7 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     v1,
                     v2.variable().display(self.variable_map, self.interner),
                     v2,
-                    self.interner.display_name(name)
+                    self.interner.display_name(*name)
                 )
             }
             Clause::Lock(locked, other) => {
@@ -609,6 +687,19 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                     locked,
                     other.display(self.variable_map, self.interner),
                     other,
+                )
+            }
+            Clause::Conditional(package_id, condition_variables, requirement) => {
+                write!(
+                    f,
+                    "Conditional({}({:?}), {}, {})",
+                    package_id.display(self.variable_map, self.interner),
+                    package_id,
+                    condition_variables
+                        .iter()
+                        .map(|v| v.0.display(self.variable_map, self.interner))
+                        .join(", "),
+                    requirement.display(self.interner),
                 )
             }
         }
@@ -671,17 +762,11 @@ mod test {
             clause.as_ref().unwrap().watched_literals[0].variable(),
             parent
         );
-        assert_eq!(
-            clause.unwrap().watched_literals[1].variable(),
-            candidate1.into()
-        );
+        assert_eq!(clause.unwrap().watched_literals[1].variable(), candidate1);
 
         // No conflict, still one candidate available
         decisions
-            .try_add_decision(
-                Decision::new(candidate1.into(), false, ClauseId::from_usize(0)),
-                1,
-            )
+            .try_add_decision(Decision::new(candidate1, false, ClauseId::from_usize(0)), 1)
             .unwrap();
         let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
@@ -696,13 +781,13 @@ mod test {
         );
         assert_eq!(
             clause.as_ref().unwrap().watched_literals[1].variable(),
-            candidate2.into()
+            candidate2
         );
 
         // Conflict, no candidates available
         decisions
             .try_add_decision(
-                Decision::new(candidate2.into(), false, ClauseId::install_root()),
+                Decision::new(candidate2, false, ClauseId::install_root()),
                 1,
             )
             .unwrap();
@@ -719,7 +804,7 @@ mod test {
         );
         assert_eq!(
             clause.as_ref().unwrap().watched_literals[1].variable(),
-            candidate1.into()
+            candidate1
         );
 
         // Panic
