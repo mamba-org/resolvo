@@ -4,7 +4,7 @@ mod vector;
 
 use std::{ffi::c_void, fmt::Display, ptr::NonNull};
 
-use resolvo::{KnownDependencies, SolverCache};
+use resolvo::{HintDependenciesAvailable, KnownDependencies, SolverCache};
 
 use crate::{slice::Slice, string::String, vector::Vector};
 
@@ -428,11 +428,13 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
                 candidates: candidates.candidates.into_iter().map(Into::into).collect(),
                 favored: candidates.favored.as_ref().copied().map(Into::into),
                 locked: candidates.locked.as_ref().copied().map(Into::into),
-                hint_dependencies_available: candidates
-                    .hint_dependencies_available
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
+                hint_dependencies_available: HintDependenciesAvailable::Some(
+                    candidates
+                        .hint_dependencies_available
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                ),
                 excluded: candidates
                     .excluded
                     .iter()
