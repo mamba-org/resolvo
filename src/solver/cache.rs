@@ -129,7 +129,7 @@ impl<D: DependencyProvider> SolverCache<D> {
                                 match &candidates.hint_dependencies_available {
                                     HintDependenciesAvailable::None => &candidates.candidates[0..0],
                                     HintDependenciesAvailable::All => &candidates.candidates,
-                                    HintDependenciesAvailable::Some(candidates) => &candidates,
+                                    HintDependenciesAvailable::Some(candidates) => candidates,
                                 };
                             for hint_candidate in dependencies_available_candidates.iter() {
                                 let idx = hint_candidate.to_usize();

@@ -196,7 +196,7 @@ impl DependencySnapshot {
                     {
                         HintDependenciesAvailable::None => &candidates.candidates[0..0],
                         HintDependenciesAvailable::All => &candidates.candidates,
-                        HintDependenciesAvailable::Some(candidates) => &candidates,
+                        HintDependenciesAvailable::Some(candidates) => candidates,
                     };
                     available_hints.extend(hint_dependencies_available.iter().copied());
 
