@@ -11,7 +11,8 @@ use crate::{
         frozen_copy_map::FrozenCopyMap,
         id::{CandidatesId, DependenciesId},
     },
-    Candidates, Dependencies, DependencyProvider, NameId, Requirement, SolvableId, VersionSetId,
+    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, NameId, Requirement,
+    SolvableId, VersionSetId,
 };
 
 /// Keeps a cache of previously computed and/or requested information about
@@ -124,7 +125,13 @@ impl<D: DependencyProvider> SolverCache<D> {
                         {
                             let mut hint_dependencies_available =
                                 self.hint_dependencies_available.borrow_mut();
-                            for hint_candidate in candidates.hint_dependencies_available.iter() {
+                            let dependencies_available_candidates =
+                                match &candidates.hint_dependencies_available {
+                                    HintDependenciesAvailable::None => &candidates.candidates[0..0],
+                                    HintDependenciesAvailable::All => &candidates.candidates,
+                                    HintDependenciesAvailable::Some(candidates) => candidates,
+                                };
+                            for hint_candidate in dependencies_available_candidates.iter() {
                                 let idx = hint_candidate.to_usize();
                                 if hint_dependencies_available.len() <= idx {
                                     hint_dependencies_available.resize(idx + 1, false);
