@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.8.6...resolvo-v0.8.7) - 2025-04-14
+
+### Added
+
+- add type for `HintDependenciesAvailable` ([#123](https://github.com/prefix-dev/resolvo/pull/123))
+
+### Other
+
+- *(ci)* bump prefix-dev/setup-pixi from 0.8.3 to 0.8.7 ([#122](https://github.com/prefix-dev/resolvo/pull/122))
+- pin follow up ([#116](https://github.com/prefix-dev/resolvo/pull/116))
+- pin github actions ([#115](https://github.com/prefix-dev/resolvo/pull/115))
+- *(ci)* bump prefix-dev/setup-pixi from 0.8.1 to 0.8.3 ([#112](https://github.com/prefix-dev/resolvo/pull/112))
+- Avoid panic in Itertools::format_with ([#108](https://github.com/prefix-dev/resolvo/pull/108))
+- make the versions printed in the merge solvables unique ([#106](https://github.com/prefix-dev/resolvo/pull/106))
+- *(ci)* bump prefix-dev/rattler-build-action from 0.2.25 to 0.2.26 ([#100](https://github.com/prefix-dev/resolvo/pull/100))
+- simplify watchmap traversal ([#98](https://github.com/prefix-dev/resolvo/pull/98))
+
 ## [0.8.6](https://github.com/mamba-org/resolvo/compare/resolvo-v0.8.5...resolvo-v0.8.6) - 2025-01-08
 
 ### Other
