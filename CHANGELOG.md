@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.7](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.8.6...resolvo-v0.8.7) - 2025-04-14
+## [0.9.0](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.8.6...resolvo-v0.8.7) - 2025-04-14
 
 ### Added
 
