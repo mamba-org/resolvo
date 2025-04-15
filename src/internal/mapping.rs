@@ -15,7 +15,7 @@ pub struct Mapping<TId, TValue> {
     _phantom: PhantomData<TId>,
 }
 
-impl<TId: ArenaId, TValue: Clone> Default for Mapping<TId, TValue> {
+impl<TId: ArenaId, TValue> Default for Mapping<TId, TValue> {
     fn default() -> Self {
         Self::new()
     }
