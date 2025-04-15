@@ -440,7 +440,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 let output = self.async_runtime.block_on(add_clauses_for_solvables(
                     [root_solvable],
                     &self.cache,
-                    &mut self.state
+                    &mut self.state,
                 ))?;
                 if let Err(clause_id) = self.process_add_clause_output(output) {
                     return self.run_sat_process_unsolvable(
