@@ -172,7 +172,7 @@ pub struct Candidates {
     /// also be the case that the solver doesnt actually need this
     /// information to form a solution. In general though, if the
     /// dependencies can easily be provided one should provide them up-front.
-    pub hint_dependencies_available: Vec<SolvableId>,
+    pub hint_dependencies_available: HintDependenciesAvailable,
 
     /// A list of solvables that are available but have been excluded from the
     /// solver. For example, a package might be excluded from the solver
@@ -180,6 +180,25 @@ pub struct Candidates {
     /// consider these solvables when forming a solution but will use
     /// them in the error message if no solution could be found.
     pub excluded: Vec<(SolvableId, StringId)>,
+}
+
+/// Defines for which candidates dependencies are available without the
+/// [`DependencyProvider`] having to perform extra work, e.g. it's cheap to
+/// request them.
+#[derive(Default, Clone, Debug)]
+pub enum HintDependenciesAvailable {
+    /// None of the dependencies are available up-front. The dependency provide
+    /// will have to do work to find the dependencies.
+    #[default]
+    None,
+
+    /// All the dependencies are available up-front. Querying them is cheap.
+    All,
+
+    /// Only the dependencies for the specified solvables are available.
+    /// Querying the dependencies for these solvables is cheap. Querying
+    /// dependencies for other solvables is expensive.
+    Some(Vec<SolvableId>),
 }
 
 /// Holds information about the dependencies of a package.
