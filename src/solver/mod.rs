@@ -1801,7 +1801,7 @@ async fn add_clauses_for_solvables<D: DependencyProvider>(
                     variable,
                     requirement,
                     version_set_variables.iter().flatten().copied(),
-                    &mut state.decision_tracker,
+                    &state.decision_tracker,
                 );
                 let has_watches = watched_literals.is_some();
                 let clause_id = state.clauses.alloc(watched_literals, kind);
