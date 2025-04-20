@@ -93,11 +93,6 @@ impl VariableMap {
     pub fn origin(&self, variable_id: VariableId) -> VariableOrigin {
         self.origins[&variable_id].clone()
     }
-
-    /// Returns the root variable
-    pub fn root(&self) -> VariableId {
-        VariableId::root()
-    }
 }
 
 impl VariableId {

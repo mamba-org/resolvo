@@ -256,7 +256,7 @@ pub(crate) struct DisplaySolvableOrRootId<'i, I: Interner> {
 impl<'i, I: Interner> Display for DisplaySolvableOrRootId<'i, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.solvable_id.solvable() {
-            Some(solvable_id) => write!(f, "{}", self.interner.display_solvable(solvable_id)),
+            Some(solvable_id) => write!(f, "{}", solvable_id.display(self.interner)),
             None => write!(f, "root"),
         }
     }
