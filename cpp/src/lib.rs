@@ -460,7 +460,7 @@ impl resolvo::DependencyProvider for &DependencyProvider {
                     std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables),
                 ),
             )
-        }
+        };
     }
 
     async fn get_dependencies(&self, solvable: resolvo::SolvableId) -> resolvo::Dependencies {
@@ -505,6 +505,7 @@ pub extern "C" fn resolvo_solve(
         .requirements(
             problem
                 .requirements
+                .as_slice()
                 .iter()
                 .copied()
                 .map(Into::into)
@@ -513,12 +514,20 @@ pub extern "C" fn resolvo_solve(
         .constraints(
             problem
                 .constraints
+                .as_slice()
                 .iter()
                 .copied()
                 .map(Into::into)
                 .collect(),
         )
-        .soft_requirements(problem.soft_requirements.iter().copied().map(Into::into));
+        .soft_requirements(
+            problem
+                .soft_requirements
+                .as_slice()
+                .iter()
+                .copied()
+                .map(Into::into),
+        );
 
     match solver.solve(problem) {
         Ok(solution) => {

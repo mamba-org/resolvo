@@ -28,6 +28,10 @@ impl<T> Clone for Slice<'_, T> {
 impl<'a, T> Slice<'a, T> {
     /// Return a slice
     pub fn as_slice(self) -> &'a [T] {
+        if self.len == 0 {
+            return &[];
+        }
+
         // Safety: it ptr is supposed to be a valid slice of given length
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
@@ -46,13 +50,6 @@ impl<'a, T> Slice<'a, T> {
 impl<'a, T> From<&'a [T]> for Slice<'a, T> {
     fn from(slice: &'a [T]) -> Self {
         Self::from_slice(slice)
-    }
-}
-
-impl<T> core::ops::Deref for Slice<'_, T> {
-    type Target = [T];
-    fn deref(&self) -> &[T] {
-        self.as_slice()
     }
 }
 
