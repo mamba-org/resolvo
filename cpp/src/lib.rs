@@ -346,7 +346,9 @@ impl resolvo::Interner for &DependencyProvider {
         unsafe {
             (self.display_merged_solvables)(
                 self.data,
-                Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables)),
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables),
+                ),
                 NonNull::from(&mut result),
             )
         }
@@ -404,7 +406,9 @@ impl resolvo::DependencyProvider for &DependencyProvider {
         unsafe {
             (self.filter_candidates)(
                 self.data,
-                Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(candidates)),
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(candidates),
+                ),
                 version_set.into(),
                 inverse,
                 NonNull::from(&mut result),
@@ -450,7 +454,12 @@ impl resolvo::DependencyProvider for &DependencyProvider {
         solvables: &mut [resolvo::SolvableId],
     ) {
         unsafe {
-            (self.sort_candidates)(self.data, Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables)))
+            (self.sort_candidates)(
+                self.data,
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables),
+                ),
+            )
         }
     }
 

@@ -419,9 +419,7 @@ pub(crate) mod ffi {
     /// This function is used for the low-level C++ interface to allocate the
     /// backing vector of a Vector.
     pub unsafe extern "C" fn resolvo_vector_allocate(size: usize, align: usize) -> *mut u8 {
-        unsafe {
-            std::alloc::alloc(std::alloc::Layout::from_size_align(size, align).unwrap())
-        }
+        unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(size, align).unwrap()) }
     }
 
     #[unsafe(no_mangle)]
