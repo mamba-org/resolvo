@@ -47,7 +47,7 @@ The following packages are incompatible
    └─ suitcase-utils 54, which conflicts with the versions reported above.
 ```
 
-Resolve provides a generic interface which allows integrating the solver with a variety of package managers. For instance resolvo is used in [rattler](https://github.com/mamba-org/rattler) and [pixi](https://github.com/prefix-dev/pixi) to solve packages from the conda ecosystem.
+Resolvo provides a generic interface which allows integrating the solver with a variety of package managers. For instance resolvo is used in [rattler](https://github.com/mamba-org/rattler) and [pixi](https://github.com/prefix-dev/pixi) to solve packages from the conda ecosystem.
 
 Originally resolvo started out as a port/fork of [libsolv](https://github.com/openSUSE/libsolv) but it has since then diverged substantially. However, the same CDCL algorithm based on MiniSats [An Extensible SAT-solver](http://minisat.se/downloads/MiniSat.pdf) is still used underneath. Major differences compared to libsolv are:
 
