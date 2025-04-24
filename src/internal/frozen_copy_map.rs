@@ -17,10 +17,10 @@ impl<K: Eq + Hash, V: Clone, S: BuildHasher> FrozenCopyMap<K, V, S> {
         }
     }
 
-    pub fn get_copy<Q: ?Sized>(&self, k: &Q) -> Option<V>
+    pub fn get_copy<Q>(&self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         unsafe {
             let map = self.map.get();

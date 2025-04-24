@@ -1,7 +1,7 @@
 [project]
 name = "resolvo"
 authors = ["Bas Zalmstra <bas@prefix.dev>"]
-channels = ["conda-forge"]
+channels = ["https://prefix.dev/conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [tasks]
@@ -10,7 +10,7 @@ test = {depends-on = ["test-rust", "test-cpp"] }
 
 # ---- Build Rust using Cargo ----
 [feature.build-rust.dependencies]
-rust = "~=1.75.0"
+rust = "~=1.86.0"
 
 [feature.test-rust.tasks.test-rust]
 cmd = "cargo test"

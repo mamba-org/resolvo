@@ -3,11 +3,11 @@ use std::{collections::hash_map::Entry, fmt::Display};
 use ahash::HashMap;
 
 use crate::{
+    Interner, NameId, SolvableId,
     internal::{
         arena::ArenaId,
         id::{SolvableOrRootId, VariableId},
     },
-    Interner, NameId, SolvableId,
 };
 
 /// All variables in the solver are stored in a `VariableMap`. This map is used
@@ -126,7 +126,7 @@ pub struct VariableDisplay<'i, I: Interner> {
     variable_map: &'i VariableMap,
 }
 
-impl<'i, I: Interner> Display for VariableDisplay<'i, I> {
+impl<I: Interner> Display for VariableDisplay<'_, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.variable_map.origin(self.variable) {
             VariableOrigin::Root => write!(f, "root"),

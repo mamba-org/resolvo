@@ -9,7 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
   Corrosion
   GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-  GIT_TAG v0.4.9)
+  GIT_TAG v0.5.1)
 FetchContent_MakeAvailable(Corrosion)
 
 # Extract the version from the rust crate
@@ -22,7 +22,7 @@ list(GET VERSION_LIST 2 resolvo_cpp_version_patch)
 
 # Add the Corrosion CMake module path to the list of paths to search for modules
 list(PREPEND CMAKE_MODULE_PATH ${Corrosion_SOURCE_DIR}/cmake)
-find_package(Rust 1.75 REQUIRED MODULE)
+find_package(Rust 1.86 REQUIRED MODULE)
 
 option(BUILD_SHARED_LIBS "Build Resolvo as shared library" ON)
 

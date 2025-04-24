@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use crate::{internal::arena::ArenaId, Interner};
+use crate::{Interner, internal::arena::ArenaId};
 
 /// The id associated to a package name
 #[repr(transparent)]
@@ -203,7 +203,7 @@ pub(crate) struct DisplaySolvableId<'i, I: Interner> {
     solvable_id: SolvableId,
 }
 
-impl<'i, I: Interner> Display for DisplaySolvableId<'i, I> {
+impl<I: Interner> Display for DisplaySolvableId<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.interner.display_solvable(self.solvable_id))
     }
@@ -253,7 +253,7 @@ pub(crate) struct DisplaySolvableOrRootId<'i, I: Interner> {
     solvable_id: SolvableOrRootId,
 }
 
-impl<'i, I: Interner> Display for DisplaySolvableOrRootId<'i, I> {
+impl<I: Interner> Display for DisplaySolvableOrRootId<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.solvable_id.solvable() {
             Some(solvable_id) => write!(f, "{}", solvable_id.display(self.interner)),

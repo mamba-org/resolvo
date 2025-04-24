@@ -255,22 +255,24 @@ impl<T> AsRef<[T]> for Vector<T> {
 /// valid operation if the reference count is 0, otherwise there might be other
 /// users.
 unsafe fn drop_inner<T>(mut inner: NonNull<VectorInner<T>>) {
-    debug_assert_eq!(
-        inner
-            .as_ref()
-            .header
-            .refcount
-            .load(atomic::Ordering::Relaxed),
-        0
-    );
-    let data_ptr = inner.as_mut().data.as_mut_ptr();
-    for x in 0..inner.as_ref().header.size {
-        core::ptr::drop_in_place(data_ptr.add(x));
+    unsafe {
+        debug_assert_eq!(
+            inner
+                .as_ref()
+                .header
+                .refcount
+                .load(atomic::Ordering::Relaxed),
+            0
+        );
+        let data_ptr = inner.as_mut().data.as_mut_ptr();
+        for x in 0..inner.as_ref().header.size {
+            core::ptr::drop_in_place(data_ptr.add(x));
+        }
+        std::alloc::dealloc(
+            inner.as_ptr() as *mut u8,
+            compute_inner_layout::<T>(inner.as_ref().header.capacity),
+        )
     }
-    std::alloc::dealloc(
-        inner.as_ptr() as *mut u8,
-        compute_inner_layout::<T>(inner.as_ref().header.capacity),
-    )
 }
 
 impl<T: Clone> IntoIterator for Vector<T> {
@@ -311,7 +313,7 @@ impl<T> Drop for IntoIterInner<T> {
     fn drop(&mut self) {
         match self {
             IntoIterInner::Shared(..) => { /* drop of Vector takes care of it */ }
-            IntoIterInner::UnShared(mut inner, begin) => unsafe {
+            IntoIterInner::UnShared(inner, begin) => unsafe {
                 debug_assert_eq!(
                     inner
                         .as_ref()
@@ -413,24 +415,26 @@ fn determine_capacity_for_growth(
 pub(crate) mod ffi {
     use super::*;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to allocate the
     /// backing vector of a Vector.
     pub unsafe extern "C" fn resolvo_vector_allocate(size: usize, align: usize) -> *mut u8 {
-        std::alloc::alloc(std::alloc::Layout::from_size_align(size, align).unwrap())
+        unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(size, align).unwrap()) }
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to deallocate the
     /// backing vector of a Vector
     pub unsafe extern "C" fn resolvo_vector_free(ptr: *mut u8, size: usize, align: usize) {
-        std::alloc::dealloc(
-            ptr,
-            std::alloc::Layout::from_size_align(size, align).unwrap(),
-        )
+        unsafe {
+            std::alloc::dealloc(
+                ptr,
+                std::alloc::Layout::from_size_align(size, align).unwrap(),
+            )
+        }
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to initialize the
     /// empty Vector.
     pub unsafe extern "C" fn resolvo_vector_empty() -> *const u8 {

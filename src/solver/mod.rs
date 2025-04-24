@@ -12,6 +12,7 @@ use variable_map::VariableMap;
 use watch_map::WatchMap;
 
 use crate::{
+    Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
     conflict::Conflict,
     internal::{
         arena::{Arena, ArenaId},
@@ -20,7 +21,6 @@ use crate::{
     },
     runtime::{AsyncRuntime, NowOrNeverRuntime},
     solver::binary_encoding::AtMostOnceTracker,
-    Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
 };
 
 mod binary_encoding;
@@ -461,8 +461,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     } else {
                         // The conflict was caused because new clauses have been added dynamically.
                         // We need to start over.
-                        tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
-                                clause=self.state.clauses.kinds[clause_id.to_usize()].display(&self.state.variable_map, self.provider()));
+                        tracing::debug!(
+                            "├─ added clause {clause} introduces a conflict which invalidates the partial solution",
+                            clause = self.state.clauses.kinds[clause_id.to_usize()]
+                                .display(&self.state.variable_map, self.provider())
+                        );
                         level = starting_level;
                         self.state.decision_tracker.undo_until(starting_level);
                         continue;
@@ -549,8 +552,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             // Serially process the outputs, to reduce the need for synchronization
             for &clause_id in &conflicting_clauses {
-                tracing::debug!("├─ Added clause {clause} introduces a conflict which invalidates the partial solution",
-                                        clause=self.state.clauses.kinds[clause_id.to_usize()].display(&self.state.variable_map, self.provider()));
+                tracing::debug!(
+                    "├─ Added clause {clause} introduces a conflict which invalidates the partial solution",
+                    clause = self.state.clauses.kinds[clause_id.to_usize()]
+                        .display(&self.state.variable_map, self.provider())
+                );
             }
 
             if let Some(_first_conflicting_clause_id) = conflicting_clauses.into_iter().next() {
@@ -784,7 +790,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         continue;
                     }
                     ControlFlow::Continue(None) => {
-                        unreachable!("when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well.")
+                        unreachable!(
+                            "when we get here it means that all candidates have been assigned false. This should not be able to happen at this point because during propagation the solvable should have been assigned false as well."
+                        )
                     }
                     ControlFlow::Continue(Some((
                         candidate,

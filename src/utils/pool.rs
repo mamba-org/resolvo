@@ -221,7 +221,7 @@ pub struct NameDisplay<'pool, VS: VersionSet, N: PackageName> {
     pool: &'pool Pool<VS, N>,
 }
 
-impl<'pool, VS: VersionSet, N: PackageName + Display> Display for NameDisplay<'pool, VS, N> {
+impl<VS: VersionSet, N: PackageName + Display> Display for NameDisplay<'_, VS, N> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let name = self.pool.resolve_package_name(self.id);
         write!(f, "{}", name)

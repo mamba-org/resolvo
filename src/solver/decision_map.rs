@@ -6,9 +6,9 @@ use crate::internal::id::VariableId;
 /// Represents a decision (i.e. an assignment to a variable) and the level at
 /// which it was made
 ///
-/// = 0: undecided
-/// > 0: level of decision when the variable is set to true
-/// < 0: level of decision when the variable is set to false
+/// `= 0`: undecided
+/// `> 0`: level of decision when the variable is set to true
+/// `< 0`: level of decision when the variable is set to false
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 struct DecisionAndLevel(i32);

@@ -4,13 +4,13 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
     fmt::{Debug, Display, Formatter},
-    io::{stderr, Write},
+    io::{Write, stderr},
     num::ParseIntError,
     rc::Rc,
     str::FromStr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -20,11 +20,11 @@ use indexmap::IndexMap;
 use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
-    snapshot::{DependencySnapshot, SnapshotProvider},
-    utils::Pool,
     Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
     Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
     VersionSetUnionId,
+    snapshot::{DependencySnapshot, SnapshotProvider},
+    utils::Pool,
 };
 use tracing_test::traced_test;
 use version_ranges::Ranges;
