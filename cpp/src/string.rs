@@ -96,32 +96,32 @@ impl AsRef<str> for String {
 #[allow(non_camel_case_types)]
 type c_char = u8;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Returns a nul-terminated pointer for this string.
 /// The returned value is owned by the string, and should not be used after any
 /// mutable function have been called on the string, and must not be freed.
 pub extern "C" fn resolvo_string_bytes(ss: &String) -> *const c_char {
     if ss.is_empty() {
-        "\0".as_ptr()
+        c"".as_ptr() as _
     } else {
         ss.as_ptr()
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Destroy the shared string
 pub unsafe extern "C" fn resolvo_string_drop(ss: *const String) {
-    core::ptr::read(ss);
+    unsafe { core::ptr::read(ss) };
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Increment the reference count of the string.
 /// The resulting structure must be passed to resolvo_string_drop
 pub unsafe extern "C" fn resolvo_string_clone(out: *mut String, ss: &String) {
-    core::ptr::write(out, ss.clone())
+    unsafe { core::ptr::write(out, ss.clone()) };
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Safety: bytes must be a valid utf-8 string of size len without null inside.
 /// The resulting structure must be passed to resolvo_string_drop
 pub unsafe extern "C" fn resolvo_string_from_bytes(
@@ -129,6 +129,8 @@ pub unsafe extern "C" fn resolvo_string_from_bytes(
     bytes: *const c_char,
     len: usize,
 ) {
-    let str = core::str::from_utf8(core::slice::from_raw_parts(bytes, len)).unwrap();
-    core::ptr::write(out, String::from(str));
+    unsafe {
+        let str = core::str::from_utf8(core::slice::from_raw_parts(bytes, len)).unwrap();
+        core::ptr::write(out, String::from(str));
+    }
 }

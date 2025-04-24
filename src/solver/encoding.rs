@@ -1,11 +1,11 @@
-use super::{clause::WatchedLiterals, SolverState};
+use super::{SolverState, clause::WatchedLiterals};
 use crate::{
-    internal::arena::ArenaId,
-    internal::id::{ClauseId, SolvableOrRootId, VariableId},
     Candidates, Dependencies, DependencyProvider, NameId, Requirement, SolvableId, SolverCache,
     StringId, VersionSetId,
+    internal::arena::ArenaId,
+    internal::id::{ClauseId, SolvableOrRootId, VariableId},
 };
-use futures::{future::LocalBoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, future::LocalBoxFuture, stream::FuturesUnordered};
 use std::any::Any;
 
 /// An object that is responsible for encoding information from the dependency

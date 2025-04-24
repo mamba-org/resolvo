@@ -6,20 +6,20 @@ use std::{collections::HashSet, fmt, fmt::Formatter, hash::Hash, rc::Rc};
 use ahash::HashMap;
 use itertools::Itertools;
 use petgraph::{
+    Direction,
     graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex},
     visit::{Bfs, DfsPostOrder, EdgeRef},
-    Direction,
 };
 
 use crate::solver::variable_map::VariableOrigin;
 use crate::{
+    DependencyProvider, Interner, Requirement,
     internal::{
         arena::ArenaId,
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{clause::Clause, Solver},
-    DependencyProvider, Interner, Requirement,
+    solver::{Solver, clause::Clause},
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -498,7 +498,7 @@ impl ConflictGraph {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(version_set_id, _)| *version_set_id);
 
             for (_, mut deps) in &dependencies {
                 if deps.all(|(_, target)| !installable.contains(&target)) {
@@ -544,7 +544,7 @@ impl ConflictGraph {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(version_set_id, _)| *version_set_id);
 
             // Missing if at least one dependency is missing
             if dependencies
@@ -769,7 +769,10 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                                 "{indent}{req} can be installed with any of the following options:"
                             )?;
                         } else {
-                            writeln!(f, "{indent}{req}, which can be installed with any of the following options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req}, which can be installed with any of the following options:"
+                            )?;
                         }
 
                         let children: Vec<_> = edges
@@ -820,9 +823,15 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         // Package cannot be installed (the conflicting requirement is further down
                         // the tree)
                         if top_level {
-                            writeln!(f, "{indent}{req} cannot be installed because there are no viable options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req} cannot be installed because there are no viable options:"
+                            )?;
                         } else {
-                            writeln!(f, "{indent}{req}, which cannot be installed because there are no viable options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req}, which cannot be installed because there are no viable options:"
+                            )?;
                         }
 
                         let children: Vec<_> = edges
@@ -993,7 +1002,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
     }
 }
 
-impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
+impl<I: Interner> fmt::Display for DisplayUnsat<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (top_level_missing, top_level_conflicts): (Vec<_>, _) = self
             .graph

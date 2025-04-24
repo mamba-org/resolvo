@@ -95,7 +95,7 @@ pub struct WatchMapCursor<'a> {
     current: WatchNode,
 }
 
-impl<'a> WatchMapCursor<'a> {
+impl WatchMapCursor<'_> {
     /// Skip to the next node in the linked list. Returns `None` if there is no
     /// next node.
     pub fn next(mut self) -> Option<Self> {

@@ -35,7 +35,7 @@ impl From<VersionSetUnionId> for Requirement {
 
 impl Requirement {
     /// Returns an object that implements `Display` for the requirement.
-    pub fn display<'i>(&'i self, interner: &'i impl Interner) -> impl Display + '_ {
+    pub fn display<'i>(&'i self, interner: &'i impl Interner) -> impl Display + 'i {
         DisplayRequirement {
             interner,
             requirement: self,
@@ -62,7 +62,7 @@ pub(crate) struct DisplayRequirement<'i, I: Interner> {
     requirement: &'i Requirement,
 }
 
-impl<'i, I: Interner> Display for DisplayRequirement<'i, I> {
+impl<I: Interner> Display for DisplayRequirement<'_, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self.requirement {
             Requirement::Single(version_set) => write!(

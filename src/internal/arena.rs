@@ -48,7 +48,7 @@ impl<TId: ArenaId, TValue> Arena<TId, TValue> {
     /// Constructs a new arena with a capacity for `n` values pre-allocated.
     pub fn with_capacity(n: usize) -> Self {
         let n = cmp::max(1, n);
-        let n_chunks = (n + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let n_chunks = n.div_ceil(CHUNK_SIZE);
         let mut chunks = Vec::new();
         chunks.resize_with(n_chunks, || Vec::with_capacity(CHUNK_SIZE));
         Self {

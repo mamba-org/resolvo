@@ -120,9 +120,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// before.
     pub unsafe fn get_unchecked(&self, id: TId) -> &TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
-        self.chunks
-            .get_unchecked(chunk)
-            .get_unchecked(offset)
+        unsafe { self.chunks.get_unchecked(chunk).get_unchecked(offset) }
             .as_ref()
             .unwrap()
     }
@@ -135,11 +133,13 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// before.
     pub unsafe fn get_unchecked_mut(&mut self, id: TId) -> &mut TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
-        self.chunks
-            .get_unchecked_mut(chunk)
-            .get_unchecked_mut(offset)
-            .as_mut()
-            .unwrap()
+        unsafe {
+            self.chunks
+                .get_unchecked_mut(chunk)
+                .get_unchecked_mut(offset)
+        }
+        .as_mut()
+        .unwrap()
     }
 
     /// Returns the number of mapped items
@@ -204,7 +204,7 @@ impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
     }
 }
 
-impl<'a, TId: ArenaId, TValue> FusedIterator for MappingIter<'a, TId, TValue> {}
+impl<TId: ArenaId, TValue> FusedIterator for MappingIter<'_, TId, TValue> {}
 
 #[cfg(feature = "serde")]
 impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {

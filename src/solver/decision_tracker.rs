@@ -24,7 +24,7 @@ impl DecisionTracker {
         &self.map
     }
 
-    pub(crate) fn stack(&self) -> impl Iterator<Item = Decision> + DoubleEndedIterator + '_ {
+    pub(crate) fn stack(&self) -> impl DoubleEndedIterator<Item = Decision> + '_ {
         self.stack.iter().copied()
     }
 

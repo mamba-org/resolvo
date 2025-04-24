@@ -326,7 +326,7 @@ pub struct DependencyProvider {
     ),
 }
 
-impl<'d> resolvo::Interner for &'d DependencyProvider {
+impl resolvo::Interner for &DependencyProvider {
     fn display_solvable(&self, solvable: resolvo::SolvableId) -> impl Display + '_ {
         let mut result = String::default();
         unsafe { (self.display_solvable)(self.data, solvable.into(), NonNull::from(&mut result)) }
@@ -346,7 +346,7 @@ impl<'d> resolvo::Interner for &'d DependencyProvider {
         unsafe {
             (self.display_merged_solvables)(
                 self.data,
-                Slice::from_slice(std::mem::transmute(solvables)),
+                Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables)),
                 NonNull::from(&mut result),
             )
         }
@@ -393,7 +393,7 @@ impl<'d> resolvo::Interner for &'d DependencyProvider {
     }
 }
 
-impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
+impl resolvo::DependencyProvider for &DependencyProvider {
     async fn filter_candidates(
         &self,
         candidates: &[resolvo::SolvableId],
@@ -404,7 +404,7 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         unsafe {
             (self.filter_candidates)(
                 self.data,
-                Slice::from_slice(std::mem::transmute(candidates)),
+                Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(candidates)),
                 version_set.into(),
                 inverse,
                 NonNull::from(&mut result),
@@ -450,7 +450,7 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         solvables: &mut [resolvo::SolvableId],
     ) {
         unsafe {
-            (self.sort_candidates)(self.data, Slice::from_slice(std::mem::transmute(solvables)))
+            (self.sort_candidates)(self.data, Slice::from_slice(std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables)))
         }
     }
 
@@ -482,7 +482,7 @@ pub struct Problem<'a> {
     pub soft_requirements: Slice<'a, SolvableId>,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_solve(
     provider: &DependencyProvider,
@@ -527,13 +527,13 @@ pub extern "C" fn resolvo_solve(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_requirement_single(version_set_id: VersionSetId) -> Requirement {
     Requirement::Single(version_set_id)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_requirement_union(
     version_set_union_id: VersionSetUnionId,

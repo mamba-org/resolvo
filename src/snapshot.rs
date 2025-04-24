@@ -15,9 +15,9 @@ use ahash::HashSet;
 use futures::FutureExt;
 
 use crate::{
-    internal::arena::ArenaId, Candidates, Dependencies, DependencyProvider,
-    HintDependenciesAvailable, Interner, Mapping, NameId, Requirement, SolvableId, SolverCache,
-    StringId, VersionSetId, VersionSetUnionId,
+    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner, Mapping,
+    NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
+    internal::arena::ArenaId,
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -420,7 +420,7 @@ impl<'s> SnapshotProvider<'s> {
     }
 }
 
-impl<'s> Interner for SnapshotProvider<'s> {
+impl Interner for SnapshotProvider<'_> {
     fn display_solvable(&self, solvable: SolvableId) -> impl Display + '_ {
         &self.solvable(solvable).display
     }
@@ -458,7 +458,7 @@ impl<'s> Interner for SnapshotProvider<'s> {
     }
 }
 
-impl<'s> DependencyProvider for SnapshotProvider<'s> {
+impl DependencyProvider for SnapshotProvider<'_> {
     async fn filter_candidates(
         &self,
         candidates: &[SolvableId],

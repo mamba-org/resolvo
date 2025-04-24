@@ -8,15 +8,15 @@ use std::{
 use elsa::FrozenMap;
 
 use crate::{
+    Interner, NameId, Requirement,
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{
-        decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
-        VariableId,
+        VariableId, decision_map::DecisionMap, decision_tracker::DecisionTracker,
+        variable_map::VariableMap,
     },
-    Interner, NameId, Requirement,
 };
 
 /// Represents a single clause in the SAT problem
@@ -556,7 +556,7 @@ pub(crate) struct ClauseDisplay<'i, I: Interner> {
     variable_map: &'i VariableMap,
 }
 
-impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
+impl<I: Interner> Display for ClauseDisplay<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             Clause::InstallRoot => write!(f, "InstallRoot"),

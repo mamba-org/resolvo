@@ -6,13 +6,13 @@ use elsa::FrozenMap;
 use event_listener::Event;
 
 use crate::{
+    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, NameId, Requirement,
+    SolvableId, VersionSetId,
     internal::{
         arena::{Arena, ArenaId},
         frozen_copy_map::FrozenCopyMap,
         id::{CandidatesId, DependenciesId},
     },
-    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, NameId, Requirement,
-    SolvableId, VersionSetId,
 };
 
 /// Keeps a cache of previously computed and/or requested information about
@@ -232,7 +232,6 @@ impl<D: DependencyProvider> SolverCache<D> {
                     .filter_candidates(&candidates.candidates, version_set_id, true)
                     .await
                     .into_iter()
-                    .map(Into::into)
                     .collect();
 
                 tracing::trace!(
