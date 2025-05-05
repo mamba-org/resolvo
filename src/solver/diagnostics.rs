@@ -58,6 +58,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         .unwrap();
         writeln!(
             writer,
+            "Total number of variables:\t{} ({})",
+            self.state.variable_map.count(),
+            human_bytes::human_bytes(self.state.variable_map.size_in_bytes() as f64)
+        )
+        .unwrap();
+        writeln!(
+            writer,
             "Total number of clauses:\t{} ({})",
             clauses.len(),
             human_bytes::human_bytes(
