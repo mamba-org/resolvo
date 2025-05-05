@@ -10,6 +10,7 @@
 
 #![deny(missing_docs)]
 
+mod conditional_requirement;
 pub mod conflict;
 pub(crate) mod internal;
 mod requirement;
@@ -23,6 +24,7 @@ use std::{
     fmt::{Debug, Display},
 };
 
+pub use conditional_requirement::{Condition, ConditionalRequirement, LogicalOperator};
 pub use internal::{
     id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     mapping::Mapping,
@@ -30,6 +32,8 @@ pub use internal::{
 use itertools::Itertools;
 pub use requirement::Requirement;
 pub use solver::{Problem, Solver, SolverCache, UnsolvableOrCancelled};
+
+use crate::internal::id::ConditionId;
 
 /// An object that is used by the solver to query certain properties of
 /// different internalized objects.
@@ -99,6 +103,13 @@ pub trait Interner {
         &self,
         version_set_union: VersionSetUnionId,
     ) -> impl Iterator<Item = VersionSetId>;
+
+    /// Resolves how a condition should be represented in the solver.
+    ///
+    /// Internally, the solver uses `ConditionId` to represent conditions. This
+    /// allows implementers to have a custom representation for conditions that
+    /// differ from the representation of the solver.
+    fn resolve_condition(&self, condition: ConditionId) -> Condition;
 }
 
 /// Defines implementation specific behavior for the solver and a way for the
@@ -226,7 +237,7 @@ pub struct KnownDependencies {
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
-    pub requirements: Vec<Requirement>,
+    pub requirements: Vec<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set

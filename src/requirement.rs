@@ -1,6 +1,11 @@
-use crate::{Interner, VersionSetId, VersionSetUnionId};
-use itertools::Itertools;
 use std::fmt::Display;
+
+use itertools::Itertools;
+
+use crate::{
+    ConditionalRequirement, Interner, VersionSetId, VersionSetUnionId,
+    conditional_requirement::Condition,
+};
 
 /// Specifies the dependency of a solvable on a set of version sets.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -8,11 +13,23 @@ use std::fmt::Display;
 pub enum Requirement {
     /// Specifies a dependency on a single version set.
     Single(VersionSetId),
-    /// Specifies a dependency on the union (logical OR) of multiple version sets. A solvable
-    /// belonging to _any_ of the version sets contained in the union satisfies the requirement.
-    /// This variant is typically used for requirements that can be satisfied by two or more
-    /// version sets belonging to _different_ packages.
+    /// Specifies a dependency on the union (logical OR) of multiple version
+    /// sets. A solvable belonging to _any_ of the version sets contained in
+    /// the union satisfies the requirement. This variant is typically used
+    /// for requirements that can be satisfied by two or more version sets
+    /// belonging to _different_ packages.
     Union(VersionSetUnionId),
+}
+
+impl Requirement {
+    /// Constructs a `ConditionalRequirement` from this `Requirement` and a
+    /// condition.
+    pub fn with_condition(self, condition: Condition) -> ConditionalRequirement {
+        ConditionalRequirement {
+            condition: Some(condition),
+            requirement: self,
+        }
+    }
 }
 
 impl Default for Requirement {

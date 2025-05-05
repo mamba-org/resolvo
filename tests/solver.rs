@@ -19,13 +19,7 @@ use ahash::HashMap;
 use indexmap::IndexMap;
 use insta::assert_snapshot;
 use itertools::Itertools;
-use resolvo::{
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
-    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
-    VersionSetUnionId,
-    snapshot::{DependencySnapshot, SnapshotProvider},
-    utils::Pool,
-};
+use resolvo::{Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem, Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId, snapshot::{DependencySnapshot, SnapshotProvider}, utils::Pool, Condition, LogicalOperator};
 use tracing_test::traced_test;
 use version_ranges::Ranges;
 
@@ -128,37 +122,74 @@ impl Spec {
             .map(|dep| Spec::from_str(dep))
     }
 }
+fn parse_version_range(s: &str) -> Ranges<Pack> {
+    let (start, end) = s
+        .split_once("..")
+        .map_or((s, None), |(start, end)| (start, Some(end)));
+    let start: Pack = start.parse().unwrap();
+    let end = end
+        .map(FromStr::from_str)
+        .transpose()
+        .unwrap()
+        .unwrap_or(start.offset(1));
+    Ranges::between(start, end)
+}
+
+struct ConditionalSpec {
+    condition: Option<Condition>,
+    spec: Spec,
+}
+
+enum SpecCondition {
+    Binary(LogicalOperator, Box<[Condition; 2]>),
+    Requirement(Spec),
+}
+
+impl FromStr for ConditionalSpec {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Split on the condition
+        let (s, condition) = s
+            .split_once("; if ")
+            .map_or_else(|| (s, None), |(left, right)| (left, Some(right)));
+
+        // Parse the condition
+        let condition = condition.map(|condition| Condition::from_str(condition)).transpose().unwrap();
+
+        // Parse the spec
+        let spec = Spec::from_str(s).unwrap();
+
+        Ok(Self {
+            condition,
+            spec,
+        })
+    }
+}
+
+impl FromStr for Condition {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        
+    }
+}
+
 
 impl FromStr for Spec {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split(' ').collect::<Vec<_>>();
-        let name = split
-            .first()
-            .expect("spec does not have a name")
-            .to_string();
+        // Split the name and the version
+        let (Some(name), versions) = s.split_once(' ').map_or_else(
+            || (Some(s), None),
+            |(left, right)| (Some(left), Some(right)),
+        ) else {
+            panic!("spec does not have a name")
+        };
 
-        fn version_range(s: Option<&&str>) -> Ranges<Pack> {
-            if let Some(s) = s {
-                let (start, end) = s
-                    .split_once("..")
-                    .map_or((*s, None), |(start, end)| (start, Some(end)));
-                let start: Pack = start.parse().unwrap();
-                let end = end
-                    .map(FromStr::from_str)
-                    .transpose()
-                    .unwrap()
-                    .unwrap_or(start.offset(1));
-                Ranges::between(start, end)
-            } else {
-                Ranges::full()
-            }
-        }
-
-        let versions = version_range(split.get(1));
-
-        Ok(Spec::new(name, versions))
+        let versions = versions.map(parse_version_range).unwrap_or(Ranges::full());
+        Ok(Spec::new(name.to_string(), versions))
     }
 }
 
