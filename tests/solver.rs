@@ -4,13 +4,13 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
     fmt::{Debug, Display, Formatter},
-    io::{stderr, Write},
+    io::{Write, stderr},
     num::ParseIntError,
     rc::Rc,
     str::FromStr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -20,11 +20,11 @@ use indexmap::IndexMap;
 use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
-    snapshot::{DependencySnapshot, SnapshotProvider},
-    utils::Pool,
     Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
     Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
     VersionSetUnionId,
+    snapshot::{DependencySnapshot, SnapshotProvider},
+    utils::Pool,
 };
 use tracing_test::traced_test;
 use version_ranges::Ranges;
@@ -1361,6 +1361,17 @@ fn test_snapshot_union_requirements() {
         &[intl_req, union_req],
         &[]
     ));
+}
+
+#[test]
+fn test_union_empty_requirements() {
+    let provider = BundleBoxProvider::from_packages(&[("a", 1, vec!["b 1 | c"]), ("b", 1, vec![])]);
+
+    let result = solve_snapshot(provider, &["a"]);
+    assert_snapshot!(result, @r"
+    a=1
+    b=1
+    ");
 }
 
 #[test]

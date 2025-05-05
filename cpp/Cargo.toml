@@ -16,9 +16,9 @@ publish = false
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-resolvo = { version = "0.8.4", path = "../" }
+resolvo = { path = "../" }
 
 [build-dependencies]
 anyhow = "1"
-cbindgen = "0.27.0"
+cbindgen = "0.28.0"
 

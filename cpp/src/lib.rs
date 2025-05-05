@@ -4,7 +4,7 @@ mod vector;
 
 use std::{ffi::c_void, fmt::Display, ptr::NonNull};
 
-use resolvo::{KnownDependencies, SolverCache};
+use resolvo::{HintDependenciesAvailable, KnownDependencies, SolverCache};
 
 use crate::{slice::Slice, string::String, vector::Vector};
 
@@ -326,7 +326,7 @@ pub struct DependencyProvider {
     ),
 }
 
-impl<'d> resolvo::Interner for &'d DependencyProvider {
+impl resolvo::Interner for &DependencyProvider {
     fn display_solvable(&self, solvable: resolvo::SolvableId) -> impl Display + '_ {
         let mut result = String::default();
         unsafe { (self.display_solvable)(self.data, solvable.into(), NonNull::from(&mut result)) }
@@ -346,7 +346,9 @@ impl<'d> resolvo::Interner for &'d DependencyProvider {
         unsafe {
             (self.display_merged_solvables)(
                 self.data,
-                Slice::from_slice(std::mem::transmute(solvables)),
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables),
+                ),
                 NonNull::from(&mut result),
             )
         }
@@ -393,7 +395,7 @@ impl<'d> resolvo::Interner for &'d DependencyProvider {
     }
 }
 
-impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
+impl resolvo::DependencyProvider for &DependencyProvider {
     async fn filter_candidates(
         &self,
         candidates: &[resolvo::SolvableId],
@@ -404,7 +406,9 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         unsafe {
             (self.filter_candidates)(
                 self.data,
-                Slice::from_slice(std::mem::transmute(candidates)),
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(candidates),
+                ),
                 version_set.into(),
                 inverse,
                 NonNull::from(&mut result),
@@ -428,11 +432,13 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
                 candidates: candidates.candidates.into_iter().map(Into::into).collect(),
                 favored: candidates.favored.as_ref().copied().map(Into::into),
                 locked: candidates.locked.as_ref().copied().map(Into::into),
-                hint_dependencies_available: candidates
-                    .hint_dependencies_available
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
+                hint_dependencies_available: HintDependenciesAvailable::Some(
+                    candidates
+                        .hint_dependencies_available
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                ),
                 excluded: candidates
                     .excluded
                     .iter()
@@ -448,8 +454,13 @@ impl<'d> resolvo::DependencyProvider for &'d DependencyProvider {
         solvables: &mut [resolvo::SolvableId],
     ) {
         unsafe {
-            (self.sort_candidates)(self.data, Slice::from_slice(std::mem::transmute(solvables)))
-        }
+            (self.sort_candidates)(
+                self.data,
+                Slice::from_slice(
+                    std::mem::transmute::<&[resolvo::SolvableId], &[SolvableId]>(solvables),
+                ),
+            )
+        };
     }
 
     async fn get_dependencies(&self, solvable: resolvo::SolvableId) -> resolvo::Dependencies {
@@ -480,7 +491,7 @@ pub struct Problem<'a> {
     pub soft_requirements: Slice<'a, SolvableId>,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_solve(
     provider: &DependencyProvider,
@@ -494,6 +505,7 @@ pub extern "C" fn resolvo_solve(
         .requirements(
             problem
                 .requirements
+                .as_slice()
                 .iter()
                 .copied()
                 .map(Into::into)
@@ -502,12 +514,20 @@ pub extern "C" fn resolvo_solve(
         .constraints(
             problem
                 .constraints
+                .as_slice()
                 .iter()
                 .copied()
                 .map(Into::into)
                 .collect(),
         )
-        .soft_requirements(problem.soft_requirements.iter().copied().map(Into::into));
+        .soft_requirements(
+            problem
+                .soft_requirements
+                .as_slice()
+                .iter()
+                .copied()
+                .map(Into::into),
+        );
 
     match solver.solve(problem) {
         Ok(solution) => {
@@ -525,13 +545,13 @@ pub extern "C" fn resolvo_solve(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_requirement_single(version_set_id: VersionSetId) -> Requirement {
     Requirement::Single(version_set_id)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(unused)]
 pub extern "C" fn resolvo_requirement_union(
     version_set_union_id: VersionSetUnionId,

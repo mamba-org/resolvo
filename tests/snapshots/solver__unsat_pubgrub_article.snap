@@ -1,6 +1,7 @@
 ---
 source: tests/solver.rs
 expression: error
+snapshot_kind: text
 ---
 The following packages are incompatible
 ├─ icons >=1, <2 can be installed with any of the following options:

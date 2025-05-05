@@ -10,12 +10,12 @@ use console::style;
 use csv::WriterBuilder;
 use itertools::Itertools;
 use rand::{
+    Rng, SeedableRng,
     distributions::{Distribution, WeightedIndex},
     prelude::IteratorRandom,
     rngs::StdRng,
-    Rng, SeedableRng,
 };
-use resolvo::{snapshot::DependencySnapshot, Problem, Requirement, Solver, UnsolvableOrCancelled};
+use resolvo::{Problem, Requirement, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot};
 
 #[derive(Parser)]
 #[clap(version = "0.1.0", author = "Bas Zalmstra <zalmstra.bas@gmail.com>")]

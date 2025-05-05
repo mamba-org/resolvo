@@ -15,7 +15,7 @@ pub struct Mapping<TId, TValue> {
     _phantom: PhantomData<TId>,
 }
 
-impl<TId: ArenaId, TValue: Clone> Default for Mapping<TId, TValue> {
+impl<TId: ArenaId, TValue> Default for Mapping<TId, TValue> {
     fn default() -> Self {
         Self::new()
     }
@@ -77,6 +77,21 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
         previous_value
     }
 
+    /// Unset a specific value in the mapping, returns the previous value.
+    pub fn unset(&mut self, id: TId) -> Option<TValue> {
+        let idx = id.to_usize();
+        let (chunk, offset) = Self::chunk_and_offset(idx);
+        if chunk >= self.chunks.len() {
+            return None;
+        }
+
+        let previous_value = self.chunks[chunk][offset].take();
+        if previous_value.is_some() {
+            self.len -= 1;
+        }
+        previous_value
+    }
+
     /// Get a specific value in the mapping with bound checks
     pub fn get(&self, id: TId) -> Option<&TValue> {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
@@ -117,9 +132,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// before.
     pub unsafe fn get_unchecked(&self, id: TId) -> &TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
-        self.chunks
-            .get_unchecked(chunk)
-            .get_unchecked(offset)
+        unsafe { self.chunks.get_unchecked(chunk).get_unchecked(offset) }
             .as_ref()
             .unwrap()
     }
@@ -132,11 +145,13 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// before.
     pub unsafe fn get_unchecked_mut(&mut self, id: TId) -> &mut TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
-        self.chunks
-            .get_unchecked_mut(chunk)
-            .get_unchecked_mut(offset)
-            .as_mut()
-            .unwrap()
+        unsafe {
+            self.chunks
+                .get_unchecked_mut(chunk)
+                .get_unchecked_mut(offset)
+        }
+        .as_mut()
+        .unwrap()
     }
 
     /// Returns the number of mapped items
@@ -201,7 +216,7 @@ impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
     }
 }
 
-impl<'a, TId: ArenaId, TValue> FusedIterator for MappingIter<'a, TId, TValue> {}
+impl<TId: ArenaId, TValue> FusedIterator for MappingIter<'_, TId, TValue> {}
 
 #[cfg(feature = "serde")]
 impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {

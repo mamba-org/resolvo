@@ -1,18 +1,22 @@
 use std::{
     fmt::{Debug, Display, Formatter},
     iter,
+    num::NonZeroU32,
     ops::ControlFlow,
 };
 
 use elsa::FrozenMap;
 
 use crate::{
+    Interner, NameId, Requirement,
     internal::{
         arena::{Arena, ArenaId},
-        id::{ClauseId, InternalSolvableId, LearntClauseId, StringId, VersionSetId},
+        id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
-    solver::{decision_map::DecisionMap, decision_tracker::DecisionTracker},
-    Interner, NameId, Requirement, SolvableId,
+    solver::{
+        VariableId, decision_map::DecisionMap, decision_tracker::DecisionTracker,
+        variable_map::VariableMap,
+    },
 };
 
 /// Represents a single clause in the SAT problem
@@ -30,7 +34,7 @@ use crate::{
 ///
 /// For additional clarity: if `(¬A ∨ ¬B)` is a clause, `¬A` and `¬B` are its
 /// literals, and `A` and `B` are variables. In our implementation, variables
-/// are represented by [`InternalSolvableId`], and assignments are tracked in
+/// are represented by [`VariableId`], and assignments are tracked in
 /// the [`DecisionMap`].
 ///
 /// The solver will attempt to assign values to the variables involved in the
@@ -53,7 +57,7 @@ pub(crate) enum Clause {
     ///
     /// In SAT terms: (¬A ∨ B1 ∨ B2 ∨ ... ∨ B99), where B1 to B99 represent the
     /// possible candidates for the provided [`Requirement`].
-    Requires(InternalSolvableId, Requirement),
+    Requires(VariableId, Requirement),
     /// Ensures only a single version of a package is installed
     ///
     /// Usage: generate one [`Clause::ForbidMultipleInstances`] clause for each
@@ -61,7 +65,7 @@ pub(crate) enum Clause {
     /// itself forbids two solvables from being installed at the same time.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    ForbidMultipleInstances(InternalSolvableId, InternalSolvableId, NameId),
+    ForbidMultipleInstances(VariableId, Literal, NameId),
     /// Forbids packages that do not satisfy a solvable's constrains
     ///
     /// Usage: for each constrains relationship in a package, determine all the
@@ -72,7 +76,7 @@ pub(crate) enum Clause {
     /// separate variant for user-friendly error messages.
     ///
     /// In SAT terms: (¬A ∨ ¬B)
-    Constrains(InternalSolvableId, InternalSolvableId, VersionSetId),
+    Constrains(VariableId, VariableId, VersionSetId),
     /// Forbids the package on the right-hand side
     ///
     /// Note that the package on the left-hand side is not part of the clause,
@@ -82,7 +86,7 @@ pub(crate) enum Clause {
     /// In SAT terms: (¬root ∨ ¬B). Note that we could encode this as an
     /// assertion (¬B), but that would require additional logic in the
     /// solver.
-    Lock(InternalSolvableId, InternalSolvableId),
+    Lock(VariableId, VariableId),
     /// A clause learnt during solving
     ///
     /// The learnt clause id can be used to retrieve the clause's literals,
@@ -92,11 +96,11 @@ pub(crate) enum Clause {
 
     /// A clause that forbids a package from being installed for an external
     /// reason.
-    Excluded(InternalSolvableId, StringId),
+    Excluded(VariableId, StringId),
 }
 
 impl Clause {
-    /// Returns the building blocks needed for a new [ClauseState] of the
+    /// Returns the building blocks needed for a new [WatchedLiterals] of the
     /// [Clause::Requires] kind.
     ///
     /// These building blocks are:
@@ -109,9 +113,9 @@ impl Clause {
     ///   starting the solving process, but can be true for clauses that are
     ///   added dynamically.
     fn requires(
-        parent: InternalSolvableId,
+        parent: VariableId,
         requirement: Requirement,
-        candidates: &[SolvableId],
+        candidates: impl IntoIterator<Item = VariableId>,
         decision_tracker: &DecisionTracker,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         // It only makes sense to introduce a requires clause when the parent solvable
@@ -119,16 +123,10 @@ impl Clause {
         assert_ne!(decision_tracker.assigned_value(parent), Some(false));
 
         let kind = Clause::Requires(parent, requirement);
-        if candidates.is_empty() {
-            // If there are no candidates there is no need to watch anything.
-            (kind, None, false)
-        } else {
-            match candidates
-                .iter()
-                .copied()
-                .map(InternalSolvableId::from)
-                .find(|&c| decision_tracker.assigned_value(c) != Some(false))
-            {
+        let mut candidates = candidates.into_iter().peekable();
+        let first_candidate = candidates.peek().copied();
+        if let Some(first_candidate) = first_candidate {
+            match candidates.find(|&c| decision_tracker.assigned_value(c) != Some(false)) {
                 // Watch any candidate that is not assigned to false
                 Some(watched_candidate) => (
                     kind,
@@ -142,17 +140,17 @@ impl Clause {
                 // restarts.
                 None => (
                     kind,
-                    Some([
-                        parent.negative(),
-                        InternalSolvableId::from(candidates[0]).positive(),
-                    ]),
+                    Some([parent.negative(), first_candidate.positive()]),
                     true,
                 ),
             }
+        } else {
+            // If there are no candidates there is no need to watch anything.
+            (kind, None, false)
         }
     }
 
-    /// Returns the building blocks needed for a new [ClauseState] of the
+    /// Returns the building blocks needed for a new [WatchedLiterals] of the
     /// [Clause::Constrains] kind.
     ///
     /// These building blocks are:
@@ -164,8 +162,8 @@ impl Clause {
     ///   starting the solving process, but can be true for clauses that are
     ///   added dynamically.
     fn constrains(
-        parent: InternalSolvableId,
-        forbidden_solvable: InternalSolvableId,
+        parent: VariableId,
+        forbidden_solvable: VariableId,
         via: VersionSetId,
         decision_tracker: &DecisionTracker,
     ) -> (Self, Option<[Literal; 2]>, bool) {
@@ -188,13 +186,13 @@ impl Clause {
     /// Returns the ids of the solvables that will be watched as well as the
     /// clause itself.
     fn forbid_multiple(
-        candidate: InternalSolvableId,
-        constrained_candidate: InternalSolvableId,
+        candidate: VariableId,
+        constrained_candidate: Literal,
         name: NameId,
     ) -> (Self, Option<[Literal; 2]>) {
         (
             Clause::ForbidMultipleInstances(candidate, constrained_candidate, name),
-            Some([candidate.negative(), constrained_candidate.negative()]),
+            Some([candidate.negative(), constrained_candidate]),
         )
     }
 
@@ -202,20 +200,17 @@ impl Clause {
         (Clause::InstallRoot, None)
     }
 
-    fn exclude(candidate: InternalSolvableId, reason: StringId) -> (Self, Option<[Literal; 2]>) {
+    fn exclude(candidate: VariableId, reason: StringId) -> (Self, Option<[Literal; 2]>) {
         (Clause::Excluded(candidate, reason), None)
     }
 
     fn lock(
-        locked_candidate: InternalSolvableId,
-        other_candidate: InternalSolvableId,
+        locked_candidate: VariableId,
+        other_candidate: VariableId,
     ) -> (Self, Option<[Literal; 2]>) {
         (
             Clause::Lock(locked_candidate, other_candidate),
-            Some([
-                InternalSolvableId::root().negative(),
-                other_candidate.negative(),
-            ]),
+            Some([VariableId::root().negative(), other_candidate.negative()]),
         )
     }
 
@@ -244,7 +239,7 @@ impl Clause {
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         requirements_to_sorted_candidates: &FrozenMap<
             Requirement,
-            Vec<SolvableId>,
+            Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
         init: C,
@@ -264,15 +259,17 @@ impl Clause {
                 .chain(
                     requirements_to_sorted_candidates[&match_spec_id]
                         .iter()
-                        .map(|&s| InternalSolvableId::from(s).positive()),
+                        .flatten()
+                        .map(|&s| s.positive()),
                 )
                 .try_fold(init, visit),
-            Clause::Constrains(s1, s2, _) | Clause::ForbidMultipleInstances(s1, s2, _) => {
-                [s1.negative(), s2.negative()]
-                    .into_iter()
-                    .try_fold(init, visit)
+            Clause::Constrains(s1, s2, _) => [s1.negative(), s2.negative()]
+                .into_iter()
+                .try_fold(init, visit),
+            Clause::ForbidMultipleInstances(s1, s2, _) => {
+                [s1.negative(), s2].into_iter().try_fold(init, visit)
             }
-            Clause::Lock(_, s) => [s.negative(), InternalSolvableId::root().negative()]
+            Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
                 .into_iter()
                 .try_fold(init, visit),
         }
@@ -286,7 +283,7 @@ impl Clause {
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         requirements_to_sorted_candidates: &FrozenMap<
             Requirement,
-            Vec<SolvableId>,
+            Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
         mut visit: impl FnMut(Literal),
@@ -303,9 +300,14 @@ impl Clause {
     }
 
     /// Construct a [`ClauseDisplay`] to display the clause.
-    pub fn display<'i, I: Interner>(&self, interner: &'i I) -> ClauseDisplay<'i, I> {
+    pub fn display<'i, I: Interner>(
+        &self,
+        variable_map: &'i VariableMap,
+        interner: &'i I,
+    ) -> ClauseDisplay<'i, I> {
         ClauseDisplay {
             kind: *self,
+            variable_map,
             interner,
         }
     }
@@ -320,17 +322,19 @@ impl Clause {
 /// variable are grouped together in a linked list, so it becomes easy to notify
 /// them all.
 #[derive(Clone)]
-pub(crate) struct ClauseState {
-    // The ids of the solvables this clause is watching
+pub(crate) struct WatchedLiterals {
+    /// The ids of the literals this clause is watching. A clause that is
+    /// watching literals is always watching two literals, no more, no less.
     pub watched_literals: [Literal; 2],
-    // The ids of the next clause in each linked list that this clause is part of
-    pub(crate) next_watches: [ClauseId; 2],
+    /// The ids of the next clause in each linked list that this clause is part
+    /// of. If either of these or `None` then there is no next clause.
+    pub(crate) next_watches: [Option<ClauseId>; 2],
 }
 
-impl ClauseState {
+impl WatchedLiterals {
     /// Shorthand method to construct a [`Clause::InstallRoot`] without
     /// requiring complicated arguments.
-    pub fn root() -> (Self, Clause) {
+    pub fn root() -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::root();
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
@@ -341,11 +345,11 @@ impl ClauseState {
     /// The returned boolean value is true when adding the clause resulted in a
     /// conflict.
     pub fn requires(
-        candidate: InternalSolvableId,
+        candidate: VariableId,
         requirement: Requirement,
-        matching_candidates: &[SolvableId],
+        matching_candidates: impl IntoIterator<Item = VariableId>,
         decision_tracker: &DecisionTracker,
-    ) -> (Self, bool, Clause) {
+    ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::requires(
             candidate,
             requirement,
@@ -366,11 +370,11 @@ impl ClauseState {
     /// The returned boolean value is true when adding the clause resulted in a
     /// conflict.
     pub fn constrains(
-        candidate: InternalSolvableId,
-        constrained_package: InternalSolvableId,
+        candidate: VariableId,
+        constrained_package: VariableId,
         requirement: VersionSetId,
         decision_tracker: &DecisionTracker,
-    ) -> (Self, bool, Clause) {
+    ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::constrains(
             candidate,
             constrained_package,
@@ -386,76 +390,42 @@ impl ClauseState {
     }
 
     pub fn lock(
-        locked_candidate: InternalSolvableId,
-        other_candidate: InternalSolvableId,
-    ) -> (Self, Clause) {
+        locked_candidate: VariableId,
+        other_candidate: VariableId,
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::lock(locked_candidate, other_candidate);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
     pub fn forbid_multiple(
-        candidate: InternalSolvableId,
-        other_candidate: InternalSolvableId,
+        candidate: VariableId,
+        other_candidate: Literal,
         name: NameId,
-    ) -> (Self, Clause) {
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::forbid_multiple(candidate, other_candidate, name);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    pub fn learnt(learnt_clause_id: LearntClauseId, literals: &[Literal]) -> (Self, Clause) {
+    pub fn learnt(
+        learnt_clause_id: LearntClauseId,
+        literals: &[Literal],
+    ) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::learnt(learnt_clause_id, literals);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    pub fn exclude(candidate: InternalSolvableId, reason: StringId) -> (Self, Clause) {
+    pub fn exclude(candidate: VariableId, reason: StringId) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::exclude(candidate, reason);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
-    fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Self {
-        let watched_literals = watched_literals.unwrap_or([Literal::null(), Literal::null()]);
-
-        let clause = Self {
+    fn from_kind_and_initial_watches(watched_literals: Option<[Literal; 2]>) -> Option<Self> {
+        let watched_literals = watched_literals?;
+        debug_assert!(watched_literals[0] != watched_literals[1]);
+        Some(Self {
             watched_literals,
-            next_watches: [ClauseId::null(), ClauseId::null()],
-        };
-
-        debug_assert!(!clause.has_watches() || watched_literals[0] != watched_literals[1]);
-
-        clause
-    }
-
-    pub fn link_to_clause(&mut self, watch_index: usize, linked_clause: ClauseId) {
-        self.next_watches[watch_index] = linked_clause;
-    }
-
-    pub fn unlink_clause(
-        &mut self,
-        linked_clause: &ClauseState,
-        watched_solvable: InternalSolvableId,
-        linked_clause_watch_index: usize,
-    ) {
-        if self.watched_literals[0].solvable_id() == watched_solvable {
-            self.next_watches[0] = linked_clause.next_watches[linked_clause_watch_index];
-        } else {
-            debug_assert_eq!(self.watched_literals[1].solvable_id(), watched_solvable);
-            self.next_watches[1] = linked_clause.next_watches[linked_clause_watch_index];
-        }
-    }
-
-    #[inline]
-    pub fn next_watched_clause(&self, solvable_id: InternalSolvableId) -> ClauseId {
-        if solvable_id == self.watched_literals[0].solvable_id() {
-            self.next_watches[0]
-        } else {
-            debug_assert_eq!(self.watched_literals[1].solvable_id(), solvable_id);
-            self.next_watches[1]
-        }
-    }
-
-    pub fn has_watches(&self) -> bool {
-        // If the first watch is not null, the second won't be either
-        !self.watched_literals[0].is_null()
+            next_watches: [None, None],
+        })
     }
 
     pub fn next_unwatched_literal(
@@ -464,7 +434,7 @@ impl ClauseState {
         learnt_clauses: &Arena<LearntClauseId, Vec<Literal>>,
         requirement_to_sorted_candidates: &FrozenMap<
             Requirement,
-            Vec<SolvableId>,
+            Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
         decision_map: &DecisionMap,
@@ -488,8 +458,7 @@ impl ClauseState {
                         // The next unwatched variable (if available), is a variable that is:
                         // * Not already being watched
                         // * Not yet decided, or decided in such a way that the literal yields true
-                        if self.watched_literals[other_watch_index].solvable_id()
-                            != lit.solvable_id()
+                        if self.watched_literals[other_watch_index] != lit
                             && lit.eval(decision_map).unwrap_or(true)
                         {
                             ControlFlow::Break(lit)
@@ -507,41 +476,40 @@ impl ClauseState {
     }
 }
 
-/// Represents a literal in a SAT clause (i.e. either A or ¬A)
+/// Represents a literal in a SAT clause, a literal holds a variable and
+/// indicates whether it should be positive or negative (i.e. either A or ¬A).
+///
+/// A [`Literal`] stores a [`NonZeroU32`] which ensures that the size of an
+/// `Option<Literal>` is the same as a `Literal`.
+#[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) struct Literal(u32);
+pub(crate) struct Literal(NonZeroU32);
 
 impl Literal {
-    /// Constructs a new [`Literal`] from a [`InternalSolvableId`] and a boolean
+    /// Constructs a new [`Literal`] from a [`VariableId`] and a boolean
     /// indicating whether the literal should be negated.
-    pub fn new(solvable_id: InternalSolvableId, negate: bool) -> Self {
-        assert!(solvable_id.0 < (u32::MAX >> 1) - 1, "solvable id too big");
-        Self(solvable_id.0 << 1 | negate as u32)
+    pub fn new(variable: VariableId, negate: bool) -> Self {
+        let variable_idx = variable.to_usize();
+        let encoded_literal = variable_idx << 1 | negate as usize;
+        Self::from_usize(encoded_literal)
     }
 }
 
 impl ArenaId for Literal {
     fn from_usize(x: usize) -> Self {
-        debug_assert!(x <= u32::MAX as usize, "watched literal id too big");
-        Literal(x as u32)
+        let idx: u32 = (x + 1).try_into().expect("watched literal id too big");
+        // SAFETY: This is safe because we are adding 1 to the index
+        unsafe { Literal(NonZeroU32::new_unchecked(idx)) }
     }
 
     fn to_usize(self) -> usize {
-        self.0 as usize
+        self.0.get() as usize - 1
     }
 }
 
 impl Literal {
-    pub fn null() -> Self {
-        Self(u32::MAX)
-    }
-
-    pub fn is_null(&self) -> bool {
-        self.0 == u32::MAX
-    }
-
     pub fn negate(&self) -> bool {
-        (self.0 & 1) == 1
+        (self.0.get() & 1) == 0
     }
 
     /// Returns the value that would make the literal evaluate to true if
@@ -552,8 +520,9 @@ impl Literal {
 
     /// Returns the value that would make the literal evaluate to true if
     /// assigned to the literal's solvable
-    pub(crate) fn solvable_id(self) -> InternalSolvableId {
-        InternalSolvableId(self.0 >> 1)
+    #[inline]
+    pub(crate) fn variable(self) -> VariableId {
+        VariableId::from_usize(self.to_usize() >> 1)
     }
 
     /// Evaluates the literal, or returns `None` if no value has been assigned
@@ -561,12 +530,12 @@ impl Literal {
     #[inline(always)]
     pub(crate) fn eval(self, decision_map: &DecisionMap) -> Option<bool> {
         decision_map
-            .value(self.solvable_id())
+            .value(self.variable())
             .map(|value| value != self.negate())
     }
 }
 
-impl InternalSolvableId {
+impl VariableId {
     /// Constructs a [`Literal`] that indicates this solvable should be assigned
     /// a positive value.
     pub fn positive(self) -> Literal {
@@ -584,50 +553,51 @@ impl InternalSolvableId {
 pub(crate) struct ClauseDisplay<'i, I: Interner> {
     kind: Clause,
     interner: &'i I,
+    variable_map: &'i VariableMap,
 }
 
-impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
+impl<I: Interner> Display for ClauseDisplay<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             Clause::InstallRoot => write!(f, "InstallRoot"),
-            Clause::Excluded(solvable_id, reason) => {
+            Clause::Excluded(variable, reason) => {
                 write!(
                     f,
                     "Excluded({}({:?}), {})",
-                    solvable_id.display(self.interner),
-                    solvable_id,
+                    variable.display(self.variable_map, self.interner),
+                    variable,
                     self.interner.display_string(reason)
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
-            Clause::Requires(solvable_id, requirement) => {
+            Clause::Requires(variable, requirement) => {
                 write!(
                     f,
                     "Requires({}({:?}), {})",
-                    solvable_id.display(self.interner),
-                    solvable_id,
+                    variable.display(self.variable_map, self.interner),
+                    variable,
                     requirement.display(self.interner),
                 )
             }
-            Clause::Constrains(s1, s2, version_set_id) => {
+            Clause::Constrains(v1, v2, version_set_id) => {
                 write!(
                     f,
                     "Constrains({}({:?}), {}({:?}), {})",
-                    s1.display(self.interner),
-                    s1,
-                    s2.display(self.interner),
-                    s2,
+                    v1.display(self.variable_map, self.interner),
+                    v1,
+                    v2.display(self.variable_map, self.interner),
+                    v2,
                     self.interner.display_version_set(version_set_id)
                 )
             }
-            Clause::ForbidMultipleInstances(s1, s2, name) => {
+            Clause::ForbidMultipleInstances(v1, v2, name) => {
                 write!(
                     f,
                     "ForbidMultipleInstances({}({:?}), {}({:?}), {})",
-                    s1.display(self.interner),
-                    s1,
-                    s2.display(self.interner),
-                    s2,
+                    v1.display(self.variable_map, self.interner),
+                    v1,
+                    v2.variable().display(self.variable_map, self.interner),
+                    v2,
                     self.interner.display_name(name)
                 )
             }
@@ -635,9 +605,9 @@ impl<'i, I: Interner> Display for ClauseDisplay<'i, I> {
                 write!(
                     f,
                     "Lock({}({:?}), {}({:?}))",
-                    locked.display(self.interner),
+                    locked.display(self.variable_map, self.interner),
                     locked,
-                    other.display(self.interner),
+                    other.display(self.variable_map, self.interner),
                     other,
                 )
             }
@@ -650,211 +620,117 @@ mod test {
     use super::*;
     use crate::{internal::arena::ArenaId, solver::decision::Decision};
 
-    fn clause(next_clauses: [ClauseId; 2], watch_literals: [Literal; 2]) -> ClauseState {
-        ClauseState {
-            watched_literals: watch_literals,
-            next_watches: next_clauses,
-        }
-    }
-
     #[test]
     #[allow(clippy::bool_assert_comparison)]
     fn test_literal_satisfying_value() {
-        let lit = InternalSolvableId::root().negative();
+        let lit = VariableId::root().negative();
         assert_eq!(lit.satisfying_value(), false);
 
-        let lit = InternalSolvableId::root().positive();
+        let lit = VariableId::root().positive();
         assert_eq!(lit.satisfying_value(), true);
     }
 
     #[test]
     fn test_literal_eval() {
-        let mut decision_map = DecisionMap::new();
+        let mut decision_map = DecisionMap::default();
 
-        let literal = InternalSolvableId::root().positive();
-        let negated_literal = InternalSolvableId::root().negative();
+        let literal = VariableId::root().positive();
+        let negated_literal = VariableId::root().negative();
 
         // Undecided
         assert_eq!(literal.eval(&decision_map), None);
         assert_eq!(negated_literal.eval(&decision_map), None);
 
         // Decided
-        decision_map.set(InternalSolvableId::root(), true, 1);
+        decision_map.set(VariableId::root(), true, 1);
         assert_eq!(literal.eval(&decision_map), Some(true));
         assert_eq!(negated_literal.eval(&decision_map), Some(false));
 
-        decision_map.set(InternalSolvableId::root(), false, 1);
+        decision_map.set(VariableId::root(), false, 1);
         assert_eq!(literal.eval(&decision_map), Some(false));
         assert_eq!(negated_literal.eval(&decision_map), Some(true));
     }
 
     #[test]
-    fn test_unlink_clause_different() {
-        let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(3)],
-            [
-                InternalSolvableId::from_usize(1596).negative(),
-                InternalSolvableId::from_usize(1211).negative(),
-            ],
-        );
-        let clause2 = clause(
-            [ClauseId::null(), ClauseId::from_usize(3)],
-            [
-                InternalSolvableId::from_usize(1596).negative(),
-                InternalSolvableId::from_usize(1208).negative(),
-            ],
-        );
-        let clause3 = clause(
-            [ClauseId::null(), ClauseId::null()],
-            [
-                InternalSolvableId::from_usize(1211).negative(),
-                InternalSolvableId::from_usize(42).negative(),
-            ],
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, InternalSolvableId::from_usize(1596), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    InternalSolvableId::from_usize(1596).negative(),
-                    InternalSolvableId::from_usize(1211).negative()
-                ]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(3)]
-            )
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause3, InternalSolvableId::from_usize(1211), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    InternalSolvableId::from_usize(1596).negative(),
-                    InternalSolvableId::from_usize(1211).negative()
-                ]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
-        }
-    }
-
-    #[test]
-    fn test_unlink_clause_same() {
-        let clause1 = clause(
-            [ClauseId::from_usize(2), ClauseId::from_usize(2)],
-            [
-                InternalSolvableId::from_usize(1596).negative(),
-                InternalSolvableId::from_usize(1211).negative(),
-            ],
-        );
-        let clause2 = clause(
-            [ClauseId::null(), ClauseId::null()],
-            [
-                InternalSolvableId::from_usize(1596).negative(),
-                InternalSolvableId::from_usize(1211).negative(),
-            ],
-        );
-
-        // Unlink 0
-        {
-            let mut clause1 = clause1.clone();
-            clause1.unlink_clause(&clause2, InternalSolvableId::from_usize(1596), 0);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    InternalSolvableId::from_usize(1596).negative(),
-                    InternalSolvableId::from_usize(1211).negative()
-                ]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::null(), ClauseId::from_usize(2)]
-            )
-        }
-
-        // Unlink 1
-        {
-            let mut clause1 = clause1;
-            clause1.unlink_clause(&clause2, InternalSolvableId::from_usize(1211), 1);
-            assert_eq!(
-                clause1.watched_literals,
-                [
-                    InternalSolvableId::from_usize(1596).negative(),
-                    InternalSolvableId::from_usize(1211).negative()
-                ]
-            );
-            assert_eq!(
-                clause1.next_watches,
-                [ClauseId::from_usize(2), ClauseId::null()]
-            )
-        }
-    }
-
-    #[test]
     fn test_requires_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
+        let mut decisions = DecisionTracker::default();
 
-        let parent = InternalSolvableId::from_usize(1);
-        let candidate1 = SolvableId::from_usize(2);
-        let candidate2 = SolvableId::from_usize(3);
+        let parent = VariableId::from_usize(1);
+        let candidate1 = VariableId::from_usize(2);
+        let candidate2 = VariableId::from_usize(3);
 
         // No conflict, all candidates available
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
-            &[candidate1, candidate2],
+            [candidate1, candidate2],
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].solvable_id(), parent);
-        assert_eq!(clause.watched_literals[1].solvable_id(), candidate1.into());
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.unwrap().watched_literals[1].variable(),
+            candidate1.into()
+        );
 
         // No conflict, still one candidate available
         decisions
-            .try_add_decision(Decision::new(candidate1.into(), false, ClauseId::null()), 1)
+            .try_add_decision(
+                Decision::new(candidate1.into(), false, ClauseId::from_usize(0)),
+                1,
+            )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
-            &[candidate1, candidate2],
+            [candidate1, candidate2],
             &decisions,
         );
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].solvable_id(), parent);
-        assert_eq!(clause.watched_literals[1].solvable_id(), candidate2.into());
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            candidate2.into()
+        );
 
         // Conflict, no candidates available
         decisions
-            .try_add_decision(Decision::new(candidate2.into(), false, ClauseId::null()), 1)
+            .try_add_decision(
+                Decision::new(candidate2.into(), false, ClauseId::install_root()),
+                1,
+            )
             .unwrap();
-        let (clause, conflict, _kind) = ClauseState::requires(
+        let (clause, conflict, _kind) = WatchedLiterals::requires(
             parent,
             VersionSetId::from_usize(0).into(),
-            &[candidate1, candidate2],
+            [candidate1, candidate2],
             &decisions,
         );
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].solvable_id(), parent);
-        assert_eq!(clause.watched_literals[1].solvable_id(), candidate1.into());
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            candidate1.into()
+        );
 
         // Panic
         decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseState::requires(
+            WatchedLiterals::requires(
                 parent,
                 VersionSetId::from_usize(0).into(),
-                &[candidate1, candidate2],
+                [candidate1, candidate2],
                 &decisions,
             )
         })
@@ -864,44 +740,86 @@ mod test {
 
     #[test]
     fn test_constrains_with_and_without_conflict() {
-        let mut decisions = DecisionTracker::new();
+        let mut decisions = DecisionTracker::default();
 
-        let parent = InternalSolvableId::from_usize(1);
-        let forbidden = InternalSolvableId::from_usize(2);
+        let parent = VariableId::from_usize(1);
+        let forbidden = VariableId::from_usize(2);
 
         // No conflict, forbidden package not installed
         let (clause, conflict, _kind) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(!conflict);
-        assert_eq!(clause.watched_literals[0].solvable_id(), parent);
-        assert_eq!(clause.watched_literals[1].solvable_id(), forbidden);
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            forbidden
+        );
 
         // Conflict, forbidden package installed
         decisions
-            .try_add_decision(Decision::new(forbidden, true, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(forbidden, true, ClauseId::install_root()), 1)
             .unwrap();
         let (clause, conflict, _kind) =
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions);
         assert!(conflict);
-        assert_eq!(clause.watched_literals[0].solvable_id(), parent);
-        assert_eq!(clause.watched_literals[1].solvable_id(), forbidden);
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[0].variable(),
+            parent
+        );
+        assert_eq!(
+            clause.as_ref().unwrap().watched_literals[1].variable(),
+            forbidden
+        );
 
         // Panic
         decisions
-            .try_add_decision(Decision::new(parent, false, ClauseId::null()), 1)
+            .try_add_decision(Decision::new(parent, false, ClauseId::install_root()), 1)
             .unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            ClauseState::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
+            WatchedLiterals::constrains(parent, forbidden, VersionSetId::from_usize(0), &decisions)
         })
         .is_err();
         assert!(panicked);
     }
 
     #[test]
-    fn test_clause_size() {
-        // This test is here to ensure we don't increase the size of `ClauseState` by
-        // accident, as we are creating thousands of instances.
+    fn test_watched_literals_size() {
+        // This test is here to ensure we don't increase the size of `WatchedLiterals`
+        // by accident, as we are creating thousands of instances.
         // libsolv: 24 bytes
-        assert_eq!(std::mem::size_of::<ClauseState>(), 16);
+        assert_eq!(std::mem::size_of::<WatchedLiterals>(), 16);
+    }
+
+    #[test]
+    fn test_literal_size() {
+        assert_eq!(std::mem::size_of::<Literal>(), 4);
+        assert_eq!(
+            std::mem::size_of::<Literal>(),
+            std::mem::size_of::<Option<Literal>>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<[Literal; 2]>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<[Option<Literal>; 2]>()
+        );
+        assert_eq!(
+            std::mem::size_of::<Literal>() * 2,
+            std::mem::size_of::<Option<[Literal; 2]>>()
+        );
+    }
+
+    #[test]
+    fn test_watched_literal_size() {
+        assert_eq!(std::mem::size_of::<WatchedLiterals>(), 16);
+        assert_eq!(
+            std::mem::size_of::<Option<WatchedLiterals>>(),
+            std::mem::size_of::<WatchedLiterals>()
+        );
     }
 }

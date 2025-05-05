@@ -1,16 +1,16 @@
 [project]
 name = "resolvo"
 authors = ["Bas Zalmstra <bas@prefix.dev>"]
-channels = ["conda-forge"]
+channels = ["https://prefix.dev/conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [tasks]
-format = {depends_on = ["format-rust", "format-cpp", "format-cmake"] }
-test = {depends_on = ["test-rust", "test-cpp"] }
+format = {depends-on = ["format-rust", "format-cpp", "format-cmake"] }
+test = {depends-on = ["test-rust", "test-cpp"] }
 
 # ---- Build Rust using Cargo ----
 [feature.build-rust.dependencies]
-rust = "~=1.75.0"
+rust = "~=1.86.0"
 
 [feature.test-rust.tasks.test-rust]
 cmd = "cargo test"
@@ -41,7 +41,7 @@ outputs = ["build/bin/*"]
 
 [feature.build-cpp.tasks.test-cpp]
 cmd = "ctest --test-dir build"
-depends_on = ["build-cpp"]
+depends-on = ["build-cpp"]
 
 [environments.test-cpp]
 features = ["build-cpp", "build-rust"]

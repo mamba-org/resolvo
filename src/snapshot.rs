@@ -15,8 +15,9 @@ use ahash::HashSet;
 use futures::FutureExt;
 
 use crate::{
-    internal::arena::ArenaId, Candidates, Dependencies, DependencyProvider, Interner, Mapping,
+    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner, Mapping,
     NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
+    internal::arena::ArenaId,
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -190,7 +191,14 @@ impl DependencySnapshot {
                             queue.push_back(Element::String(reason));
                         }
                     }
-                    available_hints.extend(candidates.hint_dependencies_available.iter().copied());
+
+                    let hint_dependencies_available = match &candidates.hint_dependencies_available
+                    {
+                        HintDependenciesAvailable::None => &candidates.candidates[0..0],
+                        HintDependenciesAvailable::All => &candidates.candidates,
+                        HintDependenciesAvailable::Some(candidates) => candidates,
+                    };
+                    available_hints.extend(hint_dependencies_available.iter().copied());
 
                     let package = Package {
                         name: display,
@@ -412,7 +420,7 @@ impl<'s> SnapshotProvider<'s> {
     }
 }
 
-impl<'s> Interner for SnapshotProvider<'s> {
+impl Interner for SnapshotProvider<'_> {
     fn display_solvable(&self, solvable: SolvableId) -> impl Display + '_ {
         &self.solvable(solvable).display
     }
@@ -450,7 +458,7 @@ impl<'s> Interner for SnapshotProvider<'s> {
     }
 }
 
-impl<'s> DependencyProvider for SnapshotProvider<'s> {
+impl DependencyProvider for SnapshotProvider<'_> {
     async fn filter_candidates(
         &self,
         candidates: &[SolvableId],
@@ -472,12 +480,14 @@ impl<'s> DependencyProvider for SnapshotProvider<'s> {
             favored: None,
             locked: None,
             excluded: package.excluded.clone(),
-            hint_dependencies_available: package
-                .solvables
-                .iter()
-                .copied()
-                .filter(|&s| self.solvable(s).hint_dependencies_available)
-                .collect(),
+            hint_dependencies_available: HintDependenciesAvailable::Some(
+                package
+                    .solvables
+                    .iter()
+                    .copied()
+                    .filter(|&s| self.solvable(s).hint_dependencies_available)
+                    .collect(),
+            ),
         })
     }
 

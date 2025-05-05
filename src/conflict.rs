@@ -6,19 +6,20 @@ use std::{collections::HashSet, fmt, fmt::Formatter, hash::Hash, rc::Rc};
 use ahash::HashMap;
 use itertools::Itertools;
 use petgraph::{
+    Direction,
     graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex},
     visit::{Bfs, DfsPostOrder, EdgeRef},
-    Direction,
 };
 
+use crate::solver::variable_map::VariableOrigin;
 use crate::{
+    DependencyProvider, Interner, Requirement,
     internal::{
         arena::ArenaId,
-        id::{ClauseId, InternalSolvableId, SolvableId, StringId, VersionSetId},
+        id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{clause::Clause, Solver},
-    DependencyProvider, Interner, Requirement,
+    solver::{Solver, clause::Clause},
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -47,20 +48,27 @@ impl Conflict {
         &self,
         solver: &Solver<D, RT>,
     ) -> ConflictGraph {
+        let state = &solver.state;
+
         let mut graph = DiGraph::<ConflictNode, ConflictEdge>::default();
-        let mut nodes: HashMap<InternalSolvableId, NodeIndex> = HashMap::default();
+        let mut nodes: HashMap<SolvableOrRootId, NodeIndex> = HashMap::default();
         let mut excluded_nodes: HashMap<StringId, NodeIndex> = HashMap::default();
 
-        let root_node = Self::add_node(&mut graph, &mut nodes, InternalSolvableId::root());
+        let root_node = Self::add_node(&mut graph, &mut nodes, SolvableOrRootId::root());
         let unresolved_node = graph.add_node(ConflictNode::UnresolvedDependency);
+        let mut last_node_by_name = HashMap::default();
 
         for clause_id in &self.clauses {
-            let clause = &solver.clauses.kinds.borrow()[clause_id.to_usize()];
+            let clause = &state.clauses.kinds[clause_id.to_usize()];
             match clause {
                 Clause::InstallRoot => (),
                 Clause::Excluded(solvable, reason) => {
                     tracing::trace!("{solvable:?} is excluded");
-                    let package_node = Self::add_node(&mut graph, &mut nodes, *solvable);
+                    let solvable = solvable
+                        .as_solvable(&state.variable_map)
+                        .expect("only solvables can be excluded");
+
+                    let package_node = Self::add_node(&mut graph, &mut nodes, solvable.into());
                     let excluded_node = excluded_nodes
                         .entry(*reason)
                         .or_insert_with(|| graph.add_node(ConflictNode::Excluded(*reason)));
@@ -73,7 +81,10 @@ impl Conflict {
                 }
                 Clause::Learnt(..) => unreachable!(),
                 &Clause::Requires(package_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
+                    let solvable = package_id
+                        .as_solvable_or_root(&state.variable_map)
+                        .expect("only solvables can be excluded");
+                    let package_node = Self::add_node(&mut graph, &mut nodes, solvable);
 
                     let candidates = solver.async_runtime.block_on(solver.cache.get_or_cache_sorted_candidates(version_set_id)).unwrap_or_else(|_| {
                         unreachable!("The version set was used in the solver, so it must have been cached. Therefore cancellation is impossible here and we cannot get an `Err(...)`")
@@ -102,20 +113,48 @@ impl Conflict {
                     }
                 }
                 &Clause::Lock(locked, forbidden) => {
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, forbidden);
-                    let conflict = ConflictCause::Locked(locked);
+                    let locked_solvable = locked
+                        .as_solvable(&state.variable_map)
+                        .expect("only solvables can be excluded");
+                    let forbidden_solvable = forbidden
+                        .as_solvable(&state.variable_map)
+                        .expect("only solvables can be excluded");
+                    let node2_id =
+                        Self::add_node(&mut graph, &mut nodes, forbidden_solvable.into());
+                    let conflict = ConflictCause::Locked(locked_solvable);
                     graph.add_edge(root_node, node2_id, ConflictEdge::Conflict(conflict));
                 }
                 &Clause::ForbidMultipleInstances(instance1_id, instance2_id, _) => {
-                    let node1_id = Self::add_node(&mut graph, &mut nodes, instance1_id);
-                    let node2_id = Self::add_node(&mut graph, &mut nodes, instance2_id);
+                    let solvable1 = instance1_id
+                        .as_solvable_or_root(&state.variable_map)
+                        .expect("only solvables can be excluded");
+                    let node1_id = Self::add_node(&mut graph, &mut nodes, solvable1);
 
-                    let conflict = ConflictCause::ForbidMultipleInstances;
-                    graph.add_edge(node1_id, node2_id, ConflictEdge::Conflict(conflict));
+                    let VariableOrigin::ForbidMultiple(name) =
+                        state.variable_map.origin(instance2_id.variable())
+                    else {
+                        unreachable!("expected only forbid variables")
+                    };
+
+                    let previous_node = last_node_by_name.insert(name, node1_id);
+                    if let Some(previous_node) = previous_node {
+                        graph.add_edge(
+                            previous_node,
+                            node1_id,
+                            ConflictEdge::Conflict(ConflictCause::ForbidMultipleInstances),
+                        );
+                    }
                 }
                 &Clause::Constrains(package_id, dep_id, version_set_id) => {
-                    let package_node = Self::add_node(&mut graph, &mut nodes, package_id);
-                    let dep_node = Self::add_node(&mut graph, &mut nodes, dep_id);
+                    let package_solvable = package_id
+                        .as_solvable_or_root(&state.variable_map)
+                        .expect("only solvables can be excluded");
+                    let dependency_solvable = dep_id
+                        .as_solvable_or_root(&state.variable_map)
+                        .expect("only solvables can be excluded");
+
+                    let package_node = Self::add_node(&mut graph, &mut nodes, package_solvable);
+                    let dep_node = Self::add_node(&mut graph, &mut nodes, dependency_solvable);
 
                     graph.add_edge(
                         package_node,
@@ -154,8 +193,8 @@ impl Conflict {
 
     fn add_node(
         graph: &mut DiGraph<ConflictNode, ConflictEdge>,
-        nodes: &mut HashMap<InternalSolvableId, NodeIndex>,
-        solvable_id: InternalSolvableId,
+        nodes: &mut HashMap<SolvableOrRootId, NodeIndex>,
+        solvable_id: SolvableOrRootId,
     ) -> NodeIndex {
         *nodes
             .entry(solvable_id)
@@ -176,7 +215,7 @@ impl Conflict {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum ConflictNode {
     /// Node corresponding to a solvable
-    Solvable(InternalSolvableId),
+    Solvable(SolvableOrRootId),
     /// Node representing a dependency without candidates
     UnresolvedDependency,
     /// Node representing an exclude reason
@@ -184,7 +223,7 @@ pub(crate) enum ConflictNode {
 }
 
 impl ConflictNode {
-    fn solvable_id(self) -> InternalSolvableId {
+    fn solvable_or_root(self) -> SolvableOrRootId {
         match self {
             ConflictNode::Solvable(solvable_id) => solvable_id,
             ConflictNode::UnresolvedDependency => {
@@ -194,6 +233,10 @@ impl ConflictNode {
                 panic!("expected solvable node, found excluded node")
             }
         }
+    }
+
+    fn solvable(self) -> Option<SolvableId> {
+        self.solvable_or_root().solvable()
     }
 }
 
@@ -227,7 +270,7 @@ impl ConflictEdge {
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum ConflictCause {
     /// The solvable is locked
-    Locked(InternalSolvableId),
+    Locked(SolvableId),
     /// The target node is constrained by the specified version set
     Constrains(VersionSetId),
     /// It is forbidden to install multiple instances of the same dependency
@@ -284,7 +327,7 @@ impl ConflictGraph {
             };
 
             // If this is a merged node, skip it unless it is the first one in the group
-            if let Some(solvable_id) = id.as_solvable() {
+            if let Some(solvable_id) = id.solvable() {
                 if let Some(merged) = merged_nodes.get(&solvable_id) {
                     if solvable_id != merged.ids[0] {
                         continue;
@@ -321,7 +364,7 @@ impl ConflictGraph {
                     ConflictNode::Solvable(mut solvable_2) => {
                         // If the target node has been merged, replace it by the first id in the
                         // group
-                        if let Some(solvable_id) = solvable_2.as_solvable() {
+                        if let Some(solvable_id) = solvable_2.solvable() {
                             if let Some(merged) = merged_nodes.get(&solvable_id) {
                                 solvable_2 = merged.ids[0].into();
 
@@ -381,7 +424,7 @@ impl ConflictGraph {
                 .sorted_unstable()
                 .collect();
 
-            let Some(solvable_id) = candidate.as_solvable() else {
+            let Some(solvable_id) = candidate.solvable() else {
                 // Root is never merged
                 continue;
             };
@@ -455,7 +498,7 @@ impl ConflictGraph {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(version_set_id, _)| *version_set_id);
 
             for (_, mut deps) in &dependencies {
                 if deps.all(|(_, target)| !installable.contains(&target)) {
@@ -501,7 +544,7 @@ impl ConflictGraph {
                     ConflictEdge::Requires(version_set_id) => (version_set_id, e.target()),
                     ConflictEdge::Conflict(_) => unreachable!(),
                 })
-                .chunk_by(|(&version_set_id, _)| version_set_id);
+                .chunk_by(|(version_set_id, _)| *version_set_id);
 
             // Missing if at least one dependency is missing
             if dependencies
@@ -626,7 +669,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
 
         let graph = &self.graph.graph;
         let installable_nodes = &self.installable_set;
-        let mut reported: HashSet<InternalSolvableId> = HashSet::new();
+        let mut reported: HashSet<SolvableOrRootId> = HashSet::new();
 
         // Note: we are only interested in requires edges here
         let indenter = Indenter::new(top_level_indent);
@@ -690,7 +733,10 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                                 "{indent}{req} can be installed with any of the following options:"
                             )?;
                         } else {
-                            writeln!(f, "{indent}{req}, which can be installed with any of the following options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req}, which can be installed with any of the following options:"
+                            )?;
                         }
 
                         let children: Vec<_> = edges
@@ -713,8 +759,8 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                             let (DisplayOp::Candidate(child_node), _) = child else {
                                 unreachable!()
                             };
-                            let solvable_id = graph[child_node].solvable_id();
-                            let Some(solvable_id) = solvable_id.as_solvable() else {
+                            let solvable_id = graph[child_node].solvable_or_root();
+                            let Some(solvable_id) = solvable_id.solvable() else {
                                 continue;
                             };
 
@@ -741,9 +787,15 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                         // Package cannot be installed (the conflicting requirement is further down
                         // the tree)
                         if top_level {
-                            writeln!(f, "{indent}{req} cannot be installed because there are no viable options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req} cannot be installed because there are no viable options:"
+                            )?;
                         } else {
-                            writeln!(f, "{indent}{req}, which cannot be installed because there are no viable options:")?;
+                            writeln!(
+                                f,
+                                "{indent}{req}, which cannot be installed because there are no viable options:"
+                            )?;
                         }
 
                         let children: Vec<_> = edges
@@ -763,8 +815,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                             let (DisplayOp::Candidate(child_node), _) = child else {
                                 unreachable!()
                             };
-                            let Some(solvable_id) = graph[child_node].solvable_id().as_solvable()
-                            else {
+                            let Some(solvable_id) = graph[child_node].solvable() else {
                                 continue;
                             };
                             let merged = self.merged_candidates.get(&solvable_id);
@@ -789,21 +840,21 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
                     }
                 }
                 DisplayOp::Candidate(candidate) => {
-                    let solvable_id = graph[candidate].solvable_id();
+                    let solvable_id = graph[candidate].solvable_or_root();
 
                     if reported.contains(&solvable_id) {
                         continue;
                     }
 
                     let version = if let Some(merged) = solvable_id
-                        .as_solvable()
+                        .solvable()
                         .and_then(|solvable_id| self.merged_candidates.get(&solvable_id))
                     {
-                        reported.extend(merged.ids.iter().copied().map(InternalSolvableId::from));
+                        reported.extend(merged.ids.iter().copied().map(SolvableOrRootId::from));
                         self.interner
                             .display_merged_solvables(&merged.ids)
                             .to_string()
-                    } else if let Some(solvable_id) = solvable_id.as_solvable() {
+                    } else if let Some(solvable_id) = solvable_id.solvable() {
                         self.interner
                             .display_merged_solvables(&[solvable_id])
                             .to_string()
@@ -915,7 +966,7 @@ impl<'i, I: Interner> DisplayUnsat<'i, I> {
     }
 }
 
-impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
+impl<I: Interner> fmt::Display for DisplayUnsat<'_, I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (top_level_missing, top_level_conflicts): (Vec<_>, _) = self
             .graph
@@ -965,7 +1016,7 @@ impl<'i, I: Interner> fmt::Display for DisplayUnsat<'i, I> {
                         writeln!(
                             f,
                             "{indent}{} is locked, but another version is required as reported above",
-                            self.interner.display_merged_solvables(&[solvable_id.as_solvable().expect("root is never locked")]),
+                            self.interner.display_merged_solvables(&[solvable_id]),
                         )?;
                     }
                     ConflictCause::Excluded => continue,

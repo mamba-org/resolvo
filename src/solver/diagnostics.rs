@@ -4,9 +4,9 @@ use ahash::HashMap;
 use itertools::Itertools;
 
 use crate::{
-    runtime::AsyncRuntime,
-    solver::clause::{Clause, ClauseState},
     DependencyProvider, Solver,
+    runtime::AsyncRuntime,
+    solver::clause::{Clause, WatchedLiterals},
 };
 
 impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
@@ -18,7 +18,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut locked_clauses = 0usize;
         let mut learned_clauses = 0usize;
         let mut constrains_clauses = 0usize;
-        let clauses = self.clauses.kinds.borrow();
+        let clauses = &self.state.clauses.kinds;
         for clause in clauses.iter() {
             match clause {
                 Clause::ForbidMultipleInstances(_a, _b, name_id) => {
@@ -46,14 +46,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         writeln!(
             writer,
             "Total number of solvables:\t{}",
-            self.decision_tracker.len()
+            self.state.decision_tracker.len()
         )
         .unwrap();
         writeln!(
             writer,
             "Total number of watches:\t{} ({})",
-            self.watches.len(),
-            human_bytes::human_bytes(self.watches.size_in_bytes() as f64)
+            self.state.watches.len(),
+            human_bytes::human_bytes(self.state.watches.size_in_bytes() as f64)
         )
         .unwrap();
         writeln!(
@@ -62,7 +62,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clauses.len(),
             human_bytes::human_bytes(
                 (clauses.len()
-                    * (std::mem::size_of::<Clause>() + std::mem::size_of::<ClauseState>()))
+                    * (std::mem::size_of::<Clause>() + std::mem::size_of::<WatchedLiterals>()))
                     as f64
             )
         )

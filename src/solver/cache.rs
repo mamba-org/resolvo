@@ -6,12 +6,13 @@ use elsa::FrozenMap;
 use event_listener::Event;
 
 use crate::{
+    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, NameId, Requirement,
+    SolvableId, VersionSetId,
     internal::{
         arena::{Arena, ArenaId},
         frozen_copy_map::FrozenCopyMap,
         id::{CandidatesId, DependenciesId},
     },
-    Candidates, Dependencies, DependencyProvider, NameId, Requirement, SolvableId, VersionSetId,
 };
 
 /// Keeps a cache of previously computed and/or requested information about
@@ -34,8 +35,7 @@ pub struct SolverCache<D: DependencyProvider> {
 
     /// A mapping of [`Requirement`] to a sorted list of candidates that fulfill
     /// that requirement.
-    pub(crate) requirement_to_sorted_candidates:
-        FrozenMap<Requirement, Vec<SolvableId>, ahash::RandomState>,
+    requirement_to_sorted_candidates: FrozenMap<Requirement, Vec<SolvableId>, ahash::RandomState>,
 
     /// A mapping from a solvable to a list of dependencies
     solvable_dependencies: Arena<DependenciesId, Dependencies>,
@@ -53,7 +53,6 @@ impl<D: DependencyProvider> SolverCache<D> {
     pub fn new(provider: D) -> Self {
         Self {
             provider,
-
             candidates: Default::default(),
             package_name_to_candidates: Default::default(),
             package_name_to_candidates_in_flight: Default::default(),
@@ -126,7 +125,13 @@ impl<D: DependencyProvider> SolverCache<D> {
                         {
                             let mut hint_dependencies_available =
                                 self.hint_dependencies_available.borrow_mut();
-                            for hint_candidate in candidates.hint_dependencies_available.iter() {
+                            let dependencies_available_candidates =
+                                match &candidates.hint_dependencies_available {
+                                    HintDependenciesAvailable::None => &candidates.candidates[0..0],
+                                    HintDependenciesAvailable::All => &candidates.candidates,
+                                    HintDependenciesAvailable::Some(candidates) => candidates,
+                                };
+                            for hint_candidate in dependencies_available_candidates.iter() {
                                 let idx = hint_candidate.to_usize();
                                 if hint_dependencies_available.len() <= idx {
                                     hint_dependencies_available.resize(idx + 1, false);
@@ -227,7 +232,6 @@ impl<D: DependencyProvider> SolverCache<D> {
                     .filter_candidates(&candidates.candidates, version_set_id, true)
                     .await
                     .into_iter()
-                    .map(Into::into)
                     .collect();
 
                 tracing::trace!(
@@ -287,7 +291,7 @@ impl<D: DependencyProvider> SolverCache<D> {
 
     /// Returns the sorted candidates for a singular version set requirement
     /// (akin to a [`Requirement::Single`]).
-    async fn get_or_cache_sorted_candidates_for_version_set(
+    pub(crate) async fn get_or_cache_sorted_candidates_for_version_set(
         &self,
         version_set_id: VersionSetId,
     ) -> Result<&[SolvableId], Box<dyn Any>> {

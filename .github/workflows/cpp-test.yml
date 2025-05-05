@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-      - uses: prefix-dev/setup-pixi@v0.8.1
+      - uses: prefix-dev/setup-pixi@v0.8.7
         with:
           environments: format-cpp
 
@@ -32,46 +32,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, macOS-latest, macOS-14, windows-latest ]
+        os: [ubuntu-22.04, macOS-latest, macOS-14, windows-latest ]
     runs-on: ${{ matrix.os }}
     needs: [ format ]
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       
-      - uses: prefix-dev/setup-pixi@v0.8.1
+      - uses: prefix-dev/setup-pixi@v0.8.7
         with:
           environments: test-cpp
 
       - name: Run the tests
         run: |
           pixi run test-cpp
-
-  package:
-    name: Create conda packages
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target-platform: linux-64
-          - os: ubuntu-latest
-            target-platform: linux-aarch64
-          - os: windows-latest
-            target-platform: win-64
-          - os: macos-latest
-            target-platform: osx-64
-          - os: macos-14
-            target-platform: osx-arm64
-    runs-on: ${{ matrix.os }}
-    needs: [ format ]
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-      - name: Build conda package
-        uses: prefix-dev/rattler-build-action@v0.2.19
-        with:
-          recipe-path: recipe/recipe.yaml
-          # needs to be unique for each matrix entry
-          artifact-name: package-${{ matrix.target-platform }}
-          build-args: --target-platform ${{ matrix.target-platform }}${{ matrix.target-platform == 'linux-aarch64' && ' --no-test' || '' }}
-
