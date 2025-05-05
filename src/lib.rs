@@ -26,14 +26,12 @@ use std::{
 
 pub use conditional_requirement::{Condition, ConditionalRequirement, LogicalOperator};
 pub use internal::{
-    id::{NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
+    id::{ConditionId, NameId, SolvableId, StringId, VersionSetId, VersionSetUnionId},
     mapping::Mapping,
 };
 use itertools::Itertools;
 pub use requirement::Requirement;
 pub use solver::{Problem, Solver, SolverCache, UnsolvableOrCancelled};
-
-use crate::internal::id::ConditionId;
 
 /// An object that is used by the solver to query certain properties of
 /// different internalized objects.

@@ -4,7 +4,7 @@ mod vector;
 
 use std::{ffi::c_void, fmt::Display, ptr::NonNull};
 
-use resolvo::{HintDependenciesAvailable, KnownDependencies, SolverCache};
+use resolvo::{Condition, ConditionId, HintDependenciesAvailable, KnownDependencies, SolverCache};
 
 use crate::{slice::Slice, string::String, vector::Vector};
 
@@ -392,6 +392,10 @@ impl resolvo::Interner for &DependencyProvider {
             .iter()
             .copied()
             .map(Into::into)
+    }
+
+    fn resolve_condition(&self, condition: ConditionId) -> Condition {
+        todo!()
     }
 }
 

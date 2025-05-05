@@ -11,17 +11,11 @@ use std::{any::Any, fmt::Display, ops::ControlFlow};
 use variable_map::VariableMap;
 use watch_map::WatchMap;
 
-use crate::{
-    Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
-    conflict::Conflict,
-    internal::{
-        arena::{Arena, ArenaId},
-        id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
-        mapping::Mapping,
-    },
-    runtime::{AsyncRuntime, NowOrNeverRuntime},
-    solver::binary_encoding::AtMostOnceTracker,
-};
+use crate::{Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId, conflict::Conflict, internal::{
+    arena::{Arena, ArenaId},
+    id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
+    mapping::Mapping,
+}, runtime::{AsyncRuntime, NowOrNeverRuntime}, solver::binary_encoding::AtMostOnceTracker, ConditionalRequirement};
 
 mod binary_encoding;
 mod cache;
@@ -42,7 +36,7 @@ mod watch_map;
 /// This struct follows the builder pattern and can have its fields set by one
 /// of the available setter methods.
 pub struct Problem<S> {
-    requirements: Vec<Requirement>,
+    requirements: Vec<ConditionalRequirement>,
     constraints: Vec<VersionSetId>,
     soft_requirements: S,
 }
@@ -71,7 +65,7 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
     ///
     /// Returns the [`Problem`] for further mutation or to pass to
     /// [`Solver::solve`].
-    pub fn requirements(self, requirements: Vec<Requirement>) -> Self {
+    pub fn requirements(self, requirements: Vec<ConditionalRequirement>) -> Self {
         Self {
             requirements,
             ..self

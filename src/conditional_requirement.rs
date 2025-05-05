@@ -1,5 +1,5 @@
-use crate::{Requirement, VersionSetId};
 use crate::internal::id::ConditionId;
+use crate::{Requirement, VersionSetId};
 
 /// A [`ConditionalRequirement`] is a requirement that is only enforced when a
 /// certain condition holds.
@@ -25,6 +25,7 @@ pub enum Condition {
     Requirement(VersionSetId),
 }
 
+/// A [`LogicalOperator`] defines how multiple conditions are compared to each other.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LogicalOperator {

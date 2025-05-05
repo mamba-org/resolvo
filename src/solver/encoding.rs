@@ -147,7 +147,7 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         // refer. Make sure we have all candidates for a particular package.
         for version_set_id in requirements
             .iter()
-            .flat_map(|requirement| requirement.version_sets(self.cache.provider()))
+            .flat_map(|requirement| requirement.requirement.version_sets(self.cache.provider()))
             .chain(constraints.iter().copied())
         {
             let package_name = self.cache.provider().version_set_name(version_set_id);
@@ -155,8 +155,8 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         }
 
         // For each requirement request the matching candidates.
-        for &requirement in requirements {
-            self.queue_requirement(solvable_id, requirement);
+        for requirement in requirements {
+            self.queue_requirement(solvable_id, requirement.requirement);
         }
 
         // For each constraint, request the candidates that are non-matching

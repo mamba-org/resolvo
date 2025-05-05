@@ -6,6 +6,7 @@ use crate::{
     ConditionalRequirement, Interner, VersionSetId, VersionSetUnionId,
     conditional_requirement::Condition,
 };
+use crate::internal::id::ConditionId;
 
 /// Specifies the dependency of a solvable on a set of version sets.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -24,7 +25,7 @@ pub enum Requirement {
 impl Requirement {
     /// Constructs a `ConditionalRequirement` from this `Requirement` and a
     /// condition.
-    pub fn with_condition(self, condition: Condition) -> ConditionalRequirement {
+    pub fn with_condition(self, condition: ConditionId) -> ConditionalRequirement {
         ConditionalRequirement {
             condition: Some(condition),
             requirement: self,

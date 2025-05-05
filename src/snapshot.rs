@@ -14,11 +14,8 @@ use std::{any::Any, collections::VecDeque, fmt::Display, time::SystemTime};
 use ahash::HashSet;
 use futures::FutureExt;
 
-use crate::{
-    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner, Mapping,
-    NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
-    internal::arena::ArenaId,
-};
+use crate::{Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner, Mapping, NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId, internal::arena::ArenaId, Condition};
+use crate::internal::id::ConditionId;
 
 /// A single solvable in a [`DependencySnapshot`].
 #[derive(Clone, Debug)]
@@ -228,8 +225,8 @@ impl DependencySnapshot {
                                 }
                             }
 
-                            for &requirement in deps.requirements.iter() {
-                                match requirement {
+                            for requirement in deps.requirements.iter() {
+                                match requirement.requirement {
                                     Requirement::Single(version_set) => {
                                         if seen.insert(Element::VersionSet(version_set)) {
                                             queue.push_back(Element::VersionSet(version_set));
@@ -455,6 +452,10 @@ impl Interner for SnapshotProvider<'_> {
             .expect("missing constraint")
             .iter()
             .copied()
+    }
+
+    fn resolve_condition(&self, condition: ConditionId) -> Condition {
+        unimplemented!();
     }
 }
 
