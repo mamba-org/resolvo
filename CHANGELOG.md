@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.9.0...resolvo-v0.9.1) - 2025-05-05
+
+### Fixed
+
+- fix typo ([#133](https://github.com/prefix-dev/resolvo/pull/133))
+- bump ubuntu runner version ([#127](https://github.com/prefix-dev/resolvo/pull/127))
+
+### Other
+
+- add diagnostics ([#85](https://github.com/prefix-dev/resolvo/pull/85))
+- bump to edition 2024 ([#132](https://github.com/prefix-dev/resolvo/pull/132))
+- encoding of clauses ([#131](https://github.com/prefix-dev/resolvo/pull/131))
+- clean-up ownership ([#109](https://github.com/prefix-dev/resolvo/pull/109))
+
 ## [0.9.0](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.8.6...resolvo-v0.9.0) - 2025-04-14
 
 ### Added
