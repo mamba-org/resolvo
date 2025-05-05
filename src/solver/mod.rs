@@ -29,6 +29,8 @@ pub(crate) mod clause;
 mod decision;
 mod decision_map;
 mod decision_tracker;
+#[cfg(feature = "diagnostics")]
+mod diagnostics;
 mod encoding;
 pub(crate) mod variable_map;
 mod watch_map;
@@ -340,6 +342,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             }
         }
 
+        #[cfg(feature = "diagnostics")]
+        self.report_diagnostics();
         Ok(self.state.chosen_solvables().collect())
     }
 
@@ -622,7 +626,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 break;
             };
 
-            tracing::info!(
+            tracing::debug!(
                 "╒══ Install {} at level {level} (derived from {})",
                 candidate.display(&self.state.variable_map, self.provider()),
                 self.state.clauses.kinds[clause_id.to_usize()]
@@ -633,14 +637,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             match self.set_propagate_learn(level, candidate, required_by, clause_id) {
                 Ok(new_level) => {
                     level = new_level;
-                    tracing::info!("╘══ Propagation completed");
+                    tracing::debug!("╘══ Propagation completed");
                 }
                 Err(UnsolvableOrCancelled::Cancelled(value)) => {
-                    tracing::info!("╘══ Propagation cancelled");
+                    tracing::debug!("╘══ Propagation cancelled");
                     return Err(UnsolvableOrCancelled::Cancelled(value));
                 }
                 Err(UnsolvableOrCancelled::Unsolvable(conflict)) => {
-                    tracing::info!("╘══ Propagation resulted in a conflict");
+                    tracing::debug!("╘══ Propagation resulted in a conflict");
                     return Err(UnsolvableOrCancelled::Unsolvable(conflict));
                 }
             }
@@ -930,17 +934,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         conflicting_clause: ClauseId,
     ) -> Result<u32, Conflict> {
         {
-            tracing::info!(
+            tracing::debug!(
                 "├┬ Propagation conflicted: could not set {solvable} to {attempted_value}",
                 solvable = conflicting_solvable.display(&self.state.variable_map, self.provider()),
             );
-            tracing::info!(
+            tracing::debug!(
                 "││ During unit propagation for clause: {}",
                 self.state.clauses.kinds[conflicting_clause.to_usize()]
                     .display(&self.state.variable_map, self.provider())
             );
 
-            tracing::info!(
+            tracing::debug!(
                 "││ Previously decided value: {}. Derived from: {}",
                 !attempted_value,
                 self.state.clauses.kinds[self
@@ -965,7 +969,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     continue;
                 }
 
-                tracing::info!(
+                tracing::debug!(
                     "* ({level}) {action} {}. Reason: {}",
                     decision
                         .variable
@@ -993,14 +997,14 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 level,
             )
             .expect("bug: solvable was already decided!");
-        tracing::debug!(
+        tracing::trace!(
             "│├ Propagate after learn: {} = {decision}",
             literal
                 .variable()
                 .display(&self.state.variable_map, self.provider()),
         );
 
-        tracing::info!("│└ Backtracked from {old_level} -> {level}");
+        tracing::debug!("│└ Backtracked from {old_level} -> {level}");
 
         Ok(level)
     }
@@ -1185,6 +1189,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 );
             }
         }
+
         Ok(())
     }
 
@@ -1193,7 +1198,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// Because learnt clauses are not relevant for the user, they are not added
     /// to the [`Conflict`]. Instead, we report the clauses that caused them.
     fn analyze_unsolvable_clause(
-        clauses: &[Clause],
+        clauses: &Vec<Clause>,
         learnt_why: &Mapping<LearntClauseId, Vec<ClauseId>>,
         clause_id: ClauseId,
         conflict: &mut Conflict,
@@ -1226,7 +1231,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         let mut conflict = Conflict::default();
 
-        tracing::info!("=== ANALYZE UNSOLVABLE");
+        tracing::debug!("=== ANALYZE UNSOLVABLE");
 
         let mut involved = HashSet::default();
         self.state.clauses.kinds[clause_id.to_usize()].visit_literals(

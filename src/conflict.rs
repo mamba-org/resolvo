@@ -631,42 +631,6 @@ impl Indenter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_indenter_without_top_level_indent() {
-        let indenter = Indenter::new(false);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-    }
-
-    #[test]
-    fn test_indenter_with_multiple_siblings() {
-        let indenter = Indenter::new(true);
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "└─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   ├─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │  └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::Last);
-        assert_eq!(indenter.get_indent(), "   │     └─ ");
-
-        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
-        assert_eq!(indenter.get_indent(), "   │        ├─ ");
-    }
-}
-
 /// A struct implementing [`fmt::Display`] that generates a user-friendly
 /// representation of a conflict graph
 pub struct DisplayUnsat<'i, I: Interner> {
@@ -1061,5 +1025,41 @@ impl<I: Interner> fmt::Display for DisplayUnsat<'_, I> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indenter_without_top_level_indent() {
+        let indenter = Indenter::new(false);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+    }
+
+    #[test]
+    fn test_indenter_with_multiple_siblings() {
+        let indenter = Indenter::new(true);
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "└─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   ├─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │  └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::Last);
+        assert_eq!(indenter.get_indent(), "   │     └─ ");
+
+        let indenter = indenter.push_level_with_order(ChildOrder::HasRemainingSiblings);
+        assert_eq!(indenter.get_indent(), "   │        ├─ ");
     }
 }

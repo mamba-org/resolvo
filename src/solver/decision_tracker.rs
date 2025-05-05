@@ -15,6 +15,11 @@ impl DecisionTracker {
         *self = Default::default();
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
     #[inline(always)]
     pub(crate) fn assigned_value(&self, variable_id: VariableId) -> Option<bool> {
         self.map.value(variable_id)
