@@ -1,9 +1,8 @@
 ---
 source: tests/solver.rs
-assertion_line: 1534
+assertion_line: 1530
 expression: "solve_for_snapshot(provider, &requirements, &[])"
 ---
-bar=1
-foo=1
-icon=1
-menu=1
+foo * cannot be installed because there are no viable options:
+└─ foo 2 would require
+   └─ baz *, for which no candidates were found.

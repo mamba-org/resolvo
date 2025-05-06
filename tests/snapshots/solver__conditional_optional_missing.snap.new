@@ -1,0 +1,8 @@
+---
+source: tests/solver.rs
+assertion_line: 1541
+expression: "solve_for_snapshot(provider, &requirements, &[])"
+---
+menu * cannot be installed because there are no viable options:
+└─ menu 2 would require
+   └─ icon *, for which no candidates were found.

@@ -1522,15 +1522,22 @@ fn test_explicit_root_requirements() {
 #[test]
 fn test_conditional_requirements() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("foo", 1, vec!["bar; if baz"]),
+        ("foo", 2, vec!["baz; if bar"]),
         ("bar", 1, vec![]),
-        ("baz", 1, vec![]),
-        ("menu", 1, vec!["icon; if foo"]),
-        ("icon", 1, vec![]),
     ]);
 
-    let requirements = provider.requirements(&["foo", "menu"]);
+    let requirements = provider.requirements(&["foo"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
+}
 
+#[test]
+fn test_conditional_optional_missing() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("menu", 2, vec!["icon; if intl"]),
+        ("intl", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["menu"]);
     assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
 }
 

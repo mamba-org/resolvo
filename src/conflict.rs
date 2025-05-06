@@ -80,7 +80,7 @@ impl Conflict {
                     );
                 }
                 Clause::Learnt(..) => unreachable!(),
-                &Clause::Requires(package_id, version_set_id) => {
+                &Clause::Requires(package_id, _condition, version_set_id) => {
                     let solvable = package_id
                         .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");

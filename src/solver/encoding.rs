@@ -340,7 +340,7 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
                 .requires_clauses
                 .entry(variable)
                 .or_default()
-                .push((requirement.requirement, clause_id));
+                .push((requirement.requirement, condition.map(|cond| cond.0), clause_id));
 
             if conflict {
                 self.conflicting_clauses.push(clause_id);

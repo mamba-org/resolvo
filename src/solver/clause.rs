@@ -8,17 +8,16 @@ use std::{
 use elsa::FrozenMap;
 
 use crate::{
-    Interner, NameId, Requirement,
+    Candidates, Interner, NameId, Requirement,
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{
-        VariableId, decision_map::DecisionMap, decision_tracker::DecisionTracker,
-        variable_map::VariableMap,
+        VariableId, conditions::DisjunctionId, decision_map::DecisionMap,
+        decision_tracker::DecisionTracker, variable_map::VariableMap,
     },
 };
-use crate::solver::conditions::DisjunctionId;
 
 /// Represents a single clause in the SAT problem
 ///
@@ -56,9 +55,15 @@ pub(crate) enum Clause {
     /// Makes the solvable require the candidates associated with the
     /// [`Requirement`].
     ///
-    /// In SAT terms: (¬A ∨ B1 ∨ B2 ∨ ... ∨ B99), where B1 to B99 represent the
-    /// possible candidates for the provided [`Requirement`].
-    Requires(VariableId, Requirement),
+    /// Optionally the requirement can be associated with a condition in the
+    /// form of a disjunction.
+    /// 
+    /// ~A v ~C1 ^ C2 ^ C3 ^ v R
+    ///
+    /// In SAT terms: (¬A ∨ ¬D1 v ¬D2 .. v ¬D99 v B1 ∨ B2 ∨ ... ∨ B99), where D1
+    /// to D99 represent the candidates of the disjunction and B1 to B99
+    /// represent the possible candidates for the provided [`Requirement`].
+    Requires(VariableId, Option<DisjunctionId>, Requirement),
     /// Ensures only a single version of a package is installed
     ///
     /// Usage: generate one [`Clause::ForbidMultipleInstances`] clause for each
@@ -117,37 +122,55 @@ impl Clause {
         parent: VariableId,
         requirement: Requirement,
         candidates: impl IntoIterator<Item = VariableId>,
+        condition: Option<(DisjunctionId, &[VariableId])>,
         decision_tracker: &DecisionTracker,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         // It only makes sense to introduce a requires clause when the parent solvable
         // is undecided or going to be installed
         assert_ne!(decision_tracker.assigned_value(parent), Some(false));
 
-        let kind = Clause::Requires(parent, requirement);
-        let mut candidates = candidates.into_iter().peekable();
-        let first_candidate = candidates.peek().copied();
-        if let Some(first_candidate) = first_candidate {
-            match candidates.find(|&c| decision_tracker.assigned_value(c) != Some(false)) {
-                // Watch any candidate that is not assigned to false
-                Some(watched_candidate) => (
-                    kind,
-                    Some([parent.negative(), watched_candidate.positive()]),
-                    false,
-                ),
+        let kind = Clause::Requires(parent, condition.map(|d| d.0), requirement);
 
-                // All candidates are assigned to false! Therefore, the clause conflicts with the
-                // current decisions. There are no valid watches for it at the moment, but we will
-                // assign default ones nevertheless, because they will become valid after the solver
-                // restarts.
-                None => (
+        // Construct literals to watch
+        let mut condition_literals = condition
+            .into_iter()
+            .flat_map(|(_, candidates)| candidates)
+            .map(|candidate| candidate.negative())
+            .peekable();
+        let mut candidate_literals = candidates
+            .into_iter()
+            .map(|candidate| candidate.positive())
+            .peekable();
+
+        let mut literals = condition_literals.chain(candidate_literals).peekable();
+        let Some(&first_literal) = literals.peek() else {
+            // If there are no candidates and there is no condition, then this clause is an
+            // assertion.
+            // There is also no conflict because we asserted above that the parent is not
+            // assigned to false yet.
+            return (kind, None, false);
+        };
+
+        match literals.find(|&c| c.eval(decision_tracker.map()) != Some(false)) {
+            // Watch any candidate that is not assigned to false
+            Some(watched_candidate) => (
+                kind,
+                Some([parent.negative(), watched_candidate]),
+                false,
+            ),
+
+            // All candidates are assigned to false! Therefore, the clause conflicts with the
+            // current decisions. There are no valid watches for it at the moment, but we will
+            // assign default ones nevertheless, because they will become valid after the solver
+            // restarts.
+            None => {
+                // Try to find a condition that is not assigned to false.
+                (
                     kind,
-                    Some([parent.negative(), first_candidate.positive()]),
+                    Some([parent.negative(), first_literal]),
                     true,
-                ),
+                )
             }
-        } else {
-            // If there are no candidates there is no need to watch anything.
-            (kind, None, false)
         }
     }
 
@@ -243,6 +266,7 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
         init: C,
         mut visit: F,
     ) -> ControlFlow<B, C>
@@ -256,14 +280,22 @@ impl Clause {
                 .iter()
                 .copied()
                 .try_fold(init, visit),
-            Clause::Requires(solvable_id, match_spec_id) => iter::once(solvable_id.negative())
-                .chain(
-                    requirements_to_sorted_candidates[&match_spec_id]
-                        .iter()
-                        .flatten()
-                        .map(|&s| s.positive()),
-                )
-                .try_fold(init, visit),
+            Clause::Requires(solvable_id, disjunction, match_spec_id) => {
+                iter::once(solvable_id.negative())
+                    .chain(
+                        disjunction
+                            .into_iter()
+                            .flat_map(|d| disjunction_to_candidates[&d].iter())
+                            .map(|var| var.negative()),
+                    )
+                    .chain(
+                        requirements_to_sorted_candidates[&match_spec_id]
+                            .iter()
+                            .flatten()
+                            .map(|&s| s.positive()),
+                    )
+                    .try_fold(init, visit)
+            }
             Clause::Constrains(s1, s2, _) => [s1.negative(), s2.negative()]
                 .into_iter()
                 .try_fold(init, visit),
@@ -287,11 +319,13 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
         mut visit: impl FnMut(Literal),
     ) {
         self.try_fold_literals(
             learnt_clauses,
             requirements_to_sorted_candidates,
+            disjunction_to_candidates,
             (),
             |_, lit| {
                 visit(lit);
@@ -356,6 +390,7 @@ impl WatchedLiterals {
             candidate,
             requirement,
             matching_candidates,
+            condition,
             decision_tracker,
         );
 
@@ -439,6 +474,7 @@ impl WatchedLiterals {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
         decision_map: &DecisionMap,
         for_watch_index: usize,
     ) -> Option<Literal> {
@@ -455,6 +491,7 @@ impl WatchedLiterals {
                 let next = clause.try_fold_literals(
                     learnt_clauses,
                     requirement_to_sorted_candidates,
+                    disjunction_to_candidates,
                     (),
                     |_, lit| {
                         // The next unwatched variable (if available), is a variable that is:
@@ -572,7 +609,7 @@ impl<I: Interner> Display for ClauseDisplay<'_, I> {
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
-            Clause::Requires(variable, requirement) => {
+            Clause::Requires(variable, _condition, requirement) => {
                 write!(
                     f,
                     "Requires({}({:?}), {})",
