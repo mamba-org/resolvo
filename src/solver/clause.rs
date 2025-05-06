@@ -18,6 +18,7 @@ use crate::{
         variable_map::VariableMap,
     },
 };
+use crate::solver::conditions::DisjunctionId;
 
 /// Represents a single clause in the SAT problem
 ///
@@ -348,6 +349,7 @@ impl WatchedLiterals {
         candidate: VariableId,
         requirement: Requirement,
         matching_candidates: impl IntoIterator<Item = VariableId>,
+        condition: Option<(DisjunctionId, &[VariableId])>,
         decision_tracker: &DecisionTracker,
     ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::requires(
@@ -664,6 +666,7 @@ mod test {
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
+            None,
             &decisions,
         );
         assert!(!conflict);
@@ -687,6 +690,7 @@ mod test {
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
+            None,
             &decisions,
         );
         assert!(!conflict);
@@ -710,6 +714,7 @@ mod test {
             parent,
             VersionSetId::from_usize(0).into(),
             [candidate1, candidate2],
+            None,
             &decisions,
         );
         assert!(conflict);
@@ -731,6 +736,7 @@ mod test {
                 parent,
                 VersionSetId::from_usize(0).into(),
                 [candidate1, candidate2],
+                None,
                 &decisions,
             )
         })

@@ -71,7 +71,7 @@ impl ConditionId {
 
     /// Returns the inner `u32` value of the `ConditionId`.
     pub fn as_u32(self) -> u32 {
-        self.0.get()
+        self.0.get() - 1
     }
 }
 

@@ -1,12 +1,19 @@
-use super::{SolverState, clause::WatchedLiterals};
-use crate::{
-    Candidates, Dependencies, DependencyProvider, NameId, Requirement, SolvableId, SolverCache,
-    StringId, VersionSetId,
-    internal::arena::ArenaId,
-    internal::id::{ClauseId, SolvableOrRootId, VariableId},
+use std::{any::Any, future::ready};
+
+use futures::{
+    FutureExt, StreamExt, TryFutureExt, future::LocalBoxFuture, stream::FuturesUnordered,
 };
-use futures::{FutureExt, StreamExt, future::LocalBoxFuture, stream::FuturesUnordered};
-use std::any::Any;
+
+use super::{SolverState, clause::WatchedLiterals, conditions};
+use crate::{
+    Candidates, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider, NameId,
+    SolvableId, SolverCache, StringId, VersionSetId,
+    internal::{
+        arena::ArenaId,
+        id::{ClauseId, SolvableOrRootId, VariableId},
+    },
+    solver::conditions::Disjunction,
+};
 
 /// An object that is responsible for encoding information from the dependency
 /// provider into rules and variables that are used by the solver.
@@ -29,7 +36,8 @@ pub(crate) struct Encoder<'a, D: DependencyProvider> {
     /// The set of futures that are pending to be resolved.
     pending_futures: FuturesUnordered<LocalBoxFuture<'a, Result<TaskResult<'a>, Box<dyn Any>>>>,
 
-    /// A list of clauses that were introduced that are conflicting with the current state.
+    /// A list of clauses that were introduced that are conflicting with the
+    /// current state.
     conflicting_clauses: Vec<ClauseId>,
 }
 
@@ -56,8 +64,9 @@ struct CandidatesAvailable<'a> {
 /// Result of querying candidates for a particular requirement.
 struct RequirementCandidatesAvailable<'a> {
     solvable_id: SolvableOrRootId,
-    requirement: Requirement,
+    requirement: ConditionalRequirement,
     candidates: Vec<&'a [SolvableId]>,
+    condition: Option<(ConditionId, Vec<Vec<&'a [SolvableId]>>)>,
 }
 
 /// Result of querying candidates for a particular constraint.
@@ -137,7 +146,8 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         let (requirements, constraints) = match dependencies {
             Dependencies::Known(deps) => (&deps.requirements, &deps.constrains),
             Dependencies::Unknown(reason) => {
-                // If the dependencies are unknown, we add an exclusion clause and stop processing.
+                // If the dependencies are unknown, we add an exclusion clause and stop
+                // processing.
                 self.add_exclusion_clause(solvable_id, *reason);
                 return;
             }
@@ -156,7 +166,7 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
 
         // For each requirement request the matching candidates.
         for requirement in requirements {
-            self.queue_requirement(solvable_id, requirement.requirement);
+            self.queue_conditional_requirement(solvable_id, requirement.clone());
         }
 
         // For each constraint, request the candidates that are non-matching
@@ -206,11 +216,12 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
             solvable_id,
             requirement,
             candidates,
+            condition,
         }: RequirementCandidatesAvailable<'a>,
     ) {
         tracing::trace!(
             "Sorted candidates available for {}",
-            requirement.display(self.cache.provider()),
+            requirement.requirement.display(self.cache.provider()),
         );
 
         let variable = self.state.variable_map.intern_solvable_or_root(solvable_id);
@@ -275,41 +286,74 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
             );
         }
 
-        // Add the requirements clause
-        let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
-        let (watched_literals, conflict, kind) = WatchedLiterals::requires(
-            variable,
-            requirement,
-            version_set_variables.iter().flatten().copied(),
-            &self.state.decision_tracker,
-        );
-        let clause_id = self.state.clauses.alloc(watched_literals, kind);
-
-        let watched_literals = self.state.clauses.watched_literals[clause_id.to_usize()].as_mut();
-
-        if let Some(watched_literals) = watched_literals {
-            self.state
-                .watches
-                .start_watching(watched_literals, clause_id);
+        // Determine the disjunctions of all the conditions for this requirement.
+        let mut disjunctions =
+            Vec::with_capacity(condition.as_ref().map_or(0, |(_, dnf)| dnf.len()));
+        if let Some((condition, dnf)) = condition {
+            for disjunction in dnf {
+                let mut candidates = Vec::with_capacity(
+                    disjunction
+                        .iter()
+                        .map(|candidates| candidates.len())
+                        .sum::<usize>(),
+                );
+                for version_set_candidates in disjunction.into_iter() {
+                    candidates.extend(
+                        version_set_candidates
+                            .into_iter()
+                            .map(|&candidate| self.state.variable_map.intern_solvable(candidate)),
+                    );
+                }
+                let disjunction_id = self.state.disjunctions.alloc(Disjunction { condition });
+                let candidates = self
+                    .state
+                    .disjunction_to_candidates
+                    .insert(disjunction_id, candidates);
+                disjunctions.push(Some((disjunction_id, candidates)));
+            }
+        } else {
+            disjunctions.push(None);
         }
 
-        self.state
-            .requires_clauses
-            .entry(variable)
-            .or_default()
-            .push((requirement, clause_id));
+        for condition in disjunctions {
+            // Add the requirements clause
+            let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
+            let (watched_literals, conflict, kind) = WatchedLiterals::requires(
+                variable,
+                requirement.requirement,
+                version_set_variables.iter().flatten().copied(),
+                condition,
+                &self.state.decision_tracker,
+            );
+            let clause_id = self.state.clauses.alloc(watched_literals, kind);
 
-        if conflict {
-            self.conflicting_clauses.push(clause_id);
-        } else if no_candidates {
-            // Add assertions for unit clauses (i.e. those with no matching candidates)
-            self.state.negative_assertions.push((variable, clause_id));
+            let watched_literals =
+                self.state.clauses.watched_literals[clause_id.to_usize()].as_mut();
+
+            if let Some(watched_literals) = watched_literals {
+                self.state
+                    .watches
+                    .start_watching(watched_literals, clause_id);
+            }
+
+            self.state
+                .requires_clauses
+                .entry(variable)
+                .or_default()
+                .push((requirement.requirement, clause_id));
+
+            if conflict {
+                self.conflicting_clauses.push(clause_id);
+            } else if no_candidates {
+                // Add assertions for unit clauses (i.e. those with no matching candidates)
+                self.state.negative_assertions.push((variable, clause_id));
+            }
         }
 
         // Store resolved variables for later
         self.state
             .requirement_to_sorted_candidates
-            .insert(requirement, version_set_variables);
+            .insert(requirement.requirement, version_set_variables);
     }
 
     /// Called when the candidates for a particular constraint are available.
@@ -358,7 +402,8 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         }
     }
 
-    /// Adds clauses to forbid any other clauses than the locked solvable to be installed.
+    /// Adds clauses to forbid any other clauses than the locked solvable to be
+    /// installed.
     fn add_locked_package_clauses(
         &mut self,
         locked_solvable_id: SolvableId,
@@ -464,20 +509,45 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
 
     /// Enqueues retrieving the candidates for a particular requirement. These
     /// candidates are already filtered and sorted.
-    fn queue_requirement(&mut self, solvable_id: SolvableOrRootId, requirement: Requirement) {
+    fn queue_conditional_requirement(
+        &mut self,
+        solvable_id: SolvableOrRootId,
+        requirement: ConditionalRequirement,
+    ) {
         let cache = self.cache;
         let query_requirements_candidates = async move {
-            let candidates =
-                futures::future::try_join_all(requirement.version_sets(cache.provider()).map(
-                    |version_set| cache.get_or_cache_sorted_candidates_for_version_set(version_set),
-                ))
-                .await?;
+            let candidates = futures::future::try_join_all(
+                requirement
+                    .requirement
+                    .version_sets(cache.provider())
+                    .map(|version_set| {
+                        cache.get_or_cache_sorted_candidates_for_version_set(version_set)
+                    }),
+            );
+
+            let condition_candidates = match requirement.condition {
+                Some(condition) => futures::future::try_join_all(
+                    conditions::convert_conditions_to_dnf(condition, cache.provider())
+                        .into_iter()
+                        .map(|cnf| {
+                            futures::future::try_join_all(cnf.into_iter().map(|version_set| {
+                                cache.get_or_cache_matching_candidates(version_set)
+                            }))
+                        }),
+                )
+                .map_ok(move |dnf| Some((condition, dnf)))
+                .left_future(),
+                None => ready(Ok(None)).right_future(),
+            };
+
+            let (candidates, condition) = futures::try_join!(candidates, condition_candidates)?;
 
             Ok(TaskResult::RequirementCandidates(
                 RequirementCandidatesAvailable {
                     solvable_id,
                     requirement,
                     candidates,
+                    condition,
                 },
             ))
         };

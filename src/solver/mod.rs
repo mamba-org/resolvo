@@ -1,3 +1,5 @@
+use std::{any::Any, fmt::Display, ops::ControlFlow};
+
 use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
 use clause::{Clause, Literal, WatchedLiterals};
@@ -7,19 +9,27 @@ use elsa::FrozenMap;
 use encoding::Encoder;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use std::{any::Any, fmt::Display, ops::ControlFlow};
 use variable_map::VariableMap;
 use watch_map::WatchMap;
+use conditions::{DisjunctionId, Disjunction};
 
-use crate::{Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId, conflict::Conflict, internal::{
-    arena::{Arena, ArenaId},
-    id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
-    mapping::Mapping,
-}, runtime::{AsyncRuntime, NowOrNeverRuntime}, solver::binary_encoding::AtMostOnceTracker, ConditionalRequirement};
+use crate::{
+    ConditionalRequirement, Dependencies, DependencyProvider, KnownDependencies, Requirement,
+    VersionSetId,
+    conflict::Conflict,
+    internal::{
+        arena::{Arena, ArenaId},
+        id::{ClauseId, LearntClauseId, NameId, SolvableId, SolvableOrRootId, VariableId},
+        mapping::Mapping,
+    },
+    runtime::{AsyncRuntime, NowOrNeverRuntime},
+    solver::binary_encoding::AtMostOnceTracker,
+};
 
 mod binary_encoding;
 mod cache;
 pub(crate) mod clause;
+mod conditions;
 mod decision;
 mod decision_map;
 mod decision_tracker;
@@ -159,6 +169,8 @@ pub(crate) struct SolverState {
     /// candidates.
     requirement_to_sorted_candidates:
         FrozenMap<Requirement, RequirementCandidateVariables, ahash::RandomState>,
+    disjunction_to_candidates:
+        FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
 
     pub(crate) variable_map: VariableMap,
 
@@ -167,6 +179,8 @@ pub(crate) struct SolverState {
     learnt_clauses: Arena<LearntClauseId, Vec<Literal>>,
     learnt_why: Mapping<LearntClauseId, Vec<ClauseId>>,
     learnt_clause_ids: Vec<ClauseId>,
+
+    disjunctions: Arena<DisjunctionId, Disjunction>,
 
     clauses_added_for_package: HashSet<NameId>,
     clauses_added_for_solvable: HashSet<SolvableOrRootId>,
