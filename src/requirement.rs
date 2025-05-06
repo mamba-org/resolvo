@@ -4,7 +4,6 @@ use itertools::Itertools;
 
 use crate::{
     ConditionalRequirement, Interner, VersionSetId, VersionSetUnionId,
-    conditional_requirement::Condition,
 };
 use crate::internal::id::ConditionId;
 

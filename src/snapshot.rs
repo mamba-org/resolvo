@@ -454,8 +454,8 @@ impl Interner for SnapshotProvider<'_> {
             .copied()
     }
 
-    fn resolve_condition(&self, condition: ConditionId) -> Condition {
-        unimplemented!();
+    fn resolve_condition(&self, _condition: ConditionId) -> Condition {
+        todo!()
     }
 }
 

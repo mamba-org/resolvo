@@ -61,7 +61,19 @@ impl ArenaId for VersionSetId {
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct ConditionId(pub NonZero<u32>);
+pub struct ConditionId(NonZero<u32>);
+
+impl ConditionId {
+    /// Creates a new `ConditionId` from a `u32`, panicking if the value is zero.
+    pub fn new(id: u32) -> Self {
+        Self::from_usize(id as usize)
+    }
+
+    /// Returns the inner `u32` value of the `ConditionId`.
+    pub fn as_u32(self) -> u32 {
+        self.0.get()
+    }
+}
 
 impl ArenaId for ConditionId {
     fn from_usize(x: usize) -> Self {

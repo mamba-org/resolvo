@@ -1,7 +1,6 @@
-use chumsky::{IterParser, error};
+use chumsky::{error};
 use std::{
     any::Any,
-    borrow::Borrow,
     cell::{Cell, RefCell},
     collections::HashSet,
     fmt::{Debug, Display, Formatter},
@@ -17,14 +16,13 @@ use std::{
 };
 
 use ahash::HashMap;
-use chumsky::prelude::{EmptyErr, just};
-use chumsky::{Parser, extra, text};
+use chumsky::Parser;
 use indexmap::IndexMap;
 use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
     Candidates, Condition, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider,
-    Interner, KnownDependencies, LogicalOperator, NameId, Problem, Requirement, SolvableId, Solver,
+    Interner, KnownDependencies, LogicalOperator, NameId, Problem, SolvableId, Solver,
     SolverCache, StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
@@ -122,10 +120,6 @@ impl Spec {
     pub fn new(name: String, versions: Ranges<Pack>) -> Self {
         Self { name, versions }
     }
-
-    pub fn parse_union(spec: &str) -> Result<Vec<Self>, Vec<error::Simple<'_, char>>> {
-        parser::union_spec().parse(spec).into_result()
-    }
 }
 
 impl Spec {
@@ -146,14 +140,14 @@ impl ConditionalSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 enum SpecCondition {
     Binary(LogicalOperator, Box<[SpecCondition; 2]>),
     Requirement(Spec),
 }
 
 mod parser {
-    use super::{ConditionalSpec, Pack, Spec, SpecCondition, parser};
+    use super::{ConditionalSpec, Pack, Spec, SpecCondition};
     use chumsky::{
         error,
         error::LabelError,
@@ -256,7 +250,10 @@ mod parser {
 
     pub(crate) fn union_spec<'src>()
     -> impl Parser<'src, &'src str, Vec<Spec>, extra::Err<error::Simple<'src, char>>> {
-        spec().separated_by(just("|").padded()).at_least(1).collect()
+        spec()
+            .separated_by(just("|").padded())
+            .at_least(1)
+            .collect()
     }
 
     pub(crate) fn conditional_spec<'src>()
@@ -274,6 +271,8 @@ mod parser {
 #[derive(Default)]
 struct BundleBoxProvider {
     pool: Pool<Ranges<Pack>>,
+    id_to_condition: Vec<SpecCondition>,
+    conditions: HashMap<SpecCondition, ConditionId>,
     packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
     favored: HashMap<String, Pack>,
     locked: HashMap<String, Pack>,
@@ -293,7 +292,7 @@ struct BundleBoxProvider {
 
 #[derive(Debug, Clone)]
 struct BundleBoxPackageDependencies {
-    dependencies: Vec<ConditionalSpec>,
+    dependencies: Vec<ConditionalRequirement>,
     constrains: Vec<Spec>,
 }
 
@@ -308,6 +307,22 @@ impl BundleBoxProvider {
             .expect("package missing")
     }
 
+    pub fn intern_condition(&mut self, condition: &SpecCondition) -> ConditionId {
+        if let Some(id) = self.conditions.get(&condition) {
+            return *id;
+        }
+
+        if let SpecCondition::Binary(_op, sides) = condition {
+            self.intern_condition(&sides[0]);
+            self.intern_condition(&sides[1]);
+        }
+
+        let id = ConditionId::new(self.id_to_condition.len() as u32);
+        self.id_to_condition.push(condition.clone());
+        self.conditions.insert(condition.clone(), id);
+        id
+    }
+
     pub fn requirements(&mut self, requirements: &[&str]) -> Vec<ConditionalRequirement> {
         requirements
             .iter()
@@ -316,10 +331,7 @@ impl BundleBoxProvider {
                 let mut iter = spec
                     .specs
                     .into_iter()
-                    .map(|spec| {
-                        let name = self.pool.intern_package_name(&spec.name);
-                        self.pool.intern_version_set(name, spec.versions)
-                    })
+                    .map(|spec| self.intern_version_set(&spec))
                     .peekable();
                 let first = iter.next().unwrap();
                 let requirement = if iter.peek().is_some() {
@@ -327,8 +339,11 @@ impl BundleBoxProvider {
                 } else {
                     first.into()
                 };
+
+                let condition = spec.condition.map(|c| self.intern_condition(&c));
+
                 ConditionalRequirement {
-                    condition: None,
+                    condition,
                     requirement,
                 }
             })
@@ -350,17 +365,6 @@ impl BundleBoxProvider {
         let dep_name = self.pool.intern_package_name(&spec.name);
         self.pool
             .intern_version_set(dep_name, spec.versions.clone())
-    }
-
-    pub fn intern_version_set_union(
-        &self,
-        specs: impl IntoIterator<Item = impl Borrow<Spec>>,
-    ) -> VersionSetUnionId {
-        let mut specs = specs
-            .into_iter()
-            .map(|spec| self.intern_version_set(spec.borrow()));
-        self.pool
-            .intern_version_set_union(specs.next().unwrap(), specs)
     }
 
     pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
@@ -397,11 +401,7 @@ impl BundleBoxProvider {
     ) {
         self.pool.intern_package_name(package_name);
 
-        let dependencies = dependencies
-            .iter()
-            .map(|dep| ConditionalSpec::from_str(dep))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let dependencies = self.requirements(dependencies);
 
         let constrains = constrains
             .iter()
@@ -502,7 +502,18 @@ impl Interner for BundleBoxProvider {
     }
 
     fn resolve_condition(&self, condition: ConditionId) -> Condition {
-        todo!()
+        let condition = condition.as_u32();
+        let condition = &self.id_to_condition[condition as usize];
+        match condition {
+            SpecCondition::Binary(op, items) => Condition::Binary(
+                *op,
+                *self.conditions.get(&items[0]).unwrap(),
+                *self.conditions.get(&items[1]).unwrap(),
+            ),
+            SpecCondition::Requirement(requirement) => {
+                Condition::Requirement(self.intern_version_set(requirement))
+            }
+        }
     }
 }
 
@@ -620,33 +631,7 @@ impl DependencyProvider for BundleBoxProvider {
             requirements: Vec::with_capacity(deps.dependencies.len()),
             constrains: Vec::with_capacity(deps.constrains.len()),
         };
-        for req in &deps.dependencies {
-            let mut version_sets = req
-                .specs
-                .iter()
-                .map(|spec| {
-                    let name = self.pool.intern_package_name(&spec.name);
-                    self.pool.intern_version_set(name, spec.versions.clone())
-                })
-                .peekable();
-
-            let first = version_sets
-                .next()
-                .expect("Dependency spec must have at least one constraint");
-
-            let requirement = if version_sets.peek().is_none() {
-                Requirement::Single(first)
-            } else {
-                Requirement::Union(self.pool.intern_version_set_union(first, version_sets))
-            };
-
-            let conditooal_requirement = ConditionalRequirement {
-                condition: None,
-                requirement,
-            };
-
-            result.requirements.push(conditooal_requirement);
-        }
+        result.requirements = deps.dependencies.clone();
 
         for req in &deps.constrains {
             let dep_name = self.pool.intern_package_name(&req.name);
@@ -1540,7 +1525,6 @@ fn test_conditional_requirements() {
         ("foo", 1, vec!["bar; if baz"]),
         ("bar", 1, vec![]),
         ("baz", 1, vec![]),
-
         ("menu", 1, vec!["icon; if foo"]),
         ("icon", 1, vec![]),
     ]);
