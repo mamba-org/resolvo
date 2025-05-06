@@ -173,7 +173,7 @@ pub(crate) struct SolverState {
     /// candidates.
     requirement_to_sorted_candidates:
         FrozenMap<Requirement, RequirementCandidateVariables, ahash::RandomState>,
-    disjunction_to_candidates: FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
+    disjunction_to_candidates: FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
 
     pub(crate) variable_map: VariableMap,
 
@@ -440,7 +440,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                 // Add the clauses for the root solvable.
                 let conflicting_clauses = self.async_runtime.block_on(
-                    Encoder::new(&mut self.state, &self.cache, root_deps).encode([root_solvable]),
+                    Encoder::new(&mut self.state, &self.cache, root_deps, level)
+                        .encode([root_solvable]),
                 )?;
 
                 if let Some(clause_id) = conflicting_clauses.into_iter().next() {
@@ -558,7 +559,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .collect::<Vec<_>>();
 
             let conflicting_clauses = self.async_runtime.block_on(
-                Encoder::new(&mut self.state, &self.cache, root_deps).encode(new_solvables),
+                Encoder::new(&mut self.state, &self.cache, root_deps, level).encode(new_solvables),
             )?;
 
             // Serially process the outputs, to reduce the need for synchronization
@@ -721,10 +722,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // If the clause has a condition that is not yet satisfied we need to skip it.
                 if let Some(condition) = condition {
                     let candidates = &self.state.disjunction_to_candidates[condition];
-                    if !candidates
-                        .iter()
-                        .any(|c| self.state.decision_tracker.assigned_value(*c) == Some(true))
-                    {
+                    if !candidates.iter().all(|c| {
+                        let value = c.eval(self.state.decision_tracker.map());
+                        value == Some(false)
+                    }) {
                         // The condition is not satisfied, skip this clause.
                         continue;
                     }

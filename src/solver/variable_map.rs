@@ -38,6 +38,10 @@ pub enum VariableOrigin {
 
     /// A variable that helps encode an at most one constraint.
     ForbidMultiple(NameId),
+
+    /// A variable that indicates that any solvable of a particular package is
+    /// part of the solution.
+    AnyOf(NameId),
 }
 
 impl Default for VariableMap {
@@ -135,6 +139,9 @@ impl<I: Interner> Display for VariableDisplay<'_, I> {
             }
             VariableOrigin::ForbidMultiple(name) => {
                 write!(f, "forbid-multiple({})", self.interner.display_name(name))
+            }
+            VariableOrigin::AnyOf(name) => {
+                write!(f, "any-of({})", self.interner.display_name(name))
             }
         }
     }

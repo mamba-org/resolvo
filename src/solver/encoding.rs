@@ -12,7 +12,7 @@ use crate::{
         arena::ArenaId,
         id::{ClauseId, SolvableOrRootId, VariableId},
     },
-    solver::conditions::Disjunction,
+    solver::{clause::Literal, conditions::Disjunction, decision::Decision},
 };
 
 /// An object that is responsible for encoding information from the dependency
@@ -29,6 +29,7 @@ use crate::{
 pub(crate) struct Encoder<'a, D: DependencyProvider> {
     state: &'a mut SolverState,
     cache: &'a SolverCache<D>,
+    level: u32,
 
     /// The dependencies of the root solvable.
     root_dependencies: &'a Dependencies,
@@ -66,7 +67,18 @@ struct RequirementCandidatesAvailable<'a> {
     solvable_id: SolvableOrRootId,
     requirement: ConditionalRequirement,
     candidates: Vec<&'a [SolvableId]>,
-    condition: Option<(ConditionId, Vec<Vec<&'a [SolvableId]>>)>,
+    condition: Option<(ConditionId, Vec<Vec<DisjunctionComplement<'a>>>)>,
+}
+
+/// The complement of a solvables that match aVersionSet or an empty set.
+enum DisjunctionComplement<'a> {
+    Solvables(&'a [SolvableId]),
+    Empty(VersionSetId),
+}
+
+enum DisjunctionLiterals<'a> {
+    ComplementVariables(&'a [Literal]),
+    AnyOf(Literal),
 }
 
 /// Result of querying candidates for a particular constraint.
@@ -81,6 +93,7 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         state: &'a mut SolverState,
         cache: &'a SolverCache<D>,
         root_dependencies: &'a Dependencies,
+        level: u32,
     ) -> Self {
         Self {
             state,
@@ -88,6 +101,7 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
             root_dependencies,
             pending_futures: FuturesUnordered::new(),
             conflicting_clauses: Vec::new(),
+            level,
         }
     }
 
@@ -237,79 +251,61 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
             })
             .collect::<Vec<_>>();
 
-        // Queue requesting the dependencies of the candidates as well if they are
-        // cheaply available from the dependency provider.
-        for (candidate, candidate_var) in candidates
+        // Keep a list of candidates that should be added to forbid clauses.
+        let mut potential_forbid_candidates = candidates
             .iter()
             .zip(version_set_variables.iter())
             .flat_map(|(&candidates, variable)| {
                 candidates.iter().copied().zip(variable.iter().copied())
             })
-        {
+            .collect::<Vec<_>>();
+
+        // Queue requesting the dependencies of the candidates as well if they are
+        // cheaply available from the dependency provider.
+        for &candidate in candidates.iter().flat_map(|solvables| solvables.iter()) {
             // If the dependencies are already available for the
             // candidate, queue the candidate for processing.
             if self.cache.are_dependencies_available_for(candidate) {
                 self.queue_solvable(candidate.into())
             }
-
-            // Add forbid constraints for this solvable on all other
-            // solvables that have been visited already for the same
-            // version set name.
-            let name_id = self.cache.provider().solvable_name(candidate);
-            let other_solvables = self
-                .state
-                .forbidden_clauses_added
-                .entry(name_id)
-                .or_default();
-            other_solvables.add(
-                candidate_var,
-                |a, b, positive| {
-                    let (watched_literals, kind) = WatchedLiterals::forbid_multiple(
-                        a,
-                        if positive { b.positive() } else { b.negative() },
-                        name_id,
-                    );
-                    let clause_id = self.state.clauses.alloc(watched_literals, kind);
-                    let watched_literals = self.state.clauses.watched_literals
-                        [clause_id.to_usize()]
-                    .as_mut()
-                    .expect("forbid clause must have watched literals");
-                    self.state
-                        .watches
-                        .start_watching(watched_literals, clause_id);
-                },
-                || {
-                    self.state
-                        .variable_map
-                        .alloc_forbid_multiple_variable(name_id)
-                },
-            );
         }
 
         // Determine the disjunctions of all the conditions for this requirement.
         let mut disjunctions =
             Vec::with_capacity(condition.as_ref().map_or(0, |(_, dnf)| dnf.len()));
         if let Some((condition, dnf)) = condition {
-            for disjunction in dnf {
-                let mut candidates = Vec::with_capacity(
-                    disjunction
-                        .iter()
-                        .map(|candidates| candidates.len())
-                        .sum::<usize>(),
-                );
-                for version_set_candidates in disjunction.into_iter() {
-                    candidates.extend(
-                        version_set_candidates
-                            .into_iter()
-                            .map(|&candidate| self.state.variable_map.intern_solvable(candidate)),
-                    );
-                }
+            let disjunction_literals = dnf
+                .into_iter()
+                .map(|disjunction| {
+                    let mut literals = Vec::new();
+                    for complement in disjunction {
+                        match complement {
+                            DisjunctionComplement::Solvables(solvables) => {
+                                literals.reserve(solvables.len());
+                                potential_forbid_candidates.reserve(solvables.len());
+                                for &solvable in solvables {
+                                    let variable =
+                                        self.state.variable_map.intern_solvable(solvable);
+                                    potential_forbid_candidates.push((solvable, variable));
+                                    literals.push(variable.positive());
+                                }
+                            }
+                            DisjunctionComplement::Empty(version_set) => {
+                                todo!();
+                            }
+                        }
+                    }
+                    literals
+                })
+                .collect::<Vec<_>>();
+
+            for literals in disjunction_literals {
                 let disjunction_id = self.state.disjunctions.alloc(Disjunction { condition });
-                let candidates = self
+                let literals = self
                     .state
                     .disjunction_to_candidates
-                    .insert(disjunction_id, candidates);
-                disjunctions.push(Some((disjunction_id, candidates)));
+                    .insert(disjunction_id, literals);
+                disjunctions.push(Some((disjunction_id, literals)));
             }
         } else {
             disjunctions.push(None);
@@ -340,7 +336,11 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
                 .requires_clauses
                 .entry(variable)
                 .or_default()
-                .push((requirement.requirement, condition.map(|cond| cond.0), clause_id));
+                .push((
+                    requirement.requirement,
+                    condition.map(|cond| cond.0),
+                    clause_id,
+                ));
 
             if conflict {
                 self.conflicting_clauses.push(clause_id);
@@ -354,6 +354,62 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
         self.state
             .requirement_to_sorted_candidates
             .insert(requirement.requirement, version_set_variables);
+
+        // Add forbid clauses
+        for (candidate, candidate_var) in potential_forbid_candidates {
+            // Add forbid constraints for this solvable on all other
+            // solvables that have been visited already for the same
+            // version set name.
+            let name_id = self.cache.provider().solvable_name(candidate);
+            let other_solvables = self
+                .state
+                .forbidden_clauses_added
+                .entry(name_id)
+                .or_default();
+            other_solvables.add(
+                candidate_var,
+                |a, b, positive| {
+                    let literal_b = if positive { b.positive() } else { b.negative() };
+                    let literal_a = a.negative();
+                    let (watched_literals, kind) =
+                        WatchedLiterals::forbid_multiple(a, literal_b, name_id);
+                    let clause_id = self.state.clauses.alloc(watched_literals, kind);
+                    let watched_literals = self.state.clauses.watched_literals
+                        [clause_id.to_usize()]
+                    .as_mut()
+                    .expect("forbid clause must have watched literals");
+                    self.state
+                        .watches
+                        .start_watching(watched_literals, clause_id);
+                    let set_literal = match (
+                        literal_a.eval(self.state.decision_tracker.map()),
+                        literal_b.eval(self.state.decision_tracker.map()),
+                    ) {
+                        (Some(false), None) => Some(literal_b),
+                        (None, Some(false)) => Some(literal_a),
+                        _ => None,
+                    };
+                    if let Some(literal) = set_literal {
+                        self.state
+                            .decision_tracker
+                            .try_add_decision(
+                                Decision::new(
+                                    literal.variable(),
+                                    literal.satisfying_value(),
+                                    clause_id,
+                                ),
+                                self.level,
+                            )
+                            .expect("we checked that there is no value yet");
+                    }
+                },
+                || {
+                    self.state
+                        .variable_map
+                        .alloc_forbid_multiple_variable(name_id)
+                },
+            );
+        }
     }
 
     /// Called when the candidates for a particular constraint are available.
@@ -531,7 +587,15 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
                         .into_iter()
                         .map(|cnf| {
                             futures::future::try_join_all(cnf.into_iter().map(|version_set| {
-                                cache.get_or_cache_matching_candidates(version_set)
+                                cache
+                                    .get_or_cache_non_matching_candidates(version_set)
+                                    .map_ok(move |matching_candidates| {
+                                        if matching_candidates.len() == 0 {
+                                            DisjunctionComplement::Empty(version_set)
+                                        } else {
+                                            DisjunctionComplement::Solvables(matching_candidates)
+                                        }
+                                    })
                             }))
                         }),
                 )
@@ -575,5 +639,20 @@ impl<'a, D: DependencyProvider> Encoder<'a, D> {
 
         self.pending_futures
             .push(query_constraints_candidates.boxed_local());
+    }
+
+    fn disjunction_literals(
+        &mut self,
+        disjunction_complement: DisjunctionComplement,
+    ) -> Vec<Literal> {
+        match disjunction_complement {
+            DisjunctionComplement::Solvables(solvables) => solvables
+                .iter()
+                .map(|&solvable| self.state.variable_map.intern_solvable(solvable).positive())
+                .collect(),
+            DisjunctionComplement::Empty(version_set) => {
+                todo!();
+            }
+        }
     }
 }

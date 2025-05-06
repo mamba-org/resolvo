@@ -57,7 +57,7 @@ pub(crate) enum Clause {
     ///
     /// Optionally the requirement can be associated with a condition in the
     /// form of a disjunction.
-    /// 
+    ///
     /// ~A v ~C1 ^ C2 ^ C3 ^ v R
     ///
     /// In SAT terms: (¬A ∨ ¬D1 v ¬D2 .. v ¬D99 v B1 ∨ B2 ∨ ... ∨ B99), where D1
@@ -122,7 +122,7 @@ impl Clause {
         parent: VariableId,
         requirement: Requirement,
         candidates: impl IntoIterator<Item = VariableId>,
-        condition: Option<(DisjunctionId, &[VariableId])>,
+        condition: Option<(DisjunctionId, &[Literal])>,
         decision_tracker: &DecisionTracker,
     ) -> (Self, Option<[Literal; 2]>, bool) {
         // It only makes sense to introduce a requires clause when the parent solvable
@@ -135,9 +135,9 @@ impl Clause {
         let mut condition_literals = condition
             .into_iter()
             .flat_map(|(_, candidates)| candidates)
-            .map(|candidate| candidate.negative())
+            .copied()
             .peekable();
-        let mut candidate_literals = candidates
+        let candidate_literals = candidates
             .into_iter()
             .map(|candidate| candidate.positive())
             .peekable();
@@ -153,11 +153,7 @@ impl Clause {
 
         match literals.find(|&c| c.eval(decision_tracker.map()) != Some(false)) {
             // Watch any candidate that is not assigned to false
-            Some(watched_candidate) => (
-                kind,
-                Some([parent.negative(), watched_candidate]),
-                false,
-            ),
+            Some(watched_candidate) => (kind, Some([parent.negative(), watched_candidate]), false),
 
             // All candidates are assigned to false! Therefore, the clause conflicts with the
             // current decisions. There are no valid watches for it at the moment, but we will
@@ -165,11 +161,7 @@ impl Clause {
             // restarts.
             None => {
                 // Try to find a condition that is not assigned to false.
-                (
-                    kind,
-                    Some([parent.negative(), first_literal]),
-                    true,
-                )
+                (kind, Some([parent.negative(), first_literal]), true)
             }
         }
     }
@@ -266,7 +258,7 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
         init: C,
         mut visit: F,
     ) -> ControlFlow<B, C>
@@ -286,7 +278,7 @@ impl Clause {
                         disjunction
                             .into_iter()
                             .flat_map(|d| disjunction_to_candidates[&d].iter())
-                            .map(|var| var.negative()),
+                            .copied()
                     )
                     .chain(
                         requirements_to_sorted_candidates[&match_spec_id]
@@ -319,7 +311,7 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
         mut visit: impl FnMut(Literal),
     ) {
         self.try_fold_literals(
@@ -383,7 +375,7 @@ impl WatchedLiterals {
         candidate: VariableId,
         requirement: Requirement,
         matching_candidates: impl IntoIterator<Item = VariableId>,
-        condition: Option<(DisjunctionId, &[VariableId])>,
+        condition: Option<(DisjunctionId, &[Literal])>,
         decision_tracker: &DecisionTracker,
     ) -> (Option<Self>, bool, Clause) {
         let (kind, watched_literals, conflict) = Clause::requires(
@@ -474,7 +466,7 @@ impl WatchedLiterals {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<VariableId>, ahash::RandomState>,
+        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
         decision_map: &DecisionMap,
         for_watch_index: usize,
     ) -> Option<Literal> {
