@@ -8,7 +8,7 @@ use std::{
 use elsa::FrozenMap;
 
 use crate::{
-    Candidates, Interner, NameId, Requirement,
+    Interner, NameId, Requirement,
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
@@ -132,7 +132,7 @@ impl Clause {
         let kind = Clause::Requires(parent, condition.map(|d| d.0), requirement);
 
         // Construct literals to watch
-        let mut condition_literals = condition
+        let condition_literals = condition
             .into_iter()
             .flat_map(|(_, candidates)| candidates)
             .copied()

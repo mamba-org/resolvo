@@ -1532,21 +1532,16 @@ fn test_conditional_requirements() {
 
 #[test]
 #[traced_test]
-fn test_conditional_optional_missing() {
+fn test_condition_limits_requirement() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("menu", 1, vec!["icon 1; if (intl 1..3 or baz 1..2) or intl 1..2"]),
+        ("menu", 1, vec!["icon 1; if intl 1"]),
         ("icon", 1, vec![]),
         ("icon", 2, vec![]),
-        ("baz", 1, vec![]),
-        ("baz", 2, vec![]),
         ("intl", 1, vec![]),
         ("intl", 2, vec![]),
-        ("intl", 3, vec![]),
     ]);
 
-    dbg!(&provider.conditions);
-
-    let requirements = provider.requirements(&["menu", "icon", "baz 1"]);
+    let requirements = provider.requirements(&["menu", "icon", "intl 1"]);
     assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
 }
 

@@ -3,8 +3,7 @@ use std::num::NonZero;
 use crate::{
     Condition, ConditionId, Interner, LogicalOperator, VersionSetId,
     internal::{
-        arena::{Arena, ArenaId},
-        small_vec::SmallVec,
+        arena::{ ArenaId},
     },
 };
 
