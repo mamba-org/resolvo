@@ -13,7 +13,7 @@ use crate::{
         arena::ArenaId,
         id::{ClauseId, SolvableOrRootId, VariableId},
     },
-    solver::{clause::Literal, conditions::Disjunction, decision::Decision},
+    solver::{conditions::Disjunction, decision::Decision},
 };
 
 /// An object that is responsible for encoding information from the dependency
@@ -45,6 +45,9 @@ pub(crate) struct Encoder<'a, 'cache, D: DependencyProvider> {
 
     /// Stores for which packages and solvables we want to add forbid clauses.
     pending_forbid_clauses: IndexMap<NameId, Vec<VariableId>>,
+
+    /// A set of packages that should have an at-least-once tracker.
+    new_at_least_one_packages: IndexMap<NameId, VariableId>,
 }
 
 /// The result of a future that was queued for processing.
@@ -81,11 +84,6 @@ enum DisjunctionComplement<'a> {
     Empty(VersionSetId),
 }
 
-enum DisjunctionLiterals<'a> {
-    ComplementVariables(&'a [Literal]),
-    AnyOf(Literal),
-}
-
 /// Result of querying candidates for a particular constraint.
 struct ConstraintCandidatesAvailable<'a> {
     solvable_id: SolvableOrRootId,
@@ -108,6 +106,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
             conflicting_clauses: Vec::new(),
             pending_forbid_clauses: IndexMap::default(),
             level,
+            new_at_least_one_packages: IndexMap::new(),
         }
     }
 
@@ -127,6 +126,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
         }
 
         self.add_pending_forbid_clauses();
+        self.add_pending_at_least_one_clauses();
 
         Ok(self.conflicting_clauses)
     }
@@ -308,7 +308,25 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                             }
                         }
                         DisjunctionComplement::Empty(version_set) => {
-                            todo!()
+                            let name_id = self.cache.provider().version_set_name(version_set);
+                            let at_least_one_of_var = match self
+                                .state
+                                .at_last_once_tracker
+                                .get(&name_id)
+                                .copied()
+                                .or_else(|| self.new_at_least_one_packages.get(&name_id).copied())
+                            {
+                                Some(variable) => variable,
+                                None => {
+                                    let variable = self
+                                        .state
+                                        .variable_map
+                                        .alloc_at_least_one_variable(name_id);
+                                    self.new_at_least_one_packages.insert(name_id, variable);
+                                    variable
+                                }
+                            };
+                            disjunction_literals.push(at_least_one_of_var.negative());
                         }
                     }
                 }
@@ -357,7 +375,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
 
             if conflict {
                 self.conflicting_clauses.push(clause_id);
-            } else if no_candidates {
+            } else if no_candidates && condition.is_none() {
                 // Add assertions for unit clauses (i.e. those with no matching candidates)
                 self.state.negative_assertions.push((variable, clause_id));
             }
@@ -616,12 +634,8 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
             // Add forbid constraints for this solvable on all other
             // solvables that have been visited already for the same
             // version set name.
-            let other_solvables = self
-                .state
-                .forbidden_clauses_added
-                .entry(name_id)
-                .or_default();
-            other_solvables.add(
+            let other_solvables = self.state.at_most_one_trackers.entry(name_id).or_default();
+            let variable_is_new = other_solvables.add(
                 candidate_var,
                 |a, b, positive| {
                     let literal_b = if positive { b.positive() } else { b.negative() };
@@ -669,6 +683,76 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                         .alloc_forbid_multiple_variable(name_id)
                 },
             );
+
+            if variable_is_new {
+                if let Some(&at_least_one_variable) = self.state.at_last_once_tracker.get(&name_id)
+                {
+                    let (watched_literals, kind) =
+                        WatchedLiterals::any_of(at_least_one_variable, candidate_var);
+                    let clause_id = self.state.clauses.alloc(watched_literals, kind);
+                    let watched_literals = self.state.clauses.watched_literals
+                        [clause_id.to_usize()]
+                    .as_mut()
+                    .expect("forbid clause must have watched literals");
+                    self.state
+                        .watches
+                        .start_watching(watched_literals, clause_id);
+                }
+            }
+        }
+    }
+
+    /// Adds clauses to track if at least one solvable for a particular package
+    /// is selected. An auxiliary variable is introduced and for each solvable a
+    /// clause is added that forces the auxiliary variable to turn true if any
+    /// solvable is selected.
+    ///
+    /// This function only looks at solvables that are added to the at most once
+    /// tracker. The encoder has an optimization that it only creates clauses
+    /// for packages that are references from a requires clause. Any other
+    /// solvable will never be selected anyway so we can completely ignore it.
+    ///
+    /// No clause is added to force the auxiliary variable to turn false. This
+    /// is on purpose because we dont not need this state to compute a proper
+    /// solution.
+    fn add_pending_at_least_one_clauses(&mut self) {
+        for (name_id, at_least_one_variable) in self.new_at_least_one_packages.drain(..) {
+            // Find the at-most-one tracker for the package. We want to reuse the same
+            // variables.
+            let variables = self
+                .state
+                .at_most_one_trackers
+                .get(&name_id)
+                .map(|tracker| &tracker.variables);
+
+            // Add clauses for the existing variables.
+            for &helper_var in variables.into_iter().flatten() {
+                let (watched_literals, kind) =
+                    WatchedLiterals::any_of(at_least_one_variable, helper_var);
+                let clause_id = self.state.clauses.alloc(watched_literals, kind);
+                let watched_literals = self.state.clauses.watched_literals[clause_id.to_usize()]
+                    .as_mut()
+                    .expect("forbid clause must have watched literals");
+                self.state
+                    .watches
+                    .start_watching(watched_literals, clause_id);
+
+                // Assign true if any of the variables is true.
+                if self.state.decision_tracker.assigned_value(helper_var) == Some(true) {
+                    self.state
+                        .decision_tracker
+                        .try_add_decision(
+                            Decision::new(at_least_one_variable, true, clause_id),
+                            self.level,
+                        )
+                        .expect("the at least one variable must be undecided");
+                }
+            }
+
+            // Record that we have a variable for this package.
+            self.state
+                .at_last_once_tracker
+                .insert(name_id, at_least_one_variable);
         }
     }
 }

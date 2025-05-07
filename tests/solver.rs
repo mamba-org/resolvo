@@ -1534,14 +1534,31 @@ fn test_conditional_requirements() {
 #[traced_test]
 fn test_condition_limits_requirement() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("menu", 1, vec!["icon 1; if intl 1"]),
+        ("menu", 1, vec!["bla; if intl"]),
         ("icon", 1, vec![]),
         ("icon", 2, vec![]),
         ("intl", 1, vec![]),
         ("intl", 2, vec![]),
     ]);
 
-    let requirements = provider.requirements(&["menu", "icon", "intl 1"]);
+    let requirements = provider.requirements(&["menu"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
+}
+
+#[test]
+#[traced_test]
+fn test_condition_is_disabled() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("menu", 1, vec![]),
+        ("menu", 2, vec!["icon; if disabled", "intl"]),
+        ("disabled", 1, vec!["missing"]),
+        ("disabled", 2, vec![]),
+        ("intl", 1, vec![]),
+        ("intl", 2, vec!["disabled"]),
+        ("icon", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["menu"]);
     assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
 }
 

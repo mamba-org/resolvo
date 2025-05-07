@@ -11,7 +11,6 @@ use petgraph::{
     visit::{Bfs, DfsPostOrder, EdgeRef},
 };
 
-use crate::solver::variable_map::VariableOrigin;
 use crate::{
     DependencyProvider, Interner, Requirement,
     internal::{
@@ -19,7 +18,7 @@ use crate::{
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{Solver, clause::Clause},
+    solver::{Solver, clause::Clause, variable_map::VariableOrigin},
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -160,6 +159,11 @@ impl Conflict {
                         package_node,
                         dep_node,
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
+                    );
+                }
+                Clause::AnyOf(_, _) => {
+                    unreachable!(
+                        "an assumption is violated: AnyOf clauses can never make the auxiliary variable turn false, so they can never be part of a conflict."
                     );
                 }
             }

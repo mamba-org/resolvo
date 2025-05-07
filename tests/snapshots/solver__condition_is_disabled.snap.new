@@ -1,6 +1,9 @@
 ---
 source: tests/solver.rs
-assertion_line: 1545
+assertion_line: 1562
 expression: "solve_for_snapshot(provider, &requirements, &[])"
 ---
-menu=1
+disabled=2
+icon=1
+intl=2
+menu=2

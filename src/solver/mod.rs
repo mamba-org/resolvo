@@ -187,7 +187,11 @@ pub(crate) struct SolverState {
 
     clauses_added_for_package: HashSet<NameId>,
     clauses_added_for_solvable: HashSet<SolvableOrRootId>,
-    forbidden_clauses_added: HashMap<NameId, AtMostOnceTracker<VariableId>>,
+    at_most_one_trackers: HashMap<NameId, AtMostOnceTracker<VariableId>>,
+
+    /// Keeps track of auxiliary variables that are used to encode at-least-one
+    /// solvable for a package.
+    at_last_once_tracker: HashMap<NameId, VariableId>,
 
     decision_tracker: DecisionTracker,
 
@@ -592,7 +596,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         clause_id: ClauseId,
     ) -> Result<bool, UnsolvableOrCancelled> {
         if starting_level == 0 {
-            tracing::trace!("Unsolvable: {:?}", clause_id);
+            tracing::trace!("Unsolvable: {}", self.state.clauses.kinds[clause_id.to_usize()].display(
+                &self.state.variable_map,
+                self.provider(),
+            ));
             Err(UnsolvableOrCancelled::Unsolvable(
                 self.analyze_unsolvable(clause_id),
             ))

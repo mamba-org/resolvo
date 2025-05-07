@@ -14,8 +14,8 @@ use crate::{
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{
-        VariableId, conditions::DisjunctionId, decision_map::DecisionMap,
-        decision_tracker::DecisionTracker, variable_map::VariableMap,
+        VariableId, conditions::DisjunctionId,
+        decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
     },
 };
 
@@ -103,6 +103,10 @@ pub(crate) enum Clause {
     /// A clause that forbids a package from being installed for an external
     /// reason.
     Excluded(VariableId, StringId),
+
+    /// A clause that indicates that any version of a package C is selected.
+    /// In SAT terms: (C_selected v ¬Cj)
+    AnyOf(VariableId, VariableId),
 }
 
 impl Clause {
@@ -246,6 +250,11 @@ impl Clause {
         )
     }
 
+    fn any_of(selected_var: VariableId, other_var: VariableId) -> (Self, Option<[Literal; 2]>) {
+        let kind = Clause::AnyOf(selected_var, other_var);
+        (kind, Some([selected_var.positive(), other_var.negative()]))
+    }
+
     /// Tries to fold over all the literals in the clause.
     ///
     /// This function is useful to iterate, find, or filter the literals in a
@@ -278,7 +287,7 @@ impl Clause {
                         disjunction
                             .into_iter()
                             .flat_map(|d| disjunction_to_candidates[&d].iter())
-                            .copied()
+                            .copied(),
                     )
                     .chain(
                         requirements_to_sorted_candidates[&match_spec_id]
@@ -295,6 +304,9 @@ impl Clause {
                 [s1.negative(), s2].into_iter().try_fold(init, visit)
             }
             Clause::Lock(_, s) => [s.negative(), VariableId::root().negative()]
+                .into_iter()
+                .try_fold(init, visit),
+            Clause::AnyOf(selected, variable) => [selected.positive(), variable.negative()]
                 .into_iter()
                 .try_fold(init, visit),
         }
@@ -445,6 +457,11 @@ impl WatchedLiterals {
 
     pub fn exclude(candidate: VariableId, reason: StringId) -> (Option<Self>, Clause) {
         let (kind, watched_literals) = Clause::exclude(candidate, reason);
+        (Self::from_kind_and_initial_watches(watched_literals), kind)
+    }
+
+    pub fn any_of(selected_var: VariableId, other_var: VariableId) -> (Option<Self>, Clause) {
+        let (kind, watched_literals) = Clause::any_of(selected_var, other_var);
         (Self::from_kind_and_initial_watches(watched_literals), kind)
     }
 
@@ -601,13 +618,14 @@ impl<I: Interner> Display for ClauseDisplay<'_, I> {
                 )
             }
             Clause::Learnt(learnt_id) => write!(f, "Learnt({learnt_id:?})"),
-            Clause::Requires(variable, _condition, requirement) => {
+            Clause::Requires(variable, condition, requirement) => {
                 write!(
                     f,
-                    "Requires({}({:?}), {})",
+                    "Requires({}({:?}), {}, condition={:?})",
                     variable.display(self.variable_map, self.interner),
                     variable,
                     requirement.display(self.interner),
+                    condition
                 )
             }
             Clause::Constrains(v1, v2, version_set_id) => {
@@ -638,6 +656,16 @@ impl<I: Interner> Display for ClauseDisplay<'_, I> {
                     "Lock({}({:?}), {}({:?}))",
                     locked.display(self.variable_map, self.interner),
                     locked,
+                    other.display(self.variable_map, self.interner),
+                    other,
+                )
+            }
+            Clause::AnyOf(variable, other) => {
+                write!(
+                    f,
+                    "AnyOf({}({:?}), {}({:?}))",
+                    variable.display(self.variable_map, self.interner),
+                    variable,
                     other.display(self.variable_map, self.interner),
                     other,
                 )
