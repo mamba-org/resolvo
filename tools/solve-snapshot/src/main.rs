@@ -15,7 +15,7 @@ use rand::{
     prelude::IteratorRandom,
     rngs::StdRng,
 };
-use resolvo::{Problem, Requirement, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot};
+use resolvo::{Problem, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot, ConditionalRequirement};
 
 #[derive(Parser)]
 #[clap(version = "0.1.0", author = "Bas Zalmstra <zalmstra.bas@gmail.com>")]
@@ -79,7 +79,7 @@ fn main() {
             .with_timeout(SystemTime::now().add(Duration::from_secs(opts.timeout)));
 
         // Construct a problem with a random number of requirements.
-        let mut requirements: Vec<Requirement> = Vec::new();
+        let mut requirements: Vec<ConditionalRequirement> = Vec::new();
 
         // Determine the number of requirements to solve for.
         let num_requirements = rng.gen_range(1..=10usize);
@@ -114,7 +114,7 @@ fn main() {
             requirements.iter().format_with("\n", |requirement, f| {
                 f(&format_args!(
                     "- {}",
-                    style(requirement.display(&provider)).dim()
+                    style(requirement.requirement.display(&provider)).dim()
                 ))
             })
         );
@@ -122,7 +122,7 @@ fn main() {
         let problem_name = requirements
             .iter()
             .format_with("\n", |requirement, f| {
-                f(&format_args!("{}", requirement.display(&provider)))
+                f(&format_args!("{}", requirement.requirement.display(&provider)))
             })
             .to_string();
 
