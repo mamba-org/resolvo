@@ -14,11 +14,11 @@
 //! The condition `C` however expands to another set of matching candidates
 //! (e.g. `C1 v C2 v C3`). If we insert that into the formula we get,
 //!
-//!     `¬A1 v ¬(C1 v C2 v C3) v B1 .. v B2`
+//!   `¬A1 v ¬(C1 v C2 v C3) v B1 .. v B2`
 //!
 //! which expands to
 //!
-//!     `¬A1 v ¬C1 ^ ¬C2 ^ ¬C3 v B1 .. v B2`
+//!   `¬A1 v ¬C1 ^ ¬C2 ^ ¬C3 v B1 .. v B2`
 //!
 //! This is not in CNF form (required for SAT clauses) so we cannot use this
 //! directly. To work around that problem we instead represent the condition
@@ -27,7 +27,7 @@
 //! `package <1`, or the candidates that do NOT match C. So if we represent the
 //! complement of C as C! the final form of clause becomes:
 //!
-//!     `¬A1 v C!1 .. v C!99 v B1 .. v B2`
+//!   `¬A1 v C!1 .. v C!99 v B1 .. v B2`
 //!
 //! This introduces another edge case though. What if the complement is empty?
 //! The final format would be void of `C!n` variables so it would become `¬A1 v
@@ -36,12 +36,12 @@
 //! C is selected (notated as `C_selected`). For each candidate of C we add the
 //! clause
 //!
-//!     `¬Cn v C_selected`
+//!   `¬Cn v C_selected`
 //!
 //! This forces `C_selected` to become true if any `Cn` is set to true. We then
 //! modify the requirement clause to be
 //!
-//!     `¬A1 v ¬C_selected v B1 .. v B2`
+//!   `¬A1 v ¬C_selected v B1 .. v B2`
 //!
 //! Note that we do not encode any clauses to force `C_selected` to be false.
 //! We argue that this state is not required to function properly. If
@@ -60,6 +60,7 @@
 
 use std::num::NonZero;
 
+use crate::solver::clause::Literal;
 use crate::{
     Condition, ConditionId, Interner, LogicalOperator, VersionSetId, internal::arena::ArenaId,
 };
@@ -81,8 +82,11 @@ impl ArenaId for DisjunctionId {
 }
 
 pub struct Disjunction {
+    /// The literals associated with this particular disjunction
+    pub literals: Vec<Literal>,
+
     /// The top-level condition to which this disjunction belongs.
-    pub condition: ConditionId,
+    pub _condition: ConditionId,
 }
 
 /// Converts from a boolean expression tree as described by `condition` to a

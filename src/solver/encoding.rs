@@ -331,12 +331,11 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                     }
                 }
 
-                let disjunction_id = self.state.disjunctions.alloc(Disjunction { condition });
-                let literals = self
-                    .state
-                    .disjunction_to_candidates
-                    .insert(disjunction_id, disjunction_literals);
-                conditions.push(Some((disjunction_id, literals)));
+                let disjunction_id = self.state.disjunctions.alloc(Disjunction {
+                    literals: disjunction_literals,
+                    _condition: condition,
+                });
+                conditions.push(Some(disjunction_id));
             }
         } else {
             conditions.push(None);
@@ -345,11 +344,13 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
         for condition in conditions {
             // Add the requirements clause
             let no_candidates = candidates.iter().all(|candidates| candidates.is_empty());
+            let condition_literals =
+                condition.map(|id| self.state.disjunctions[id].literals.as_slice());
             let (watched_literals, conflict, kind) = WatchedLiterals::requires(
                 variable,
                 requirement.requirement,
                 version_set_variables.iter().flatten().copied(),
-                condition,
+                condition.zip(condition_literals),
                 &self.state.decision_tracker,
             );
             let clause_id = self.state.clauses.alloc(watched_literals, kind);
@@ -367,11 +368,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                 .requires_clauses
                 .entry(variable)
                 .or_default()
-                .push((
-                    requirement.requirement,
-                    condition.map(|cond| cond.0),
-                    clause_id,
-                ));
+                .push((requirement.requirement, condition, clause_id));
 
             if conflict {
                 self.conflicting_clauses.push(clause_id);
@@ -565,7 +562,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                                 cache
                                     .get_or_cache_non_matching_candidates(version_set)
                                     .map_ok(move |matching_candidates| {
-                                        if matching_candidates.len() == 0 {
+                                        if matching_candidates.is_empty() {
                                             DisjunctionComplement::Empty(version_set)
                                         } else {
                                             DisjunctionComplement::Solvables(

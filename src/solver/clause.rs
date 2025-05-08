@@ -7,6 +7,7 @@ use std::{
 
 use elsa::FrozenMap;
 
+use crate::solver::conditions::Disjunction;
 use crate::{
     Interner, NameId, Requirement,
     internal::{
@@ -14,8 +15,8 @@ use crate::{
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{
-        VariableId, conditions::DisjunctionId,
-        decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
+        VariableId, conditions::DisjunctionId, decision_map::DecisionMap,
+        decision_tracker::DecisionTracker, variable_map::VariableMap,
     },
 };
 
@@ -267,7 +268,7 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
+        disjunction_to_candidates: &Arena<DisjunctionId, Disjunction>,
         init: C,
         mut visit: F,
     ) -> ControlFlow<B, C>
@@ -286,7 +287,7 @@ impl Clause {
                     .chain(
                         disjunction
                             .into_iter()
-                            .flat_map(|d| disjunction_to_candidates[&d].iter())
+                            .flat_map(|d| disjunction_to_candidates[d].literals.iter())
                             .copied(),
                     )
                     .chain(
@@ -323,7 +324,7 @@ impl Clause {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
+        disjunction_to_candidates: &Arena<DisjunctionId, Disjunction>,
         mut visit: impl FnMut(Literal),
     ) {
         self.try_fold_literals(
@@ -483,7 +484,7 @@ impl WatchedLiterals {
             Vec<Vec<VariableId>>,
             ahash::RandomState,
         >,
-        disjunction_to_candidates: &FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
+        disjunction_to_candidates: &Arena<DisjunctionId, Disjunction>,
         decision_map: &DecisionMap,
         for_watch_index: usize,
     ) -> Option<Literal> {

@@ -161,7 +161,7 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
-                Clause::AnyOf(selected, variable) => {
+                Clause::AnyOf(selected, _variable) => {
                     // Assumption: since `AnyOf` of clause can never be false, we dont add an edge
                     // for it.
                     let decision_map = solver.state.decision_tracker.map();

@@ -2,14 +2,13 @@ use std::fmt::Display;
 
 use itertools::Itertools;
 
-use crate::{
-    ConditionalRequirement, Interner, VersionSetId, VersionSetUnionId,
-};
 use crate::internal::id::ConditionId;
+use crate::{ConditionalRequirement, Interner, VersionSetId, VersionSetUnionId};
 
 /// Specifies the dependency of a solvable on a set of version sets.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Requirement {
     /// Specifies a dependency on a single version set.
     Single(VersionSetId),

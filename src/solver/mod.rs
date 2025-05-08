@@ -159,21 +159,18 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     activity_decay: f32,
 }
 
+type RequiresClause = (Requirement, Option<DisjunctionId>, ClauseId);
+
 #[derive(Default)]
 pub(crate) struct SolverState {
     pub(crate) clauses: Clauses,
-    requires_clauses: IndexMap<
-        VariableId,
-        Vec<(Requirement, Option<DisjunctionId>, ClauseId)>,
-        ahash::RandomState,
-    >,
+    requires_clauses: IndexMap<VariableId, Vec<RequiresClause>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
     /// candidates.
     requirement_to_sorted_candidates:
         FrozenMap<Requirement, RequirementCandidateVariables, ahash::RandomState>,
-    disjunction_to_candidates: FrozenMap<DisjunctionId, Vec<Literal>, ahash::RandomState>,
 
     pub(crate) variable_map: VariableMap,
 
@@ -596,10 +593,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         clause_id: ClauseId,
     ) -> Result<bool, UnsolvableOrCancelled> {
         if starting_level == 0 {
-            tracing::trace!("Unsolvable: {}", self.state.clauses.kinds[clause_id.to_usize()].display(
-                &self.state.variable_map,
-                self.provider(),
-            ));
+            tracing::trace!(
+                "Unsolvable: {}",
+                self.state.clauses.kinds[clause_id.to_usize()]
+                    .display(&self.state.variable_map, self.provider(),)
+            );
             Err(UnsolvableOrCancelled::Unsolvable(
                 self.analyze_unsolvable(clause_id),
             ))
@@ -727,9 +725,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 let mut candidate = ControlFlow::Break(());
 
                 // If the clause has a condition that is not yet satisfied we need to skip it.
-                if let Some(condition) = condition {
-                    let candidates = &self.state.disjunction_to_candidates[condition];
-                    if !candidates.iter().all(|c| {
+                if let Some(condition) = *condition {
+                    let literals = &self.state.disjunctions[condition].literals;
+                    if !literals.iter().all(|c| {
                         let value = c.eval(self.state.decision_tracker.map());
                         value == Some(false)
                     }) {
@@ -1101,7 +1099,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     clause,
                     &self.state.learnt_clauses,
                     &self.state.requirement_to_sorted_candidates,
-                    &self.state.disjunction_to_candidates,
+                    &self.state.disjunctions,
                     self.state.decision_tracker.map(),
                     watch_index,
                 ) {
@@ -1264,7 +1262,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.state.clauses.kinds[clause_id.to_usize()].visit_literals(
             &self.state.learnt_clauses,
             &self.state.requirement_to_sorted_candidates,
-            &self.state.disjunction_to_candidates,
+            &self.state.disjunctions,
             |literal| {
                 involved.insert(literal.variable());
             },
@@ -1303,7 +1301,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             self.state.clauses.kinds[why.to_usize()].visit_literals(
                 &self.state.learnt_clauses,
                 &self.state.requirement_to_sorted_candidates,
-                &self.state.disjunction_to_candidates,
+                &self.state.disjunctions,
                 |literal| {
                     if literal.eval(self.state.decision_tracker.map()) == Some(true) {
                         assert_eq!(literal.variable(), decision.variable);
@@ -1351,7 +1349,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clause_kinds[clause_id.to_usize()].visit_literals(
                 &self.state.learnt_clauses,
                 &self.state.requirement_to_sorted_candidates,
-                &self.state.disjunction_to_candidates,
+                &self.state.disjunctions,
                 |literal| {
                     if !first_iteration && literal.variable() == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the
