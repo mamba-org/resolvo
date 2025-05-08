@@ -12,7 +12,7 @@ use crate::{slice::Slice, string::String, vector::Vector};
 /// ids should not be random but rather monotonic increasing. Although it is
 /// fine to have gaps, resolvo will allocate some memory based on the maximum
 /// id.
-/// 
+///
 /// cbindgen:derive-eq
 /// cbindgen:derive-neq
 #[repr(C)]
@@ -47,7 +47,7 @@ pub enum Requirement {
     /// sets. A solvable belonging to ANY of the version sets contained in
     /// the union satisfies the requirement. This variant is typically used
     /// for requirements that can be satisfied by two or more version sets
-    /// belonging to different packages. 
+    /// belonging to different packages.
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Union(VersionSetUnionId),
