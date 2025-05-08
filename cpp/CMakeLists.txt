@@ -43,7 +43,7 @@ endif()
 
 corrosion_import_crate(
   MANIFEST_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"resolvo_internal
   CRATES
   resolvo_cpp
   CRATE_TYPES

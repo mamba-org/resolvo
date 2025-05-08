@@ -72,6 +72,11 @@ fn main() -> anyhow::Result<()> {
     constexpr Slice(const T *ptr, uintptr_t len) : ptr(ptr ? const_cast<T*>(ptr) : reinterpret_cast<T*>(sizeof(T))), len(len) {}"
             .to_owned(),
     );
+    config.export.body.insert(
+        "ConditionalRequirement".to_owned(),
+        r"
+    constexpr ConditionalRequirement(Requirement requirement) : requirement(requirement), condition(nullptr) {};
+        ".to_owned());
 
     cbindgen::Builder::new()
         .with_config(config.clone())

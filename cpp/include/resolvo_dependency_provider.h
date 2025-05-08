@@ -14,6 +14,9 @@ using cbindgen_private::SolvableId;
 using cbindgen_private::StringId;
 using cbindgen_private::VersionSetId;
 using cbindgen_private::VersionSetUnionId;
+using cbindgen_private::ConditionId;
+using cbindgen_private::Condition;
+using cbindgen_private::ConditionalRequirement;
 
 /**
  * An interface that implements ecosystem specific logic.
@@ -82,6 +85,11 @@ struct DependencyProvider {
     virtual Slice<VersionSetId> version_sets_in_union(VersionSetUnionId version_set_union_id) = 0;
 
     /**
+     * Returns the condition that the given condition id describes
+     */
+    virtual Condition resolve_condition(ConditionId condition) = 0;
+
+    /**
      * Obtains a list of solvables that should be considered when a package
      * with the given name is requested.
      */
@@ -137,6 +145,10 @@ extern "C" inline NameId bridge_version_set_name(void *data, VersionSetId versio
 }
 extern "C" inline NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
     return reinterpret_cast<DependencyProvider *>(data)->solvable_name(solvable_id);
+}
+extern "C" inline void bridge_resolve_condition(void *data, ConditionId solvable_id, 
+                                                  Condition *result) {
+    *result = reinterpret_cast<DependencyProvider *>(data)->resolve_condition(solvable_id);
 }
 
 // HACK(clang): For some reason, clang needs this to know that the return type is complete
