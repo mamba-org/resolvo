@@ -193,7 +193,7 @@ pub(crate) struct SolverState {
     /// solvable for a package.
     at_last_once_tracker: HashMap<NameId, VariableId>,
 
-    decision_tracker: DecisionTracker,
+    pub(crate) decision_tracker: DecisionTracker,
 
     /// Activity score per package.
     name_activity: Vec<f32>,

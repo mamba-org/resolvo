@@ -1,4 +1,3 @@
-use chumsky::{error};
 use std::{
     any::Any,
     cell::{Cell, RefCell},
@@ -16,14 +15,14 @@ use std::{
 };
 
 use ahash::HashMap;
-use chumsky::Parser;
+use chumsky::{Parser, error};
 use indexmap::IndexMap;
 use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
     Candidates, Condition, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider,
-    Interner, KnownDependencies, LogicalOperator, NameId, Problem, SolvableId, Solver,
-    SolverCache, StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
+    Interner, KnownDependencies, LogicalOperator, NameId, Problem, SolvableId, Solver, SolverCache,
+    StringId, UnsolvableOrCancelled, VersionSetId, VersionSetUnionId,
     snapshot::{DependencySnapshot, SnapshotProvider},
     utils::Pool,
 };
@@ -147,7 +146,6 @@ enum SpecCondition {
 }
 
 mod parser {
-    use super::{ConditionalSpec, Pack, Spec, SpecCondition};
     use chumsky::{
         error,
         error::LabelError,
@@ -161,6 +159,8 @@ mod parser {
     };
     use resolvo::LogicalOperator;
     use version_ranges::Ranges;
+
+    use super::{ConditionalSpec, Pack, Spec, SpecCondition};
 
     /// Parses a package name identifier.
     pub fn name<'src, I, E>() -> impl Parser<'src, I, <I as SliceInput<'src>>::Slice, E> + Copy
@@ -1447,8 +1447,8 @@ fn test_solve_with_additional_with_constrains() {
 //
 //     let mut snapshot_provider = snapshot.provider();
 //
-//     assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req], &[]));
-// }
+//     assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req],
+// &[])); }
 
 #[test]
 fn test_snapshot_union_requirements() {
@@ -1522,41 +1522,60 @@ fn test_explicit_root_requirements() {
 #[test]
 fn test_conditional_requirements() {
     let mut provider = BundleBoxProvider::from_packages(&[
-        ("foo", 2, vec!["baz; if bar"]),
+        ("foo", 1, vec!["baz; if bar"]),
         ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
     ]);
 
-    let requirements = provider.requirements(&["foo"]);
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
+}
+
+#[test]
+fn test_conditional_unsolvable() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["baz 2; if bar"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
+}
+
+#[test]
+fn test_conditional_unsolvable_without_condition() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec![]),
+        ("foo", 2, vec!["baz 2; if bar"]), /* This will not be selected because baz 2 conflicts
+                                            * with the requirement. */
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("baz", 2, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz 1"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
+}
+
+#[test]
+fn test_conditional_requirements_version_set() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["baz; if bar 1"]),
+        ("bar", 1, vec![]),
+        ("bar", 2, vec![]),
+        ("baz", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
     assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
 }
 
 #[test]
 #[traced_test]
-fn test_condition_limits_requirement() {
-    let mut provider = BundleBoxProvider::from_packages(&[
-        ("menu", 1, vec!["bla; if intl"]),
-        ("icon", 1, vec![]),
-        ("icon", 2, vec![]),
-        ("intl", 1, vec![]),
-        ("intl", 2, vec![]),
-    ]);
-
-    let requirements = provider.requirements(&["menu"]);
-    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
-}
-
-#[test]
-#[traced_test]
-fn test_condition_is_disabled() {
-    let mut provider = BundleBoxProvider::from_packages(&[
-        ("menu", 1, vec![]),
-        ("menu", 2, vec!["icon; if disabled", "intl"]),
-        ("disabled", 1, vec!["missing"]),
-        ("disabled", 2, vec![]),
-        ("intl", 1, vec![]),
-        ("intl", 2, vec!["disabled"]),
-        ("icon", 1, vec![]),
-    ]);
+fn test_condition_missing_requirement() {
+    let mut provider =
+        BundleBoxProvider::from_packages(&[("menu", 1, vec!["bla; if intl"]), ("intl", 1, vec![])]);
 
     let requirements = provider.requirements(&["menu"]);
     assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));

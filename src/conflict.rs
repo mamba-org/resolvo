@@ -161,10 +161,11 @@ impl Conflict {
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
                 }
-                Clause::AnyOf(_, _) => {
-                    unreachable!(
-                        "an assumption is violated: AnyOf clauses can never make the auxiliary variable turn false, so they can never be part of a conflict."
-                    );
+                Clause::AnyOf(selected, variable) => {
+                    // Assumption: since `AnyOf` of clause can never be false, we dont add an edge
+                    // for it.
+                    let decision_map = solver.state.decision_tracker.map();
+                    debug_assert_ne!(selected.positive().eval(decision_map), Some(false));
                 }
             }
         }

@@ -619,8 +619,12 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
             .push(query_constraints_candidates.boxed_local());
     }
 
-    /// Add forbid clauses for solvables that have not been added to the set of
-    /// forbid clases.
+    /// Add forbid clauses for solvables that we discovered as reachable from a
+    /// requires clause.
+    ///
+    /// The number of forbid clauses for a package is O(n log n) so we only add
+    /// clauses for the packages that are reachable from a requirement as an
+    /// optimization.
     fn add_pending_forbid_clauses(&mut self) {
         for (name_id, candidate_var) in
             self.pending_forbid_clauses
@@ -715,6 +719,8 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
     /// No clause is added to force the auxiliary variable to turn false. This
     /// is on purpose because we dont not need this state to compute a proper
     /// solution.
+    ///
+    /// See [`super::conditions`] for more information about conditions.
     fn add_pending_at_least_one_clauses(&mut self) {
         for (name_id, at_least_one_variable) in self.new_at_least_one_packages.drain(..) {
             // Find the at-most-one tracker for the package. We want to reuse the same

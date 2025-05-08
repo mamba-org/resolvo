@@ -1,8 +1,0 @@
----
-source: tests/solver.rs
-assertion_line: 1530
-expression: "solve_for_snapshot(provider, &requirements, &[])"
----
-foo * cannot be installed because there are no viable options:
-└─ foo 2 would require
-   └─ baz *, for which no candidates were found.
