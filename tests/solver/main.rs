@@ -953,6 +953,76 @@ fn test_conditional_requirements_version_set() {
 }
 
 #[test]
+fn test_conditional_and() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz"]),
+        ("bar", 1, vec![]),
+        ("bar", 2, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![])
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=2
+    baz=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
+fn test_conditional_and_mismatch() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![])
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    foo=1
+    "###);
+}
+
+#[test]
+fn test_conditional_or() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar or baz"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![])
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
+fn test_conditional_complex() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz or menu"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![])
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    baz=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
 #[traced_test]
 fn test_condition_missing_requirement() {
     let mut provider =
