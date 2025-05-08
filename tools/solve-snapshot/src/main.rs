@@ -15,7 +15,9 @@ use rand::{
     prelude::IteratorRandom,
     rngs::StdRng,
 };
-use resolvo::{Problem, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot, ConditionalRequirement};
+use resolvo::{
+    ConditionalRequirement, Problem, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot,
+};
 
 #[derive(Parser)]
 #[clap(version = "0.1.0", author = "Bas Zalmstra <zalmstra.bas@gmail.com>")]
@@ -122,7 +124,10 @@ fn main() {
         let problem_name = requirements
             .iter()
             .format_with("\n", |requirement, f| {
-                f(&format_args!("{}", requirement.requirement.display(&provider)))
+                f(&format_args!(
+                    "{}",
+                    requirement.requirement.display(&provider)
+                ))
             })
             .to_string();
 
