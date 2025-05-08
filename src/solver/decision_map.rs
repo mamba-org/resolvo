@@ -43,6 +43,11 @@ pub(crate) struct DecisionMap {
 }
 
 impl DecisionMap {
+    #[cfg(feature = "diagnostics")]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn reset(&mut self, variable_id: VariableId) {
         let variable_id = variable_id.to_usize();
         if variable_id < self.map.len() {

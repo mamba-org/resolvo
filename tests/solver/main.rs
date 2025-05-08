@@ -12,7 +12,7 @@ use resolvo::{
 use tracing_test::traced_test;
 
 /// Create a string from a [`Transaction`]
-fn transaction_to_string(interner: &impl Interner, solvables: &Vec<SolvableId>) -> String {
+fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
     for solvable in solvables

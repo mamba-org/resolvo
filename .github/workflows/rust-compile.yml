@@ -40,7 +40,7 @@ jobs:
       - name: Run rustfmt
         uses: actions-rust-lang/rustfmt@559aa3035a47390ba96088dffa783b5d26da9326 # v1
       - name: Run clippy
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-features
 
   test:
     name: Test
@@ -54,6 +54,6 @@ jobs:
         with:
           components: rustfmt
       - name: Build
-        run: cargo build 
+        run: cargo build --all-features
       - name: Run tests
-        run: cargo test --workspace -- --nocapture
+        run: cargo test --workspace --all-features -- --nocapture

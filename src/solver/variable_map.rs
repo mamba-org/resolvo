@@ -74,6 +74,17 @@ impl VariableMap {
         }
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub fn count(&self) -> usize {
+        self.next_id
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn size_in_bytes(&self) -> usize {
+        self.origins.capacity() * std::mem::size_of::<(VariableId, VariableOrigin)>()
+            + self.solvable_to_variable.capacity() * std::mem::size_of::<(SolvableId, VariableId)>()
+    }
+
     /// Allocate a variable for a solvable or the root.
     pub fn intern_solvable_or_root(&mut self, solvable_or_root_id: SolvableOrRootId) -> VariableId {
         match solvable_or_root_id.solvable() {

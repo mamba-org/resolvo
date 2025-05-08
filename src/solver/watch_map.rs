@@ -13,6 +13,16 @@ pub(crate) struct WatchMap {
 }
 
 impl WatchMap {
+    #[cfg(feature = "diagnostics")]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn size_in_bytes(&self) -> usize {
+        self.map.size_in_bytes()
+    }
+
     /// Add the clause to the linked list of the literals that the clause is
     /// watching.
     pub(crate) fn start_watching(&mut self, clause: &mut WatchedLiterals, clause_id: ClauseId) {
