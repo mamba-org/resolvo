@@ -75,7 +75,15 @@ fn main() -> anyhow::Result<()> {
     config.export.body.insert(
         "ConditionalRequirement".to_owned(),
         r"
-    constexpr ConditionalRequirement(Requirement requirement) : requirement(requirement), condition(nullptr) {};
+    /**
+     * Constructs a new conditional requirement with the specified condition
+     * and requirement.
+     */
+    constexpr ConditionalRequirement(const ConditionId *condition, Requirement &&requirement) : condition(condition), requirement(std::forward<Requirement>(requirement)) {};
+    /**
+     * Constructs a new conditional requirement without a condition.
+     */
+    constexpr ConditionalRequirement(Requirement &&requirement) : requirement(std::forward<Requirement>(requirement)), condition(nullptr) {};
         ".to_owned());
 
     cbindgen::Builder::new()

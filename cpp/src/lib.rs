@@ -392,7 +392,8 @@ pub struct DependencyProvider {
     pub version_sets_in_union: unsafe extern "C" fn(
         data: *mut c_void,
         version_set_union_id: VersionSetUnionId,
-    ) -> Slice<'static, VersionSetId>,
+        result: NonNull<Slice<'static, VersionSetId>>,
+    ),
 
     /// Returns the condition that the given condition id describes
     pub resolve_condition:
@@ -489,11 +490,19 @@ impl resolvo::Interner for &DependencyProvider {
         &self,
         version_set_union: resolvo::VersionSetUnionId,
     ) -> impl Iterator<Item = resolvo::VersionSetId> {
-        unsafe { (self.version_sets_in_union)(self.data, version_set_union.into()) }
-            .as_slice()
-            .iter()
-            .copied()
-            .map(Into::into)
+        let mut result = MaybeUninit::uninit();
+        unsafe {
+            (self.version_sets_in_union)(
+                self.data,
+                version_set_union.into(),
+                NonNull::new_unchecked(result.as_mut_ptr()),
+            );
+            result.assume_init()
+        }
+        .as_slice()
+        .iter()
+        .copied()
+        .map(Into::into)
     }
 
     fn resolve_condition(&self, condition: resolvo::ConditionId) -> resolvo::Condition {

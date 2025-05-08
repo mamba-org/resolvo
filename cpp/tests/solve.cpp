@@ -233,7 +233,8 @@ SCENARIO("Solve") {
     const auto d_1 = db.alloc_candidate("d", 1, {});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {db.alloc_requirement("a", 1, 3)};
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
+        db.alloc_requirement("a", 1, 3)};
     resolvo::Vector<resolvo::VersionSetId> constraints = {
         db.alloc_version_set("b", 1, 3),
         db.alloc_version_set("c", 1, 3),
@@ -251,6 +252,35 @@ SCENARIO("Solve") {
     REQUIRE(result[0] == a_2);
     REQUIRE(result[1] == b_2);
     REQUIRE(result[2] == c_1);
+}
+
+SCENARIO("Solve conditional") {
+    /// Construct a database with packages a, b, and c.
+    PackageDatabase db;
+
+    auto b_cond_version_set = db.alloc_version_set("b", 1, 3);
+    auto b_cond = db.alloc_condition(
+        resolvo::Condition{resolvo::Condition::Tag::Requirement, {b_cond_version_set}});
+    auto a_cond_req = resolvo::ConditionalRequirement{&b_cond, db.alloc_requirement("a", 1, 3)};
+
+    auto a_1 = db.alloc_candidate("a", 1, {{}, {}});
+    auto b_1 = db.alloc_candidate("b", 1, {{}, {}});
+    auto c_1 = db.alloc_candidate("c", 1, {{a_cond_req}, {}});
+
+    // Construct a problem to be solved by the solver
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
+        db.alloc_requirement("b", 1, 3), db.alloc_requirement("c", 1, 3)};
+
+    // Solve the problem
+    resolvo::Vector<resolvo::SolvableId> result;
+    resolvo::Problem problem = {requirements, {}, {}};
+    resolvo::solve(db, problem, result);
+
+    // Check the result
+    REQUIRE(result.size() == 3);
+    REQUIRE(result[0] == c_1);
+    REQUIRE(result[1] == b_1);
+    REQUIRE(result[2] == a_1);
 }
 
 SCENARIO("Solve Union") {
@@ -288,7 +318,6 @@ SCENARIO("Solve Union") {
     resolvo::Vector<resolvo::SolvableId> result;
     resolvo::Problem problem = {requirements, constraints, {}};
     resolvo::solve(db, problem, result);
-    ;
 
     // Check the result
     REQUIRE(result.size() == 4);
