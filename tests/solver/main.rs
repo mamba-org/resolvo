@@ -959,7 +959,7 @@ fn test_conditional_and() {
         ("bar", 1, vec![]),
         ("bar", 2, vec![]),
         ("baz", 1, vec![]),
-        ("icon", 1, vec![])
+        ("icon", 1, vec![]),
     ]);
 
     let requirements = provider.requirements(&["foo", "bar", "baz"]);
@@ -977,7 +977,7 @@ fn test_conditional_and_mismatch() {
         ("foo", 1, vec!["icon; if bar and baz"]),
         ("bar", 1, vec![]),
         ("baz", 1, vec![]),
-        ("icon", 1, vec![])
+        ("icon", 1, vec![]),
     ]);
 
     let requirements = provider.requirements(&["foo", "bar"]);
@@ -993,7 +993,7 @@ fn test_conditional_or() {
         ("foo", 1, vec!["icon; if bar or baz"]),
         ("bar", 1, vec![]),
         ("baz", 1, vec![]),
-        ("icon", 1, vec![])
+        ("icon", 1, vec![]),
     ]);
 
     let requirements = provider.requirements(&["foo", "bar"]);
@@ -1010,7 +1010,7 @@ fn test_conditional_complex() {
         ("foo", 1, vec!["icon; if bar and baz or menu"]),
         ("bar", 1, vec![]),
         ("baz", 1, vec![]),
-        ("icon", 1, vec![])
+        ("icon", 1, vec![]),
     ]);
 
     let requirements = provider.requirements(&["foo", "bar", "baz"]);
