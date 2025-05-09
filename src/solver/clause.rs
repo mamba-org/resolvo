@@ -59,8 +59,6 @@ pub(crate) enum Clause {
     /// Optionally the requirement can be associated with a condition in the
     /// form of a disjunction.
     ///
-    /// ~A v ~C1 ^ C2 ^ C3 ^ v R
-    ///
     /// In SAT terms: (¬A ∨ ¬D1 v ¬D2 .. v ¬D99 v B1 ∨ B2 ∨ ... ∨ B99), where D1
     /// to D99 represent the candidates of the disjunction and B1 to B99
     /// represent the possible candidates for the provided [`Requirement`].

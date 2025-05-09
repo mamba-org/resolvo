@@ -311,7 +311,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
                             let name_id = self.cache.provider().version_set_name(version_set);
                             let at_least_one_of_var = match self
                                 .state
-                                .at_last_once_tracker
+                                .at_least_one_tracker
                                 .get(&name_id)
                                 .copied()
                                 .or_else(|| self.new_at_least_one_packages.get(&name_id).copied())
@@ -686,7 +686,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
             );
 
             if variable_is_new {
-                if let Some(&at_least_one_variable) = self.state.at_last_once_tracker.get(&name_id)
+                if let Some(&at_least_one_variable) = self.state.at_least_one_tracker.get(&name_id)
                 {
                     let (watched_literals, kind) =
                         WatchedLiterals::any_of(at_least_one_variable, candidate_var);
@@ -754,7 +754,7 @@ impl<'a, 'cache, D: DependencyProvider> Encoder<'a, 'cache, D> {
 
             // Record that we have a variable for this package.
             self.state
-                .at_last_once_tracker
+                .at_least_one_tracker
                 .insert(name_id, at_least_one_variable);
         }
     }

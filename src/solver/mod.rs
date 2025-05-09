@@ -190,7 +190,7 @@ pub(crate) struct SolverState {
 
     /// Keeps track of auxiliary variables that are used to encode at-least-one
     /// solvable for a package.
-    at_last_once_tracker: HashMap<NameId, VariableId>,
+    at_least_one_tracker: HashMap<NameId, VariableId>,
 
     pub(crate) decision_tracker: DecisionTracker,
 
