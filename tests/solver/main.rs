@@ -1034,7 +1034,7 @@ fn test_condition_missing_requirement() {
 }
 
 #[cfg(feature = "serde")]
-fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
+fn serialize_snapshot(snapshot: &resolvo::snapshot::DependencySnapshot, destination: impl AsRef<std::path::Path>) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
     serde_json::to_writer_pretty(file, snapshot).unwrap()
 }
