@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
     /**
      * Constructs a new conditional requirement without a condition.
      */
-    constexpr ConditionalRequirement(Requirement &&requirement) : requirement(std::forward<Requirement>(requirement)), condition(nullptr) {};
+    constexpr ConditionalRequirement(Requirement &&requirement) : condition(nullptr), requirement(std::forward<Requirement>(requirement)) {};
         ".to_owned());
     config.export.body.insert(
         "Requirement".to_owned(),
