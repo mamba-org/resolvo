@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.9.1...resolvo-v0.9.2) - 2025-05-09
+
+### Other
+
+- *(ci)* bump prefix-dev/setup-pixi from 0.8.7 to 0.8.8 ([#130](https://github.com/prefix-dev/resolvo/pull/130))
+- *(ci)* bump MarcoIeni/release-plz-action from 0.5.104 to 0.5.105 ([#129](https://github.com/prefix-dev/resolvo/pull/129))
+
 ## [0.9.1](https://github.com/prefix-dev/resolvo/compare/resolvo-v0.9.0...resolvo-v0.9.1) - 2025-05-05
 
 ### Fixed
