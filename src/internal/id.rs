@@ -64,7 +64,7 @@ impl ArenaId for VersionSetId {
 pub struct ConditionId(NonZero<u32>);
 
 impl ConditionId {
-    /// Creates a new `ConditionId` from a `u32`, panicking if the value is zero.
+    /// Creates a new `ConditionId` from a `u32`
     pub fn new(id: u32) -> Self {
         Self::from_usize(id as usize)
     }
