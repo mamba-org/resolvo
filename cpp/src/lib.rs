@@ -191,31 +191,46 @@ pub enum Condition {
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Requirement(VersionSetId),
-    /// The condition is the combination of two other conditions using a logical
-    /// and operator. E.g. both conditions must be true for the condition to
-    /// be true.
+
+    /// Combines two conditions using a logical operator.
     ///
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
-    And(ConditionId, ConditionId),
-    /// The condition is the combination of two other conditions using a logical
-    /// or operator. E.g. if one of the conditions is true the entire condition
-    /// is true.
-    ///
-    /// cbindgen:derive-eq
-    /// cbindgen:derive-neq
-    Or(ConditionId, ConditionId),
+    Binary(LogicalOperator, ConditionId, ConditionId),
+}
+
+/// Defines how multiple conditions are compared to each other.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+impl From<resolvo::LogicalOperator> for LogicalOperator {
+    fn from(value: resolvo::LogicalOperator) -> Self {
+        match value {
+            resolvo::LogicalOperator::And => LogicalOperator::And,
+            resolvo::LogicalOperator::Or => LogicalOperator::Or,
+        }
+    }
+}
+
+impl From<LogicalOperator> for resolvo::LogicalOperator {
+    fn from(value: LogicalOperator) -> Self {
+        match value {
+            LogicalOperator::And => resolvo::LogicalOperator::And,
+            LogicalOperator::Or => resolvo::LogicalOperator::Or,
+        }
+    }
 }
 
 impl From<resolvo::Condition> for Condition {
     fn from(value: resolvo::Condition) -> Self {
         match value {
             resolvo::Condition::Requirement(id) => Condition::Requirement(id.into()),
-            resolvo::Condition::Binary(resolvo::LogicalOperator::And, lhs, rhs) => {
-                Condition::And(lhs.into(), rhs.into())
-            }
-            resolvo::Condition::Binary(resolvo::LogicalOperator::Or, lhs, rhs) => {
-                Condition::Or(lhs.into(), rhs.into())
+            resolvo::Condition::Binary(op, lhs, rhs) => {
+                Condition::Binary(op.into(), lhs.into(), rhs.into())
             }
         }
     }
@@ -225,11 +240,8 @@ impl From<Condition> for resolvo::Condition {
     fn from(value: Condition) -> Self {
         match value {
             Condition::Requirement(id) => resolvo::Condition::Requirement(id.into()),
-            Condition::And(lhs, rhs) => {
-                resolvo::Condition::Binary(resolvo::LogicalOperator::And, lhs.into(), rhs.into())
-            }
-            Condition::Or(lhs, rhs) => {
-                resolvo::Condition::Binary(resolvo::LogicalOperator::Or, lhs.into(), rhs.into())
+            Condition::Binary(op, lhs, rhs) => {
+                resolvo::Condition::Binary(op.into(), lhs.into(), rhs.into())
             }
         }
     }
@@ -667,20 +679,6 @@ pub extern "C" fn resolvo_solve(
             false
         }
     }
-}
-
-#[unsafe(no_mangle)]
-#[allow(unused)]
-pub extern "C" fn resolvo_requirement_single(version_set_id: VersionSetId) -> Requirement {
-    Requirement::Single(version_set_id)
-}
-
-#[unsafe(no_mangle)]
-#[allow(unused)]
-pub extern "C" fn resolvo_requirement_union(
-    version_set_union_id: VersionSetUnionId,
-) -> Requirement {
-    Requirement::Union(version_set_union_id)
 }
 
 #[cfg(test)]

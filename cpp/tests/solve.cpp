@@ -52,7 +52,7 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     resolvo::Requirement alloc_requirement(std::string_view package, uint32_t version_start,
                                            uint32_t version_end) {
         auto id = alloc_version_set(package, version_start, version_end);
-        return resolvo::requirement_single(id);
+        return {id};
     }
 
     /**
@@ -68,9 +68,9 @@ struct PackageDatabase : public resolvo::DependencyProvider {
             version_set_union[i] = alloc_version_set(package, version_start, version_end);
         }
 
-        auto id = resolvo::VersionSetUnionId{static_cast<uint32_t>(version_set_unions.size())};
+        resolvo::VersionSetUnionId id = {static_cast<uint32_t>(version_set_unions.size())};
         version_set_unions.push_back(std::move(version_set_union));
-        return resolvo::requirement_union(id);
+        return {id};
     }
 
     /**
@@ -259,8 +259,7 @@ SCENARIO("Solve conditional") {
     PackageDatabase db;
 
     auto b_cond_version_set = db.alloc_version_set("b", 1, 3);
-    auto b_cond = db.alloc_condition(
-        resolvo::Condition{resolvo::Condition::Tag::Requirement, {b_cond_version_set}});
+    auto b_cond = db.alloc_condition({b_cond_version_set});
     auto a_cond_req = resolvo::ConditionalRequirement{&b_cond, db.alloc_requirement("a", 1, 3)};
 
     auto a_1 = db.alloc_candidate("a", 1, {{}, {}});
@@ -317,7 +316,7 @@ SCENARIO("Solve Union") {
     // Solve the problem
     resolvo::Vector<resolvo::SolvableId> result;
     resolvo::Problem problem = {requirements, constraints, {}};
-    resolvo::solve(db, problem, result);
+    auto error = resolvo::solve(db, problem, result);
 
     // Check the result
     REQUIRE(result.size() == 4);

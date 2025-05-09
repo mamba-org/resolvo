@@ -7,7 +7,7 @@ use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
     ConditionalRequirement, DependencyProvider, Interner, Problem, SolvableId, Solver,
-    UnsolvableOrCancelled, VersionSetId, snapshot::DependencySnapshot,
+    UnsolvableOrCancelled, VersionSetId,
 };
 use tracing_test::traced_test;
 
@@ -175,6 +175,7 @@ fn test_resolve_with_concurrent_metadata_fetching() {
 
 /// In case of a conflict the version should not be selected with the conflict
 #[test]
+#[traced_test]
 fn test_resolve_with_conflict() {
     let provider = BundleBoxProvider::from_packages(&[
         ("asdf", 4, vec!["conflicting 1"]),

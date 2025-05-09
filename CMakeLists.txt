@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FeatureSummary)
 
-option(RESOLVO_BUILD_TESTING "Build tests" ON)
+option(RESOLVO_BUILD_TESTING "Build tests" OFF)
 add_feature_info(RESOLVO_BUILD_TESTING RESOLVO_BUILD_TESTING
                  "configure whether to build the test suite")
 include(CTest)

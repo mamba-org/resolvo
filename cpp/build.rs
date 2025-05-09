@@ -85,6 +85,25 @@ fn main() -> anyhow::Result<()> {
      */
     constexpr ConditionalRequirement(Requirement &&requirement) : requirement(std::forward<Requirement>(requirement)), condition(nullptr) {};
         ".to_owned());
+    config.export.body.insert(
+        "Requirement".to_owned(),
+        r"
+    constexpr Requirement(VersionSetId id) : tag(Tag::Single), single({id}) {};
+    constexpr Requirement(VersionSetUnionId id) : tag(Tag::Union), union_({id}) {};
+
+    constexpr bool is_union() const { return tag == Tag::Union; }
+    constexpr bool is_single() const { return tag == Tag::Single; }
+        ".to_owned());
+
+    config.export.body.insert(
+        "Condition".to_owned(),
+        r"
+    constexpr Condition(VersionSetId id) : tag(Tag::Requirement), requirement({id}) {};
+    constexpr Condition(LogicalOperator op, ConditionId lhs, ConditionId rhs) : tag(Tag::Binary), binary({op, lhs, rhs}) {};
+
+    constexpr bool is_binary() const { return tag == Tag::Requirement; }
+    constexpr bool is_requirement() const { return tag == Tag::Binary; }
+        ".to_owned());
 
     cbindgen::Builder::new()
         .with_config(config.clone())
