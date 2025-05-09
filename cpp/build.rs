@@ -93,7 +93,9 @@ fn main() -> anyhow::Result<()> {
 
     constexpr bool is_union() const { return tag == Tag::Union; }
     constexpr bool is_single() const { return tag == Tag::Single; }
-        ".to_owned());
+        "
+        .to_owned(),
+    );
 
     config.export.body.insert(
         "Condition".to_owned(),
