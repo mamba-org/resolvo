@@ -1,539 +1,15 @@
-use std::{
-    any::Any,
-    borrow::Borrow,
-    cell::{Cell, RefCell},
-    collections::HashSet,
-    fmt::{Debug, Display, Formatter},
-    io::{Write, stderr},
-    num::ParseIntError,
-    rc::Rc,
-    str::FromStr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+mod bundle_box;
 
-use ahash::HashMap;
-use indexmap::IndexMap;
+use std::io::{Write, stderr};
+
+use bundle_box::{BundleBoxProvider, Pack};
 use insta::assert_snapshot;
 use itertools::Itertools;
 use resolvo::{
-    Candidates, Dependencies, DependencyProvider, Interner, KnownDependencies, NameId, Problem,
-    Requirement, SolvableId, Solver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
-    VersionSetUnionId,
-    snapshot::{DependencySnapshot, SnapshotProvider},
-    utils::Pool,
+    ConditionalRequirement, DependencyProvider, Interner, Problem, SolvableId, Solver,
+    UnsolvableOrCancelled, VersionSetId,
 };
 use tracing_test::traced_test;
-use version_ranges::Ranges;
-
-// Let's define our own packaging version system and dependency specification.
-// This is a very simple version system, where a package is identified by a name
-// and a version in which the version is just an integer. The version is a range
-// so can be noted as 0..2 or something of the sorts, we also support constrains
-// which means it should not use that package version this is also represented
-// with a range.
-//
-// You can also use just a single number for a range like `package 0` which
-// means the range from 0..1 (excluding the end)
-//
-// Lets call the tuples of (Name, Version) a `Pack` and the tuples of (Name,
-// Ranges<u32>) a `Spec`
-//
-// We also need to create a custom provider that tells us how to sort the
-// candidates. This is unique to each packaging ecosystem. Let's call our
-// ecosystem 'BundleBox' so that how we call the provider as well.
-
-/// This is `Pack` which is a unique version and name in our bespoke packaging
-/// system
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Hash)]
-struct Pack {
-    version: u32,
-    unknown_deps: bool,
-    cancel_during_get_dependencies: bool,
-}
-
-impl Pack {
-    fn new(version: u32) -> Pack {
-        Pack {
-            version,
-            unknown_deps: false,
-            cancel_during_get_dependencies: false,
-        }
-    }
-
-    fn with_unknown_deps(mut self) -> Pack {
-        self.unknown_deps = true;
-        self
-    }
-
-    fn cancel_during_get_dependencies(mut self) -> Pack {
-        self.cancel_during_get_dependencies = true;
-        self
-    }
-
-    fn offset(&self, version_offset: i32) -> Pack {
-        let mut pack = *self;
-        pack.version = pack.version.wrapping_add_signed(version_offset);
-        pack
-    }
-}
-
-impl From<u32> for Pack {
-    fn from(value: u32) -> Self {
-        Pack::new(value)
-    }
-}
-
-impl From<i32> for Pack {
-    fn from(value: i32) -> Self {
-        Pack::new(value as u32)
-    }
-}
-
-impl Display for Pack {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.version)
-    }
-}
-
-impl FromStr for Pack {
-    type Err = ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        u32::from_str(s).map(Pack::new)
-    }
-}
-
-/// We can use this to see if a `Pack` is contained in a range of package
-/// versions or a `Spec`
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Spec {
-    name: String,
-    versions: Ranges<Pack>,
-}
-
-impl Spec {
-    pub fn new(name: String, versions: Ranges<Pack>) -> Self {
-        Self { name, versions }
-    }
-
-    pub fn parse_union(
-        spec: &str,
-    ) -> impl Iterator<Item = Result<Self, <Self as FromStr>::Err>> + '_ {
-        spec.split('|').map(str::trim).map(Spec::from_str)
-    }
-}
-
-impl FromStr for Spec {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split(' ').collect::<Vec<_>>();
-        let name = split
-            .first()
-            .expect("spec does not have a name")
-            .to_string();
-
-        fn version_range(s: Option<&&str>) -> Ranges<Pack> {
-            if let Some(s) = s {
-                let (start, end) = s
-                    .split_once("..")
-                    .map_or((*s, None), |(start, end)| (start, Some(end)));
-                let start: Pack = start.parse().unwrap();
-                let end = end
-                    .map(FromStr::from_str)
-                    .transpose()
-                    .unwrap()
-                    .unwrap_or(start.offset(1));
-                Ranges::between(start, end)
-            } else {
-                Ranges::full()
-            }
-        }
-
-        let versions = version_range(split.get(1));
-
-        Ok(Spec::new(name, versions))
-    }
-}
-
-/// This provides sorting functionality for our `BundleBox` packaging system
-#[derive(Default)]
-struct BundleBoxProvider {
-    pool: Pool<Ranges<Pack>>,
-    packages: IndexMap<String, IndexMap<Pack, BundleBoxPackageDependencies>>,
-    favored: HashMap<String, Pack>,
-    locked: HashMap<String, Pack>,
-    excluded: HashMap<String, HashMap<Pack, String>>,
-    cancel_solving: Cell<bool>,
-    // TODO: simplify?
-    concurrent_requests: Arc<AtomicUsize>,
-    concurrent_requests_max: Rc<Cell<usize>>,
-    sleep_before_return: bool,
-
-    // A mapping of packages that we have requested candidates for. This way we can keep track of
-    // duplicate requests.
-    requested_candidates: RefCell<HashSet<NameId>>,
-    requested_dependencies: RefCell<HashSet<SolvableId>>,
-    interned_solvables: RefCell<HashMap<(NameId, Pack), SolvableId>>,
-}
-
-#[derive(Debug, Clone)]
-struct BundleBoxPackageDependencies {
-    dependencies: Vec<Vec<Spec>>,
-    constrains: Vec<Spec>,
-}
-
-impl BundleBoxProvider {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn package_name(&self, name: &str) -> NameId {
-        self.pool
-            .lookup_package_name(&name.to_string())
-            .expect("package missing")
-    }
-
-    pub fn requirements<R: From<VersionSetId>>(&self, requirements: &[&str]) -> Vec<R> {
-        requirements
-            .iter()
-            .map(|dep| Spec::from_str(dep).unwrap())
-            .map(|spec| self.intern_version_set(&spec))
-            .map(From::from)
-            .collect()
-    }
-
-    pub fn parse_requirements(&self, requirements: &[&str]) -> Vec<Requirement> {
-        requirements
-            .iter()
-            .map(|deps| {
-                let specs = Spec::parse_union(deps).map(Result::unwrap);
-                self.intern_version_set_union(specs).into()
-            })
-            .collect()
-    }
-
-    pub fn intern_version_set(&self, spec: &Spec) -> VersionSetId {
-        let dep_name = self.pool.intern_package_name(&spec.name);
-        self.pool
-            .intern_version_set(dep_name, spec.versions.clone())
-    }
-
-    pub fn intern_version_set_union(
-        &self,
-        specs: impl IntoIterator<Item = impl Borrow<Spec>>,
-    ) -> VersionSetUnionId {
-        let mut specs = specs
-            .into_iter()
-            .map(|spec| self.intern_version_set(spec.borrow()));
-        self.pool
-            .intern_version_set_union(specs.next().unwrap(), specs)
-    }
-
-    pub fn from_packages(packages: &[(&str, u32, Vec<&str>)]) -> Self {
-        let mut result = Self::new();
-        for (name, version, deps) in packages {
-            result.add_package(name, Pack::new(*version), deps, &[]);
-        }
-        result
-    }
-
-    pub fn set_favored(&mut self, package_name: &str, version: u32) {
-        self.favored
-            .insert(package_name.to_owned(), Pack::new(version));
-    }
-
-    pub fn exclude(&mut self, package_name: &str, version: u32, reason: impl Into<String>) {
-        self.excluded
-            .entry(package_name.to_owned())
-            .or_default()
-            .insert(Pack::new(version), reason.into());
-    }
-
-    pub fn set_locked(&mut self, package_name: &str, version: u32) {
-        self.locked
-            .insert(package_name.to_owned(), Pack::new(version));
-    }
-
-    pub fn add_package(
-        &mut self,
-        package_name: &str,
-        package_version: Pack,
-        dependencies: &[&str],
-        constrains: &[&str],
-    ) {
-        self.pool.intern_package_name(package_name);
-
-        let dependencies = dependencies
-            .iter()
-            .map(|dep| Spec::parse_union(dep).collect())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-
-        let constrains = constrains
-            .iter()
-            .map(|dep| Spec::from_str(dep))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-
-        self.packages
-            .entry(package_name.to_owned())
-            .or_default()
-            .insert(
-                package_version,
-                BundleBoxPackageDependencies {
-                    dependencies,
-                    constrains,
-                },
-            );
-    }
-
-    // Sends a value from the dependency provider to the solver, introducing a
-    // minimal delay to force concurrency to be used (unless there is no async
-    // runtime available)
-    async fn maybe_delay<T: Send + 'static>(&self, value: T) -> T {
-        if self.sleep_before_return {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            self.concurrent_requests.fetch_sub(1, Ordering::SeqCst);
-            value
-        } else {
-            value
-        }
-    }
-
-    pub fn into_snapshot(self) -> DependencySnapshot {
-        let name_ids = self
-            .packages
-            .keys()
-            .filter_map(|name| self.pool.lookup_package_name(name))
-            .collect::<Vec<_>>();
-        DependencySnapshot::from_provider(self, name_ids, [], []).unwrap()
-    }
-
-    pub fn intern_solvable(&self, name_id: NameId, pack: Pack) -> SolvableId {
-        *self
-            .interned_solvables
-            .borrow_mut()
-            .entry((name_id, pack))
-            .or_insert_with_key(|&(name_id, pack)| self.pool.intern_solvable(name_id, pack))
-    }
-
-    pub fn solvable_id(&self, name: impl Into<String>, version: impl Into<Pack>) -> SolvableId {
-        self.intern_solvable(self.pool.intern_package_name(name.into()), version.into())
-    }
-}
-
-impl Interner for BundleBoxProvider {
-    fn display_solvable(&self, solvable: SolvableId) -> impl Display + '_ {
-        let solvable = self.pool.resolve_solvable(solvable);
-        format!("{}={}", self.display_name(solvable.name), solvable.record)
-    }
-
-    fn display_merged_solvables(&self, solvables: &[SolvableId]) -> impl Display + '_ {
-        if solvables.is_empty() {
-            return "".to_string();
-        }
-
-        let name = self.display_name(self.pool.resolve_solvable(solvables[0]).name);
-        let versions = solvables
-            .iter()
-            .map(|&s| self.pool.resolve_solvable(s).record.version)
-            .sorted();
-        format!("{name} {}", versions.format(" | "))
-    }
-
-    fn display_name(&self, name: NameId) -> impl Display + '_ {
-        self.pool.resolve_package_name(name).clone()
-    }
-
-    fn display_version_set(&self, version_set: VersionSetId) -> impl Display + '_ {
-        self.pool.resolve_version_set(version_set).clone()
-    }
-
-    fn display_string(&self, string_id: StringId) -> impl Display + '_ {
-        self.pool.resolve_string(string_id).to_owned()
-    }
-
-    fn version_set_name(&self, version_set: VersionSetId) -> NameId {
-        self.pool.resolve_version_set_package_name(version_set)
-    }
-
-    fn solvable_name(&self, solvable: SolvableId) -> NameId {
-        self.pool.resolve_solvable(solvable).name
-    }
-    fn version_sets_in_union(
-        &self,
-        version_set_union: VersionSetUnionId,
-    ) -> impl Iterator<Item = VersionSetId> {
-        self.pool.resolve_version_set_union(version_set_union)
-    }
-}
-
-impl DependencyProvider for BundleBoxProvider {
-    async fn filter_candidates(
-        &self,
-        candidates: &[SolvableId],
-        version_set: VersionSetId,
-        inverse: bool,
-    ) -> Vec<SolvableId> {
-        let range = self.pool.resolve_version_set(version_set);
-        candidates
-            .iter()
-            .copied()
-            .filter(|s| range.contains(&self.pool.resolve_solvable(*s).record) != inverse)
-            .collect()
-    }
-
-    async fn sort_candidates(&self, _solver: &SolverCache<Self>, solvables: &mut [SolvableId]) {
-        solvables.sort_by(|a, b| {
-            let a = self.pool.resolve_solvable(*a).record;
-            let b = self.pool.resolve_solvable(*b).record;
-            // We want to sort with highest version on top
-            b.version.cmp(&a.version)
-        });
-    }
-
-    async fn get_candidates(&self, name: NameId) -> Option<Candidates> {
-        let concurrent_requests = self.concurrent_requests.fetch_add(1, Ordering::SeqCst);
-        self.concurrent_requests_max.set(
-            self.concurrent_requests_max
-                .get()
-                .max(concurrent_requests + 1),
-        );
-
-        assert!(
-            self.requested_candidates.borrow_mut().insert(name),
-            "duplicate get_candidates request"
-        );
-
-        let package_name = self.pool.resolve_package_name(name);
-        let Some(package) = self.packages.get(package_name) else {
-            return self.maybe_delay(None).await;
-        };
-
-        let mut candidates = Candidates {
-            candidates: Vec::with_capacity(package.len()),
-            ..Candidates::default()
-        };
-        let favor = self.favored.get(package_name);
-        let locked = self.locked.get(package_name);
-        let excluded = self.excluded.get(package_name);
-        for pack in package.keys() {
-            let solvable = self.intern_solvable(name, *pack);
-            candidates.candidates.push(solvable);
-            if Some(pack) == favor {
-                candidates.favored = Some(solvable);
-            }
-            if Some(pack) == locked {
-                candidates.locked = Some(solvable);
-            }
-            if let Some(excluded) = excluded.and_then(|d| d.get(pack)) {
-                candidates
-                    .excluded
-                    .push((solvable, self.pool.intern_string(excluded)));
-            }
-        }
-
-        self.maybe_delay(Some(candidates)).await
-    }
-
-    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
-        tracing::info!(
-            "get dependencies for {}",
-            self.pool
-                .resolve_solvable(solvable)
-                .name
-                .display(&self.pool)
-        );
-
-        let concurrent_requests = self.concurrent_requests.fetch_add(1, Ordering::SeqCst);
-        self.concurrent_requests_max.set(
-            self.concurrent_requests_max
-                .get()
-                .max(concurrent_requests + 1),
-        );
-
-        assert!(
-            self.requested_dependencies.borrow_mut().insert(solvable),
-            "duplicate get_dependencies request"
-        );
-
-        let candidate = self.pool.resolve_solvable(solvable);
-        let package_name = self.pool.resolve_package_name(candidate.name);
-        let pack = candidate.record;
-
-        if pack.cancel_during_get_dependencies {
-            self.cancel_solving.set(true);
-            let reason = self.pool.intern_string("cancelled");
-            return self.maybe_delay(Dependencies::Unknown(reason)).await;
-        }
-
-        if pack.unknown_deps {
-            let reason = self.pool.intern_string("could not retrieve deps");
-            return self.maybe_delay(Dependencies::Unknown(reason)).await;
-        }
-
-        let Some(deps) = self.packages.get(package_name).and_then(|v| v.get(&pack)) else {
-            return self
-                .maybe_delay(Dependencies::Known(Default::default()))
-                .await;
-        };
-
-        let mut result = KnownDependencies {
-            requirements: Vec::with_capacity(deps.dependencies.len()),
-            constrains: Vec::with_capacity(deps.constrains.len()),
-        };
-        for req in &deps.dependencies {
-            let mut remaining_req_specs = req.iter();
-
-            let first = remaining_req_specs
-                .next()
-                .expect("Dependency spec must have at least one constraint");
-
-            let first_name = self.pool.intern_package_name(&first.name);
-            let first_version_set = self
-                .pool
-                .intern_version_set(first_name, first.versions.clone());
-
-            let requirement = if remaining_req_specs.len() == 0 {
-                first_version_set.into()
-            } else {
-                let other_version_sets = remaining_req_specs.map(|spec| {
-                    self.pool.intern_version_set(
-                        self.pool.intern_package_name(&spec.name),
-                        spec.versions.clone(),
-                    )
-                });
-
-                self.pool
-                    .intern_version_set_union(first_version_set, other_version_sets)
-                    .into()
-            };
-
-            result.requirements.push(requirement);
-        }
-
-        for req in &deps.constrains {
-            let dep_name = self.pool.intern_package_name(&req.name);
-            let dep_spec = self.pool.intern_version_set(dep_name, req.versions.clone());
-            result.constrains.push(dep_spec);
-        }
-
-        self.maybe_delay(Dependencies::Known(result)).await
-    }
-
-    fn should_cancel_with_value(&self) -> Option<Box<dyn Any>> {
-        if self.cancel_solving.get() {
-            Some(Box::new("cancelled!".to_string()))
-        } else {
-            None
-        }
-    }
-}
 
 /// Create a string from a [`Transaction`]
 fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> String {
@@ -552,7 +28,7 @@ fn transaction_to_string(interner: &impl Interner, solvables: &[SolvableId]) -> 
 }
 
 /// Unsat so that we can view the conflict
-fn solve_unsat(provider: BundleBoxProvider, specs: &[&str]) -> String {
+fn solve_unsat(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
     let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -586,7 +62,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 
     provider.sleep_before_return = true;
 
-    let requirements = provider.parse_requirements(specs);
+    let requirements = provider.requirements(specs);
     let mut solver = Solver::new(provider).with_runtime(runtime);
     let problem = Problem::new().requirements(requirements);
     match solver.solve(problem) {
@@ -611,7 +87,7 @@ fn solve_snapshot(mut provider: BundleBoxProvider, specs: &[&str]) -> String {
 /// Test whether we can select a version, this is the most basic operation
 #[test]
 fn test_unit_propagation_1() {
-    let provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
+    let mut provider = BundleBoxProvider::from_packages(&[("asdf", 1, vec![])]);
     let requirements = provider.requirements(&["asdf"]);
     let mut solver = Solver::new(provider);
     let problem = Problem::new().requirements(requirements);
@@ -628,7 +104,7 @@ fn test_unit_propagation_1() {
 /// Test if we can also select a nested version
 #[test]
 fn test_unit_propagation_nested() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         ("asdf", 1u32, vec!["efgh"]),
         ("efgh", 4u32, vec![]),
         ("dummy", 6u32, vec![]),
@@ -655,7 +131,7 @@ fn test_unit_propagation_nested() {
 /// Test if we can resolve multiple versions at once
 #[test]
 fn test_resolve_multiple() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         ("asdf", 1, vec![]),
         ("asdf", 2, vec![]),
         ("efgh", 4, vec![]),
@@ -699,6 +175,7 @@ fn test_resolve_with_concurrent_metadata_fetching() {
 
 /// In case of a conflict the version should not be selected with the conflict
 #[test]
+#[traced_test]
 fn test_resolve_with_conflict() {
     let provider = BundleBoxProvider::from_packages(&[
         ("asdf", 4, vec!["conflicting 1"]),
@@ -716,7 +193,7 @@ fn test_resolve_with_conflict() {
 #[test]
 #[traced_test]
 fn test_resolve_with_nonexisting() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         ("asdf", 4, vec!["b"]),
         ("asdf", 3, vec![]),
         ("b", 1, vec!["idontexist"]),
@@ -738,7 +215,7 @@ fn test_resolve_with_nonexisting() {
 #[test]
 #[traced_test]
 fn test_resolve_with_nested_deps() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         (
             "apache-airflow",
             3,
@@ -907,7 +384,7 @@ fn test_resolve_favor_with_conflict() {
 
 #[test]
 fn test_resolve_cyclic() {
-    let provider =
+    let mut provider =
         BundleBoxProvider::from_packages(&[("a", 2, vec!["b 0..10"]), ("b", 5, vec!["a 2..4"])]);
     let requirements = provider.requirements(&["a 0..100"]);
     let mut solver = Solver::new(provider);
@@ -1188,14 +665,14 @@ fn test_root_excluded() {
 
 #[test]
 fn test_constraints() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         ("a", 1, vec!["b 0..10"]),
         ("b", 1, vec![]),
         ("b", 2, vec![]),
         ("c", 1, vec![]),
     ]);
     let requirements = provider.requirements(&["a 0..10"]);
-    let constraints = provider.requirements(&["b 1..2", "c"]);
+    let constraints = provider.version_sets(&["b 1..2", "c"]);
     let mut solver = Solver::new(provider);
     let problem = Problem::new()
         .requirements(requirements)
@@ -1225,7 +702,7 @@ fn test_solve_with_additional() {
     provider.set_locked("locked", 2);
 
     let requirements = provider.requirements(&["a 0..10"]);
-    let constraints = provider.requirements(&["b 1..2", "c"]);
+    let constraints = provider.version_sets(&["b 1..2", "c"]);
 
     let extra_solvables = [
         provider.solvable_id("b", 2),
@@ -1277,7 +754,7 @@ fn test_solve_with_additional_with_constrains() {
     provider.add_package("l", 1.into(), &["j", "k"], &[]);
 
     let requirements = provider.requirements(&["a 0..10", "e"]);
-    let constraints = provider.requirements(&["b 1..2", "c", "k 2..3"]);
+    let constraints = provider.version_sets(&["b 1..2", "c", "k 2..3"]);
 
     let extra_solvables = [
         provider.solvable_id("d", 1),
@@ -1315,7 +792,7 @@ fn test_snapshot() {
         ("menu", 15, vec!["dropdown 2..3"]),
         ("menu", 10, vec!["dropdown 1..2"]),
         ("dropdown", 2, vec!["icons 2"]),
-        ("dropdown", 1, vec!["intl 3"]),
+        ("dropdown", 1, vec!["intl 3; if menu"]),
         ("icons", 2, vec![]),
         ("icons", 1, vec![]),
         ("intl", 5, vec![]),
@@ -1330,15 +807,16 @@ fn test_snapshot() {
     serialize_snapshot(&snapshot, "snapshot_pubgrub_menu.json");
 
     let mut snapshot_provider = snapshot.provider();
-
-    let menu_req = snapshot_provider.add_package_requirement(menu_name_id, "*");
+    let menu_req = snapshot_provider
+        .add_package_requirement(menu_name_id, "*")
+        .into();
 
     assert_snapshot!(solve_for_snapshot(snapshot_provider, &[menu_req], &[]));
 }
 
 #[test]
 fn test_snapshot_union_requirements() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         ("icons", 2, vec![]),
         ("icons", 1, vec![]),
         ("intl", 5, vec![]),
@@ -1346,21 +824,9 @@ fn test_snapshot_union_requirements() {
         ("union", 1, vec!["icons 2 | intl"]),
     ]);
 
-    let intl_name_id = provider.package_name("intl");
-    let union_name_id = provider.package_name("union");
+    let requirements = provider.requirements(&["intl", "union"]);
 
-    let snapshot = provider.into_snapshot();
-
-    let mut snapshot_provider = snapshot.provider();
-
-    let intl_req = snapshot_provider.add_package_requirement(intl_name_id, "*");
-    let union_req = snapshot_provider.add_package_requirement(union_name_id, "*");
-
-    assert_snapshot!(solve_for_snapshot(
-        snapshot_provider,
-        &[intl_req, union_req],
-        &[]
-    ));
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]));
 }
 
 #[test]
@@ -1376,28 +842,18 @@ fn test_union_empty_requirements() {
 
 #[test]
 fn test_root_constraints() {
-    let provider =
+    let mut provider =
         BundleBoxProvider::from_packages(&[("icons", 1, vec![]), ("union", 1, vec!["icons"])]);
 
-    let union_name_id = provider.package_name("union");
+    let requirements = provider.requirements(&["union"]);
+    let constraints = provider.version_sets(&["union 5"]);
 
-    let snapshot = provider.into_snapshot();
-
-    let mut snapshot_provider = snapshot.provider();
-
-    let union_req = snapshot_provider.add_package_requirement(union_name_id, "*");
-    let union_constraint = snapshot_provider.add_package_requirement(union_name_id, "5");
-
-    assert_snapshot!(solve_for_snapshot(
-        snapshot_provider,
-        &[union_req],
-        &[union_constraint]
-    ));
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &constraints));
 }
 
 #[test]
 fn test_explicit_root_requirements() {
-    let provider = BundleBoxProvider::from_packages(&[
+    let mut provider = BundleBoxProvider::from_packages(&[
         // `a` depends transitively on `b`
         ("a", 1, vec!["b"]),
         // `b` depends on `c`, but the highest version of `b` constrains `c` to `<2`.
@@ -1427,20 +883,173 @@ fn test_explicit_root_requirements() {
     "###);
 }
 
+#[test]
+fn test_conditional_requirements() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["baz; if bar"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    baz=1
+    foo=1
+    "###);
+}
+
+#[test]
+fn test_conditional_unsolvable() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["baz 2; if bar"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    foo * cannot be installed because there are no viable options:
+    └─ foo 1 would require
+       └─ baz >=2, <3, for which no candidates were found.
+    The following packages are incompatible
+    └─ bar * can be installed with any of the following options:
+       └─ bar 1
+    "###);
+}
+
+#[test]
+fn test_conditional_unsolvable_without_condition() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec![]),
+        ("foo", 2, vec!["baz 2; if bar"]), /* This will not be selected because baz 2 conflicts
+                                            * with the requirement. */
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("baz", 2, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz 1"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    baz=1
+    foo=1
+    "###);
+}
+
+#[test]
+fn test_conditional_requirements_version_set() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["baz; if bar 1"]),
+        ("bar", 1, vec![]),
+        ("bar", 2, vec![]),
+        ("baz", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=2
+    foo=1
+    "###);
+}
+
+#[test]
+fn test_conditional_and() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz"]),
+        ("bar", 1, vec![]),
+        ("bar", 2, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=2
+    baz=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
+fn test_conditional_and_mismatch() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    foo=1
+    "###);
+}
+
+#[test]
+fn test_conditional_or() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar or baz"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
+fn test_conditional_complex() {
+    let mut provider = BundleBoxProvider::from_packages(&[
+        ("foo", 1, vec!["icon; if bar and baz or menu"]),
+        ("bar", 1, vec![]),
+        ("baz", 1, vec![]),
+        ("icon", 1, vec![]),
+    ]);
+
+    let requirements = provider.requirements(&["foo", "bar", "baz"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @r###"
+    bar=1
+    baz=1
+    foo=1
+    icon=1
+    "###);
+}
+
+#[test]
+#[traced_test]
+fn test_condition_missing_requirement() {
+    let mut provider =
+        BundleBoxProvider::from_packages(&[("menu", 1, vec!["bla; if intl"]), ("intl", 1, vec![])]);
+
+    let requirements = provider.requirements(&["menu"]);
+    assert_snapshot!(solve_for_snapshot(provider, &requirements, &[]), @"menu=1");
+}
+
 #[cfg(feature = "serde")]
-fn serialize_snapshot(snapshot: &DependencySnapshot, destination: impl AsRef<std::path::Path>) {
+fn serialize_snapshot(
+    snapshot: &resolvo::snapshot::DependencySnapshot,
+    destination: impl AsRef<std::path::Path>,
+) {
     let file = std::io::BufWriter::new(std::fs::File::create(destination.as_ref()).unwrap());
     serde_json::to_writer_pretty(file, snapshot).unwrap()
 }
 
-fn solve_for_snapshot(
-    provider: SnapshotProvider,
-    root_reqs: &[VersionSetId],
+fn solve_for_snapshot<D: DependencyProvider>(
+    provider: D,
+    root_reqs: &[ConditionalRequirement],
     root_constraints: &[VersionSetId],
 ) -> String {
     let mut solver = Solver::new(provider);
     let problem = Problem::new()
-        .requirements(root_reqs.iter().copied().map(Into::into).collect())
+        .requirements(root_reqs.iter().cloned().collect())
         .constraints(root_constraints.iter().copied().map(Into::into).collect());
     match solver.solve(problem) {
         Ok(solvables) => transaction_to_string(solver.provider(), &solvables),
