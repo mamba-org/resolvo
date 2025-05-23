@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use crate::{Interner, internal::arena::ArenaId};
+use crate::{internal::arena::ArenaId, Interner};
 
 /// The id associated to a package name
 #[repr(transparent)]
@@ -165,6 +165,7 @@ impl ArenaId for DependenciesId {
 /// A unique identifier for a variable in the solver.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub struct VariableId(u32);
 
 impl VariableId {

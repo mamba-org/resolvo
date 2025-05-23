@@ -1,3 +1,6 @@
+#![cfg_attr(kani, feature(proc_macro_hygiene))]
+#![cfg_attr(kani, feature(stmt_expr_attributes))]
+
 //! Implements a SAT solver for dependency resolution based on the CDCL
 //! algorithm (conflict-driven clause learning)
 //!

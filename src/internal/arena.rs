@@ -217,3 +217,79 @@ impl<'a, TId: ArenaId, TValue> Iterator for ArenaIterMut<'a, TId, TValue> {
         }
     }
 }
+
+/// For testing purposes.
+impl ArenaId for usize {
+    fn from_usize(x: usize) -> Self {
+        x
+    }
+
+    fn to_usize(self) -> usize {
+        self
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn arena_correct() {
+        // FIXME (some time later): Produce arbitrary arena.
+        let mut arena: Arena<usize, bool> = Arena::new();
+        let number_of_allocations: usize = kani::any();
+
+        kani::assume(number_of_allocations < 3);
+
+        let values: Vec<bool> = kani::bounded_any::<_, 2>();
+
+        let ids: Vec<usize> = values.iter().map(|v| arena.alloc(*v)).collect::<Vec<_>>();
+
+        for (i, id) in ids.into_iter().enumerate() {
+            assert_eq!(values.get(i), Some(&arena[id]));
+            arena[id] = !arena[id];
+            assert_eq!(values.get(i).map(|x| !x), Some(arena[id]));
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn arena_get_two_mut_correct() {
+        let mut arena: Arena<usize, bool> = Arena::new();
+        let number_of_allocations: u8 = kani::any();
+
+        kani::assume(number_of_allocations < 3);
+
+        let values: Vec<bool> = kani::bounded_any::<_, 2>();
+
+        let ids = values.iter().map(|v| arena.alloc(*v)).collect::<Vec<_>>();
+        let id_pairs = ids.as_slice().chunks_exact(2);
+
+        for (i, idxs) in id_pairs.enumerate() {
+            let (a_idx, b_idx) = (idxs[0], idxs[1]);
+            assert_eq!(values.get(2 * i), Some(&arena[a_idx]));
+            assert_eq!(values.get(2 * i + 1), Some(&arena[b_idx]));
+            let (a, b) = arena.get_two_mut(a_idx, b_idx);
+            *a = !*a;
+            *b = !*b;
+            assert_eq!(values.get(2 * i).map(|x| !x), Some(arena[a_idx]));
+            assert_eq!(values.get(2 * i + 1).map(|x| !x), Some(arena[b_idx]));
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn arena_iterator_correct() {
+        let mut arena: Arena<usize, bool> = Arena::new();
+        let number_of_allocations: usize = kani::any();
+
+        kani::assume(number_of_allocations < 3);
+
+        let values: Vec<bool> = kani::bounded_any::<_, 2>();
+
+        let ids: Vec<usize> = values.iter().map(|v| arena.alloc(*v)).collect::<Vec<_>>();
+
+        assert_eq!(values, arena.iter().map(|p| *p.1).collect::<Vec<_>>())
+    }
+}

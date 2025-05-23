@@ -8,28 +8,41 @@ const VALUES_PER_CHUNK: usize = 128;
 /// `TId`s. You can think of it as a HashMap<TId, TValue>, optimized for the
 /// case in which we know the `TId`s are contiguous.
 #[derive(Clone)]
-pub struct Mapping<TId, TValue> {
-    chunks: Vec<[Option<TValue>; VALUES_PER_CHUNK]>,
+pub struct Mapping<TId, TValue, const CHUNK_SIZE: usize = VALUES_PER_CHUNK> {
+    /// Hi
+    pub chunks: Vec<[Option<TValue>; CHUNK_SIZE]>,
     len: usize,
     max: usize,
     _phantom: PhantomData<TId>,
 }
 
-impl<TId: ArenaId, TValue> Default for Mapping<TId, TValue> {
+impl<
+        #[cfg(not(kani))] TId: ArenaId,
+        #[cfg(kani)] TId: ArenaId + Clone,
+        TValue,
+        const CHUNK_SIZE: usize,
+    > Default for Mapping<TId, TValue, CHUNK_SIZE>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[allow(unused)]
-impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
+impl<
+        #[cfg(not(kani))] TId: ArenaId,
+        #[cfg(kani)] TId: ArenaId + Clone,
+        TValue,
+        const CHUNK_SIZE: usize,
+    > Mapping<TId, TValue, CHUNK_SIZE>
+{
     pub(crate) fn new() -> Self {
         Self::with_capacity(1)
     }
 
     /// Returns the total number of values that can be stored in the mapping without reallocating.
     pub fn capacity(&self) -> usize {
-        self.chunks.len() * VALUES_PER_CHUNK
+        self.chunks.len() * CHUNK_SIZE
     }
 
     /// Returns the total number of bytes allocated by this instance.
@@ -40,7 +53,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Constructs a new arena with a capacity for `n` values pre-allocated.
     pub fn with_capacity(n: usize) -> Self {
         let n = cmp::max(1, n);
-        let n_chunks = (n - 1) / VALUES_PER_CHUNK + 1;
+        let n_chunks = (n - 1) / CHUNK_SIZE + 1;
         let mut chunks = Vec::new();
         chunks.resize_with(n_chunks, || std::array::from_fn(|_| None));
         Self {
@@ -54,8 +67,8 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Get chunk and offset for specific id
     #[inline]
     pub const fn chunk_and_offset(id: usize) -> (usize, usize) {
-        let chunk = id / VALUES_PER_CHUNK;
-        let offset = id % VALUES_PER_CHUNK;
+        let chunk = id / CHUNK_SIZE;
+        let offset = id % CHUNK_SIZE;
         (chunk, offset)
     }
 
@@ -109,7 +122,10 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     }
 
     /// Get a mutable specific value in the mapping with bound checks
-    pub fn get_mut(&mut self, id: TId) -> Option<&mut TValue> {
+    pub fn get_mut(&mut self, id: TId) -> Option<&mut TValue>
+    where
+        TId: Clone,
+    {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
         if chunk >= self.chunks.len() {
             return None;
@@ -130,6 +146,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// The caller must uphold most of the safety requirements for
     /// `get_unchecked`. i.e. the id having been inserted into the Mapping
     /// before.
+    #[cfg_attr(kani, kani::requires(id.clone().to_usize() < self.len))]
     pub unsafe fn get_unchecked(&self, id: TId) -> &TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
         unsafe { self.chunks.get_unchecked(chunk).get_unchecked(offset) }
@@ -143,6 +160,7 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// The caller must uphold most of the safety requirements for
     /// `get_unchecked_mut`. i.e. the id having been inserted into the Mapping
     /// before.
+    #[cfg_attr(kani, kani::requires(id.clone().to_usize() < self.len))]
     pub unsafe fn get_unchecked_mut(&mut self, id: TId) -> &mut TValue {
         let (chunk, offset) = Self::chunk_and_offset(id.to_usize());
         unsafe {
@@ -172,11 +190,11 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     /// Defines the number of slots that can be used
     /// theses slots are not initialized
     pub fn slots(&self) -> usize {
-        self.chunks.len() * VALUES_PER_CHUNK
+        self.chunks.len() * CHUNK_SIZE
     }
 
     /// Returns an iterator over all the existing key value pairs.
-    pub fn iter(&self) -> MappingIter<'_, TId, TValue> {
+    pub fn iter(&self) -> MappingIter<'_, TId, TValue, CHUNK_SIZE> {
         MappingIter {
             mapping: self,
             offset: 0,
@@ -184,12 +202,19 @@ impl<TId: ArenaId, TValue> Mapping<TId, TValue> {
     }
 }
 
-pub struct MappingIter<'a, TId, TValue> {
-    mapping: &'a Mapping<TId, TValue>,
+pub struct MappingIter<'a, TId, TValue, const CHUNK_SIZE: usize> {
+    mapping: &'a Mapping<TId, TValue, CHUNK_SIZE>,
     offset: usize,
 }
 
-impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
+impl<
+        'a,
+        #[cfg(not(kani))] TId: ArenaId,
+        #[cfg(kani)] TId: ArenaId + Clone,
+        TValue,
+        const CHUNK_SIZE: usize,
+    > Iterator for MappingIter<'a, TId, TValue, CHUNK_SIZE>
+{
     type Item = (TId, &'a TValue);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -198,7 +223,7 @@ impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
                 return None;
             }
 
-            let (chunk, offset) = Mapping::<TId, TValue>::chunk_and_offset(self.offset);
+            let (chunk, offset) = Mapping::<TId, TValue, CHUNK_SIZE>::chunk_and_offset(self.offset);
             let id = TId::from_usize(self.offset);
             self.offset += 1;
 
@@ -216,10 +241,33 @@ impl<'a, TId: ArenaId, TValue> Iterator for MappingIter<'a, TId, TValue> {
     }
 }
 
-impl<TId: ArenaId, TValue> FusedIterator for MappingIter<'_, TId, TValue> {}
+// impl<
+//         #[cfg(not(kani))] TId: ArenaId,
+//         #[cfg(kani)] TId: ArenaId + Clone,
+//         TValue,
+//         const CHUNK_SIZE: usize,
+//     > MappingIter<'static, TId, TValue, CHUNK_SIZE>
+// {
+//     fn next_ptr() -> fn(
+//         &mut MappingIter<'static, TId, TValue, CHUNK_SIZE>,
+//     ) -> std::option::Option<
+//         <MappingIter<'static, TId, TValue, CHUNK_SIZE> as Iterator>::Item,
+//     > {
+//         <Self as Iterator>::next
+//     }
+// }
+
+impl<
+        #[cfg(not(kani))] TId: ArenaId,
+        #[cfg(kani)] TId: ArenaId + Clone,
+        TValue,
+        const CHUNK_SIZE: usize,
+    > FusedIterator for MappingIter<'_, TId, TValue, CHUNK_SIZE>
+{
+}
 
 #[cfg(feature = "serde")]
-impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {
+impl<V: serde::Serialize, const CHUNK_SIZE: usize> serde::Serialize for Mapping<K, V, CHUNK_SIZE> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.chunks
             .iter()
@@ -231,7 +279,9 @@ impl<K: ArenaId, V: serde::Serialize> serde::Serialize for Mapping<K, V> {
 }
 
 #[cfg(feature = "serde")]
-impl<'de, K: ArenaId, V: serde::Deserialize<'de>> serde::Deserialize<'de> for Mapping<K, V> {
+impl<'de, K: ArenaId, V: serde::Deserialize<'de>, const CHUNK_SIZE: usize> serde::Deserialize<'de>
+    for Mapping<K, V, CHUNK_SIZE>
+{
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -301,20 +351,59 @@ mod tests {
 
         let values = [1, 3, 6, 9, 2, 4, 6, 1, 2, 3];
         let json = to_value(values).unwrap();
-        let mapping =
-            values
-                .iter()
-                .copied()
-                .enumerate()
-                .fold(Mapping::new(), |mut mapping, (i, v)| {
-                    mapping.insert(Id::from_usize(i), v);
-                    mapping
-                });
+        let mapping = values.iter().copied().enumerate().fold(
+            Mapping::new(),
+            |mut mapping: Mapping<Id, i32, VALUES_PER_CHUNK>, (i, v)| {
+                mapping.insert(Id::from_usize(i), v);
+                mapping
+            },
+        );
 
         assert_eq!(json, to_value(&mapping).unwrap());
         itertools::assert_equal(
             mapping.iter().map(|(_, &v)| v),
             from_value::<Vec<i32>>(json).unwrap(),
         );
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    #[kani::stub_verified(Mapping::<_, _, _>::get_unchecked)]
+    #[kani::stub_verified(Mapping::<_, _, _>::get_unchecked_mut)]
+    // #[kani::stub_verified(MappingIter<_, _, _, _>::next_ptr)]
+    fn map_correct() {
+        let mut map: Mapping<usize, bool, 1> = Mapping::with_capacity(1);
+
+        let n = kani::any_where(|x| *x < 2);
+
+        let mut pairs = vec![];
+
+        for _ in 0..n {
+            pairs.push((kani::any_where(|idx| *idx < 2), kani::any()));
+        }
+
+        // let pairs: Vec<(usize, bool)> = kani::bounded_any::<_, 2>();
+        // kani::assume(pairs.iter().all(|(idx, _)| *idx < 2));
+
+        for (i, v) in pairs {
+            let _ = map.insert(i, v);
+        }
+        // &map.chunks.get(0).and_then(|c| c.get(0));
+        let kvs = map
+            .iter()
+            .map(|(k, v)| (k, *v))
+            .collect::<Vec<(usize, bool)>>();
+
+        for (k, v) in kvs.iter() {
+            assert_eq!(map.get(*k), Some(v));
+            let p = map.get_mut(*k).unwrap();
+            *p = !*p;
+            assert_eq!(map.get(*k), Some(&!v));
+        }
     }
 }
