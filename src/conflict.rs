@@ -287,7 +287,8 @@ pub(crate) enum ConflictCause {
 /// - They all have the same name
 /// - They all have the same predecessor nodes
 /// - They all have the same successor nodes
-pub(crate) struct MergedConflictNode {
+pub struct MergedConflictNode {
+    /// The list of solvable ids that have been merged into this node.
     pub ids: Vec<SolvableId>,
 }
 
@@ -397,7 +398,10 @@ impl ConflictGraph {
 
     /// Simplifies and collapses nodes so that these can be considered the same
     /// candidate
-    fn simplify(&self, interner: &impl Interner) -> HashMap<SolvableId, Rc<MergedConflictNode>> {
+    pub fn simplify(
+        &self,
+        interner: &impl Interner,
+    ) -> HashMap<SolvableId, Rc<MergedConflictNode>> {
         let graph = &self.graph;
 
         // Gather information about nodes that can be merged
