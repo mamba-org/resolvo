@@ -296,6 +296,7 @@ pub(crate) struct MergedConflictNode {
 /// The root of the graph is the "root solvable". Note that not all the
 /// solvable's requirements are included in the graph, only those that are
 /// directly or indirectly involved in the conflict.
+#[derive(Clone)]
 pub struct ConflictGraph {
     graph: DiGraph<ConflictNode, ConflictEdge>,
     root_node: NodeIndex,
