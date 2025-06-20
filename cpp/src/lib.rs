@@ -2,15 +2,17 @@ mod slice;
 mod string;
 mod vector;
 
-use std::{ffi::c_void, fmt::Display, ptr::NonNull};
+use std::{ffi::c_void, fmt::Display, mem::MaybeUninit, ptr::NonNull};
 
 use resolvo::{HintDependenciesAvailable, KnownDependencies, SolverCache};
 
 use crate::{slice::Slice, string::String, vector::Vector};
 
-/// A unique identifier for a single solvable or candidate of a package. These ids should not be
-/// random but rather monotonic increasing. Although it is fine to have gaps, resolvo will
-/// allocate some memory based on the maximum id.
+/// A unique identifier for a single solvable or candidate of a package. These
+/// ids should not be random but rather monotonic increasing. Although it is
+/// fine to have gaps, resolvo will allocate some memory based on the maximum
+/// id.
+///
 /// cbindgen:derive-eq
 /// cbindgen:derive-neq
 #[repr(C)]
@@ -41,10 +43,11 @@ pub enum Requirement {
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Single(VersionSetId),
-    /// Specifies a dependency on the union (logical OR) of multiple version sets. A solvable
-    /// belonging to ANY of the version sets contained in the union satisfies the requirement.
-    /// This variant is typically used for requirements that can be satisfied by two or more
-    /// version sets belonging to different packages.
+    /// Specifies a dependency on the union (logical OR) of multiple version
+    /// sets. A solvable belonging to ANY of the version sets contained in
+    /// the union satisfies the requirement. This variant is typically used
+    /// for requirements that can be satisfied by two or more version sets
+    /// belonging to different packages.
     /// cbindgen:derive-eq
     /// cbindgen:derive-neq
     Union(VersionSetUnionId),
@@ -156,13 +159,120 @@ impl From<StringId> for resolvo::StringId {
     }
 }
 
+/// A unique identifier for a single condition.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ConditionId {
+    id: u32,
+}
+
+impl From<resolvo::ConditionId> for ConditionId {
+    fn from(id: resolvo::ConditionId) -> Self {
+        Self { id: id.as_u32() }
+    }
+}
+
+impl From<ConditionId> for resolvo::ConditionId {
+    fn from(id: ConditionId) -> Self {
+        Self::new(id.id)
+    }
+}
+
+/// Specifies the dependency of a solvable on a set of version sets.
+/// cbindgen:derive-eq
+/// cbindgen:derive-neq
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum Condition {
+    /// Specifies a dependency on a single version set.
+    ///
+    /// cbindgen:derive-eq
+    /// cbindgen:derive-neq
+    Requirement(VersionSetId),
+
+    /// Combines two conditions using a logical operator.
+    ///
+    /// cbindgen:derive-eq
+    /// cbindgen:derive-neq
+    Binary(LogicalOperator, ConditionId, ConditionId),
+}
+
+/// Defines how multiple conditions are compared to each other.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+impl From<resolvo::LogicalOperator> for LogicalOperator {
+    fn from(value: resolvo::LogicalOperator) -> Self {
+        match value {
+            resolvo::LogicalOperator::And => LogicalOperator::And,
+            resolvo::LogicalOperator::Or => LogicalOperator::Or,
+        }
+    }
+}
+
+impl From<LogicalOperator> for resolvo::LogicalOperator {
+    fn from(value: LogicalOperator) -> Self {
+        match value {
+            LogicalOperator::And => resolvo::LogicalOperator::And,
+            LogicalOperator::Or => resolvo::LogicalOperator::Or,
+        }
+    }
+}
+
+impl From<resolvo::Condition> for Condition {
+    fn from(value: resolvo::Condition) -> Self {
+        match value {
+            resolvo::Condition::Requirement(id) => Condition::Requirement(id.into()),
+            resolvo::Condition::Binary(op, lhs, rhs) => {
+                Condition::Binary(op.into(), lhs.into(), rhs.into())
+            }
+        }
+    }
+}
+
+impl From<Condition> for resolvo::Condition {
+    fn from(value: Condition) -> Self {
+        match value {
+            Condition::Requirement(id) => resolvo::Condition::Requirement(id.into()),
+            Condition::Binary(op, lhs, rhs) => {
+                resolvo::Condition::Binary(op.into(), lhs.into(), rhs.into())
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct ConditionalRequirement {
+    /// Optionally a condition that indicates whether the requirement is enabled or not.
+    pub condition: *const ConditionId,
+
+    /// A requirement on another package.
+    pub requirement: Requirement,
+}
+
+impl From<ConditionalRequirement> for resolvo::ConditionalRequirement {
+    fn from(value: ConditionalRequirement) -> Self {
+        Self {
+            condition: unsafe { value.condition.as_ref() }.copied().map(Into::into),
+            requirement: value.requirement.into(),
+        }
+    }
+}
+
 #[derive(Default)]
 #[repr(C)]
 pub struct Dependencies {
     /// A pointer to the first element of a list of requirements. Requirements
     /// defines which packages should be installed alongside the depending
     /// package and the constraints applied to the package.
-    pub requirements: Vector<Requirement>,
+    pub requirements: Vector<ConditionalRequirement>,
 
     /// Defines additional constraints on packages that may or may not be part
     /// of the solution. Different from `requirements`, packages in this set
@@ -294,7 +404,12 @@ pub struct DependencyProvider {
     pub version_sets_in_union: unsafe extern "C" fn(
         data: *mut c_void,
         version_set_union_id: VersionSetUnionId,
-    ) -> Slice<'static, VersionSetId>,
+        result: NonNull<Slice<'static, VersionSetId>>,
+    ),
+
+    /// Returns the condition that the given condition id describes
+    pub resolve_condition:
+        unsafe extern "C" fn(data: *mut c_void, condition: ConditionId, result: NonNull<Condition>),
 
     /// Obtains a list of solvables that should be considered when a package
     /// with the given name is requested.
@@ -387,11 +502,32 @@ impl resolvo::Interner for &DependencyProvider {
         &self,
         version_set_union: resolvo::VersionSetUnionId,
     ) -> impl Iterator<Item = resolvo::VersionSetId> {
-        unsafe { (self.version_sets_in_union)(self.data, version_set_union.into()) }
-            .as_slice()
-            .iter()
-            .copied()
-            .map(Into::into)
+        let mut result = MaybeUninit::uninit();
+        unsafe {
+            (self.version_sets_in_union)(
+                self.data,
+                version_set_union.into(),
+                NonNull::new_unchecked(result.as_mut_ptr()),
+            );
+            result.assume_init()
+        }
+        .as_slice()
+        .iter()
+        .copied()
+        .map(Into::into)
+    }
+
+    fn resolve_condition(&self, condition: resolvo::ConditionId) -> resolvo::Condition {
+        let mut result = MaybeUninit::uninit();
+        unsafe {
+            (self.resolve_condition)(
+                self.data,
+                condition.into(),
+                NonNull::new_unchecked(result.as_mut_ptr()),
+            );
+            result.assume_init()
+        }
+        .into()
     }
 }
 
@@ -486,7 +622,7 @@ impl resolvo::DependencyProvider for &DependencyProvider {
 
 #[repr(C)]
 pub struct Problem<'a> {
-    pub requirements: Slice<'a, Requirement>,
+    pub requirements: Slice<'a, ConditionalRequirement>,
     pub constraints: Slice<'a, VersionSetId>,
     pub soft_requirements: Slice<'a, SolvableId>,
 }
@@ -507,7 +643,7 @@ pub extern "C" fn resolvo_solve(
                 .requirements
                 .as_slice()
                 .iter()
-                .copied()
+                .cloned()
                 .map(Into::into)
                 .collect(),
         )
@@ -543,20 +679,6 @@ pub extern "C" fn resolvo_solve(
             false
         }
     }
-}
-
-#[unsafe(no_mangle)]
-#[allow(unused)]
-pub extern "C" fn resolvo_requirement_single(version_set_id: VersionSetId) -> Requirement {
-    Requirement::Single(version_set_id)
-}
-
-#[unsafe(no_mangle)]
-#[allow(unused)]
-pub extern "C" fn resolvo_requirement_union(
-    version_set_union_id: VersionSetUnionId,
-) -> Requirement {
-    Requirement::Union(version_set_union_id)
 }
 
 #[cfg(test)]

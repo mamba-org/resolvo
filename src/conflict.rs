@@ -11,7 +11,6 @@ use petgraph::{
     visit::{Bfs, DfsPostOrder, EdgeRef},
 };
 
-use crate::solver::variable_map::VariableOrigin;
 use crate::{
     DependencyProvider, Interner, Requirement,
     internal::{
@@ -19,7 +18,7 @@ use crate::{
         id::{ClauseId, SolvableId, SolvableOrRootId, StringId, VersionSetId},
     },
     runtime::AsyncRuntime,
-    solver::{Solver, clause::Clause},
+    solver::{Solver, clause::Clause, variable_map::VariableOrigin},
 };
 
 /// Represents the cause of the solver being unable to find a solution
@@ -80,7 +79,7 @@ impl Conflict {
                     );
                 }
                 Clause::Learnt(..) => unreachable!(),
-                &Clause::Requires(package_id, version_set_id) => {
+                &Clause::Requires(package_id, _condition, version_set_id) => {
                     let solvable = package_id
                         .as_solvable_or_root(&state.variable_map)
                         .expect("only solvables can be excluded");
@@ -161,6 +160,12 @@ impl Conflict {
                         dep_node,
                         ConflictEdge::Conflict(ConflictCause::Constrains(version_set_id)),
                     );
+                }
+                Clause::AnyOf(selected, _variable) => {
+                    // Assumption: since `AnyOf` of clause can never be false, we dont add an edge
+                    // for it.
+                    let decision_map = solver.state.decision_tracker.map();
+                    debug_assert_ne!(selected.positive().eval(decision_map), Some(false));
                 }
             }
         }

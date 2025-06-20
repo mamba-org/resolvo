@@ -1,6 +1,6 @@
 use std::{
     fmt::{Display, Formatter},
-    num::NonZeroU32,
+    num::{NonZero, NonZeroU32},
 };
 
 use crate::{Interner, internal::arena::ArenaId};
@@ -53,6 +53,36 @@ impl ArenaId for VersionSetId {
 
     fn to_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+/// The id associated with a Condition.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct ConditionId(NonZero<u32>);
+
+impl ConditionId {
+    /// Creates a new `ConditionId` from a `u32`
+    pub fn new(id: u32) -> Self {
+        Self::from_usize(id as usize)
+    }
+
+    /// Returns the inner `u32` value of the `ConditionId`.
+    pub fn as_u32(self) -> u32 {
+        self.0.get() - 1
+    }
+}
+
+impl ArenaId for ConditionId {
+    fn from_usize(x: usize) -> Self {
+        let id = (x + 1).try_into().expect("condition id too big");
+        Self(unsafe { NonZero::new_unchecked(id) })
+    }
+
+    fn to_usize(self) -> usize {
+        (self.0.get() - 1) as usize
     }
 }
 

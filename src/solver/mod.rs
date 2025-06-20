@@ -1,18 +1,21 @@
+use std::{any::Any, fmt::Display, ops::ControlFlow};
+
 use ahash::{HashMap, HashSet};
 pub use cache::SolverCache;
 use clause::{Clause, Literal, WatchedLiterals};
+use conditions::{Disjunction, DisjunctionId};
 use decision::Decision;
 use decision_tracker::DecisionTracker;
 use elsa::FrozenMap;
 use encoding::Encoder;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use std::{any::Any, fmt::Display, ops::ControlFlow};
 use variable_map::VariableMap;
 use watch_map::WatchMap;
 
 use crate::{
-    Dependencies, DependencyProvider, KnownDependencies, Requirement, VersionSetId,
+    ConditionalRequirement, Dependencies, DependencyProvider, KnownDependencies, Requirement,
+    VersionSetId,
     conflict::Conflict,
     internal::{
         arena::{Arena, ArenaId},
@@ -26,6 +29,7 @@ use crate::{
 mod binary_encoding;
 mod cache;
 pub(crate) mod clause;
+mod conditions;
 mod decision;
 mod decision_map;
 mod decision_tracker;
@@ -44,7 +48,7 @@ mod watch_map;
 /// This struct follows the builder pattern and can have its fields set by one
 /// of the available setter methods.
 pub struct Problem<S> {
-    requirements: Vec<Requirement>,
+    requirements: Vec<ConditionalRequirement>,
     constraints: Vec<VersionSetId>,
     soft_requirements: S,
 }
@@ -73,7 +77,7 @@ impl<S: IntoIterator<Item = SolvableId>> Problem<S> {
     ///
     /// Returns the [`Problem`] for further mutation or to pass to
     /// [`Solver::solve`].
-    pub fn requirements(self, requirements: Vec<Requirement>) -> Self {
+    pub fn requirements(self, requirements: Vec<ConditionalRequirement>) -> Self {
         Self {
             requirements,
             ..self
@@ -157,10 +161,12 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     activity_decay: f32,
 }
 
+type RequiresClause = (Requirement, Option<DisjunctionId>, ClauseId);
+
 #[derive(Default)]
 pub(crate) struct SolverState {
     pub(crate) clauses: Clauses,
-    requires_clauses: IndexMap<VariableId, Vec<(Requirement, ClauseId)>, ahash::RandomState>,
+    requires_clauses: IndexMap<VariableId, Vec<RequiresClause>, ahash::RandomState>,
     watches: WatchMap,
 
     /// A mapping from requirements to the variables that represent the
@@ -176,11 +182,17 @@ pub(crate) struct SolverState {
     learnt_why: Mapping<LearntClauseId, Vec<ClauseId>>,
     learnt_clause_ids: Vec<ClauseId>,
 
+    disjunctions: Arena<DisjunctionId, Disjunction>,
+
     clauses_added_for_package: HashSet<NameId>,
     clauses_added_for_solvable: HashSet<SolvableOrRootId>,
-    forbidden_clauses_added: HashMap<NameId, AtMostOnceTracker<VariableId>>,
+    at_most_one_trackers: HashMap<NameId, AtMostOnceTracker<VariableId>>,
 
-    decision_tracker: DecisionTracker,
+    /// Keeps track of auxiliary variables that are used to encode at-least-one
+    /// solvable for a package.
+    at_least_one_tracker: HashMap<NameId, VariableId>,
+
+    pub(crate) decision_tracker: DecisionTracker,
 
     /// Activity score per package.
     name_activity: Vec<f32>,
@@ -433,7 +445,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
                 // Add the clauses for the root solvable.
                 let conflicting_clauses = self.async_runtime.block_on(
-                    Encoder::new(&mut self.state, &self.cache, root_deps).encode([root_solvable]),
+                    Encoder::new(&mut self.state, &self.cache, root_deps, level)
+                        .encode([root_solvable]),
                 )?;
 
                 if let Some(clause_id) = conflicting_clauses.into_iter().next() {
@@ -551,7 +564,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .collect::<Vec<_>>();
 
             let conflicting_clauses = self.async_runtime.block_on(
-                Encoder::new(&mut self.state, &self.cache, root_deps).encode(new_solvables),
+                Encoder::new(&mut self.state, &self.cache, root_deps, level).encode(new_solvables),
             )?;
 
             // Serially process the outputs, to reduce the need for synchronization
@@ -584,7 +597,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         clause_id: ClauseId,
     ) -> Result<bool, UnsolvableOrCancelled> {
         if starting_level == 0 {
-            tracing::trace!("Unsolvable: {:?}", clause_id);
+            tracing::trace!(
+                "Unsolvable: {}",
+                self.state.clauses.kinds[clause_id.to_usize()]
+                    .display(&self.state.variable_map, self.provider(),)
+            );
             Err(UnsolvableOrCancelled::Unsolvable(
                 self.analyze_unsolvable(clause_id),
             ))
@@ -708,8 +725,20 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 continue;
             }
 
-            for (deps, clause_id) in requirements.iter() {
+            for (deps, condition, clause_id) in requirements.iter() {
                 let mut candidate = ControlFlow::Break(());
+
+                // If the clause has a condition that is not yet satisfied we need to skip it.
+                if let Some(condition) = *condition {
+                    let literals = &self.state.disjunctions[condition].literals;
+                    if !literals.iter().all(|c| {
+                        let value = c.eval(self.state.decision_tracker.map());
+                        value == Some(false)
+                    }) {
+                        // The condition is not satisfied, skip this clause.
+                        continue;
+                    }
+                }
 
                 // Get the candidates for the individual version sets.
                 let version_set_candidates = &self.state.requirement_to_sorted_candidates[deps];
@@ -1074,6 +1103,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     clause,
                     &self.state.learnt_clauses,
                     &self.state.requirement_to_sorted_candidates,
+                    &self.state.disjunctions,
                     self.state.decision_tracker.map(),
                     watch_index,
                 ) {
@@ -1237,6 +1267,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.state.clauses.kinds[clause_id.to_usize()].visit_literals(
             &self.state.learnt_clauses,
             &self.state.requirement_to_sorted_candidates,
+            &self.state.disjunctions,
             |literal| {
                 involved.insert(literal.variable());
             },
@@ -1275,6 +1306,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             self.state.clauses.kinds[why.to_usize()].visit_literals(
                 &self.state.learnt_clauses,
                 &self.state.requirement_to_sorted_candidates,
+                &self.state.disjunctions,
                 |literal| {
                     if literal.eval(self.state.decision_tracker.map()) == Some(true) {
                         assert_eq!(literal.variable(), decision.variable);
@@ -1322,6 +1354,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             clause_kinds[clause_id.to_usize()].visit_literals(
                 &self.state.learnt_clauses,
                 &self.state.requirement_to_sorted_candidates,
+                &self.state.disjunctions,
                 |literal| {
                     if !first_iteration && literal.variable() == conflicting_solvable {
                         // We are only interested in the causes of the conflict, so we ignore the

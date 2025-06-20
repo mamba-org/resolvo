@@ -30,6 +30,7 @@ struct VersionSet {
 struct PackageDatabase : public resolvo::DependencyProvider {
     resolvo::Pool<resolvo::NameId, resolvo::String> names;
     resolvo::Pool<resolvo::StringId, resolvo::String> strings;
+    std::vector<resolvo::Condition> conditions;
     std::vector<Candidate> candidates;
     std::vector<VersionSet> version_sets;
     std::vector<std::vector<resolvo::VersionSetId>> version_set_unions;
@@ -51,7 +52,7 @@ struct PackageDatabase : public resolvo::DependencyProvider {
     resolvo::Requirement alloc_requirement(std::string_view package, uint32_t version_start,
                                            uint32_t version_end) {
         auto id = alloc_version_set(package, version_start, version_end);
-        return resolvo::requirement_single(id);
+        return {id};
     }
 
     /**
@@ -67,9 +68,9 @@ struct PackageDatabase : public resolvo::DependencyProvider {
             version_set_union[i] = alloc_version_set(package, version_start, version_end);
         }
 
-        auto id = resolvo::VersionSetUnionId{static_cast<uint32_t>(version_set_unions.size())};
+        resolvo::VersionSetUnionId id = {static_cast<uint32_t>(version_set_unions.size())};
         version_set_unions.push_back(std::move(version_set_union));
-        return resolvo::requirement_union(id);
+        return {id};
     }
 
     /**
@@ -80,6 +81,15 @@ struct PackageDatabase : public resolvo::DependencyProvider {
         auto name_id = names.alloc(std::move(name));
         auto id = resolvo::SolvableId{static_cast<uint32_t>(candidates.size())};
         candidates.push_back(Candidate{name_id, version, dependencies});
+        return id;
+    }
+
+    /**
+     * Allocates a new candidate and return the id of the candidate.
+     */
+    resolvo::ConditionId alloc_condition(resolvo::Condition condition) {
+        auto id = resolvo::ConditionId{static_cast<uint32_t>(conditions.size())};
+        conditions.push_back(condition);
         return id;
     }
 
@@ -140,6 +150,10 @@ struct PackageDatabase : public resolvo::DependencyProvider {
         resolvo::VersionSetUnionId version_set_union_id) override {
         const auto& version_set_ids = version_set_unions[version_set_union_id.id];
         return {version_set_ids.data(), version_set_ids.size()};
+    }
+
+    resolvo::Condition resolve_condition(resolvo::ConditionId condition_id) override {
+        return conditions[condition_id.id];
     }
 
     resolvo::Candidates get_candidates(resolvo::NameId package) override {
@@ -219,7 +233,8 @@ SCENARIO("Solve") {
     const auto d_1 = db.alloc_candidate("d", 1, {});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::Requirement> requirements = {db.alloc_requirement("a", 1, 3)};
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
+        db.alloc_requirement("a", 1, 3)};
     resolvo::Vector<resolvo::VersionSetId> constraints = {
         db.alloc_version_set("b", 1, 3),
         db.alloc_version_set("c", 1, 3),
@@ -237,6 +252,34 @@ SCENARIO("Solve") {
     REQUIRE(result[0] == a_2);
     REQUIRE(result[1] == b_2);
     REQUIRE(result[2] == c_1);
+}
+
+SCENARIO("Solve conditional") {
+    /// Construct a database with packages a, b, and c.
+    PackageDatabase db;
+
+    auto b_cond_version_set = db.alloc_version_set("b", 1, 3);
+    auto b_cond = db.alloc_condition({b_cond_version_set});
+    auto a_cond_req = resolvo::ConditionalRequirement{&b_cond, db.alloc_requirement("a", 1, 3)};
+
+    auto a_1 = db.alloc_candidate("a", 1, {{}, {}});
+    auto b_1 = db.alloc_candidate("b", 1, {{}, {}});
+    auto c_1 = db.alloc_candidate("c", 1, {{a_cond_req}, {}});
+
+    // Construct a problem to be solved by the solver
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
+        db.alloc_requirement("b", 1, 3), db.alloc_requirement("c", 1, 3)};
+
+    // Solve the problem
+    resolvo::Vector<resolvo::SolvableId> result;
+    resolvo::Problem problem = {requirements, {}, {}};
+    resolvo::solve(db, problem, result);
+
+    // Check the result
+    REQUIRE(result.size() == 3);
+    REQUIRE(result[0] == c_1);
+    REQUIRE(result[1] == b_1);
+    REQUIRE(result[2] == a_1);
 }
 
 SCENARIO("Solve Union") {
@@ -263,7 +306,7 @@ SCENARIO("Solve Union") {
         "f", 1, {{db.alloc_requirement("b", 1, 10)}, {db.alloc_version_set("a", 10, 20)}});
 
     // Construct a problem to be solved by the solver
-    resolvo::Vector<resolvo::Requirement> requirements = {
+    resolvo::Vector<resolvo::ConditionalRequirement> requirements = {
         db.alloc_requirement_union({{"c", 1, 10}, {"d", 1, 10}}),
         db.alloc_requirement("e", 1, 10),
         db.alloc_requirement("f", 1, 10),
@@ -273,8 +316,7 @@ SCENARIO("Solve Union") {
     // Solve the problem
     resolvo::Vector<resolvo::SolvableId> result;
     resolvo::Problem problem = {requirements, constraints, {}};
-    resolvo::solve(db, problem, result);
-    ;
+    auto error = resolvo::solve(db, problem, result);
 
     // Check the result
     REQUIRE(result.size() == 4);

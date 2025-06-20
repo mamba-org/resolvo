@@ -1,0 +1,10 @@
+---
+source: tests/solver.rs
+expression: "solve_for_snapshot(provider, &requirements, &[])"
+---
+foo * cannot be installed because there are no viable options:
+└─ foo 1 would require
+   └─ baz >=2, <3, for which no candidates were found.
+The following packages are incompatible
+└─ bar * can be installed with any of the following options:
+   └─ bar 1
