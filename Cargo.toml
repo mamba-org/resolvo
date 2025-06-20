@@ -61,3 +61,6 @@ tracing-test = { version = "0.2.5", features = ["no-env-filter"] }
 tokio = { version = "1.42.0", features = ["time", "rt"] }
 resolvo = { path = ".", features = ["tokio", "version-ranges"] }
 serde_json = "1.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
