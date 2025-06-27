@@ -213,7 +213,7 @@ impl Conflict {
 
 /// A node in the graph representation of a [`Conflict`]
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(crate) enum ConflictNode {
+pub enum ConflictNode {
     /// Node corresponding to a solvable
     Solvable(SolvableOrRootId),
     /// Node representing a dependency without candidates
@@ -242,7 +242,7 @@ impl ConflictNode {
 
 /// An edge in the graph representation of a [`Conflict`]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum ConflictEdge {
+pub enum ConflictEdge {
     /// The target node is a candidate for the dependency specified by the
     /// [`Requirement`]
     Requires(Requirement),
@@ -268,7 +268,7 @@ impl ConflictEdge {
 
 /// Conflict causes
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum ConflictCause {
+pub enum ConflictCause {
     /// The solvable is locked
     Locked(SolvableId),
     /// The target node is constrained by the specified version set
@@ -299,9 +299,12 @@ pub struct MergedConflictNode {
 /// directly or indirectly involved in the conflict.
 #[derive(Clone)]
 pub struct ConflictGraph {
-    graph: DiGraph<ConflictNode, ConflictEdge>,
-    root_node: NodeIndex,
-    unresolved_node: Option<NodeIndex>,
+    /// The conflict graph as a directed petgraph.
+    pub graph: DiGraph<ConflictNode, ConflictEdge>,
+    /// The single source node for root constraints introduced to the solver.
+    pub root_node: NodeIndex,
+    /// A single sink node that consumes all unresolvable constraints.
+    pub unresolved_node: Option<NodeIndex>,
 }
 
 impl ConflictGraph {
