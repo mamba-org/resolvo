@@ -10,10 +10,7 @@ use console::style;
 use csv::WriterBuilder;
 use itertools::Itertools;
 use rand::{
-    Rng, SeedableRng,
-    distributions::{Distribution, WeightedIndex},
-    prelude::IteratorRandom,
-    rngs::StdRng,
+    distr::{weighted::WeightedIndex, Distribution}, prelude::IteratorRandom, rngs::StdRng, Rng, SeedableRng
 };
 use resolvo::{Problem, Requirement, Solver, UnsolvableOrCancelled, snapshot::DependencySnapshot};
 
@@ -82,7 +79,7 @@ fn main() {
         let mut requirements: Vec<Requirement> = Vec::new();
 
         // Determine the number of requirements to solve for.
-        let num_requirements = rng.gen_range(1..=10usize);
+        let num_requirements = rng.random_range(1..=10usize);
         for _ in 0..num_requirements {
             match requirement_dist.sample(&mut rng) {
                 0 => {
