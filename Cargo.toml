@@ -36,7 +36,7 @@ diagnostics = ["tabwriter", "human_bytes"]
 [dependencies]
 ahash = "0.8.11"
 itertools = "0.14"
-petgraph = "0.7.1"
+petgraph = "0.8"
 tracing = "0.1.41"
 elsa = "1.10.0"
 bitvec = "1.0.1"
