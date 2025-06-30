@@ -72,6 +72,40 @@ fn main() -> anyhow::Result<()> {
     constexpr Slice(const T *ptr, uintptr_t len) : ptr(ptr ? const_cast<T*>(ptr) : reinterpret_cast<T*>(sizeof(T))), len(len) {}"
             .to_owned(),
     );
+    config.export.body.insert(
+        "ConditionalRequirement".to_owned(),
+        r"
+    /**
+     * Constructs a new conditional requirement with the specified condition
+     * and requirement.
+     */
+    constexpr ConditionalRequirement(const ConditionId *condition, Requirement &&requirement) : condition(condition), requirement(std::forward<Requirement>(requirement)) {};
+    /**
+     * Constructs a new conditional requirement without a condition.
+     */
+    constexpr ConditionalRequirement(Requirement &&requirement) : condition(nullptr), requirement(std::forward<Requirement>(requirement)) {};
+        ".to_owned());
+    config.export.body.insert(
+        "Requirement".to_owned(),
+        r"
+    constexpr Requirement(VersionSetId id) : tag(Tag::Single), single({id}) {};
+    constexpr Requirement(VersionSetUnionId id) : tag(Tag::Union), union_({id}) {};
+
+    constexpr bool is_union() const { return tag == Tag::Union; }
+    constexpr bool is_single() const { return tag == Tag::Single; }
+        "
+        .to_owned(),
+    );
+
+    config.export.body.insert(
+        "Condition".to_owned(),
+        r"
+    constexpr Condition(VersionSetId id) : tag(Tag::Requirement), requirement({id}) {};
+    constexpr Condition(LogicalOperator op, ConditionId lhs, ConditionId rhs) : tag(Tag::Binary), binary({op, lhs, rhs}) {};
+
+    constexpr bool is_binary() const { return tag == Tag::Requirement; }
+    constexpr bool is_requirement() const { return tag == Tag::Binary; }
+        ".to_owned());
 
     cbindgen::Builder::new()
         .with_config(config.clone())

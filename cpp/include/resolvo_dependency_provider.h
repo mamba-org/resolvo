@@ -7,6 +7,9 @@
 
 namespace resolvo {
 using cbindgen_private::Candidates;
+using cbindgen_private::Condition;
+using cbindgen_private::ConditionalRequirement;
+using cbindgen_private::ConditionId;
 using cbindgen_private::Dependencies;
 using cbindgen_private::ExcludedSolvable;
 using cbindgen_private::NameId;
@@ -82,6 +85,11 @@ struct DependencyProvider {
     virtual Slice<VersionSetId> version_sets_in_union(VersionSetUnionId version_set_union_id) = 0;
 
     /**
+     * Returns the condition that the given condition id describes
+     */
+    virtual Condition resolve_condition(ConditionId condition) = 0;
+
+    /**
      * Obtains a list of solvables that should be considered when a package
      * with the given name is requested.
      */
@@ -138,14 +146,19 @@ extern "C" inline NameId bridge_version_set_name(void *data, VersionSetId versio
 extern "C" inline NameId bridge_solvable_name(void *data, SolvableId solvable_id) {
     return reinterpret_cast<DependencyProvider *>(data)->solvable_name(solvable_id);
 }
+extern "C" inline void bridge_resolve_condition(void *data, ConditionId solvable_id,
+                                                Condition *result) {
+    *result = reinterpret_cast<DependencyProvider *>(data)->resolve_condition(solvable_id);
+}
 
 // HACK(clang): For some reason, clang needs this to know that the return type is complete
 static_assert(sizeof(Slice<VersionSetId>));
 
-extern "C" inline Slice<VersionSetId> bridge_version_sets_in_union(
-    void *data, VersionSetUnionId version_set_union_id) {
-    return reinterpret_cast<DependencyProvider *>(data)->version_sets_in_union(
-        version_set_union_id);
+extern "C" inline void bridge_version_sets_in_union(void *data,
+                                                    VersionSetUnionId version_set_union_id,
+                                                    Slice<VersionSetId> *result) {
+    *result =
+        reinterpret_cast<DependencyProvider *>(data)->version_sets_in_union(version_set_union_id);
 }
 
 extern "C" inline void bridge_get_candidates(void *data, NameId package, Candidates *result) {

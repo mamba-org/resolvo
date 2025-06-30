@@ -1,0 +1,7 @@
+---
+source: tests/solver.rs
+expression: "solve_for_snapshot(provider, &requirements, &[])"
+---
+bar=1
+baz=1
+foo=1

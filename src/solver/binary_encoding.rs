@@ -6,8 +6,8 @@ use indexmap::IndexSet;
 /// that at most one of a set of variables can be true.
 pub(crate) struct AtMostOnceTracker<V> {
     /// The set of variables of which at most one can be assigned true.
-    variables: IndexSet<V>,
-    helpers: Vec<V>,
+    pub(crate) variables: IndexSet<V>,
+    pub(crate) helpers: Vec<V>,
 }
 
 impl<V> Default for AtMostOnceTracker<V> {
@@ -31,10 +31,10 @@ impl<V: Hash + Eq + Clone> AtMostOnceTracker<V> {
         variable: V,
         mut alloc_clause: impl FnMut(V, V, bool),
         mut alloc_var: impl FnMut() -> V,
-    ) {
+    ) -> bool {
         // If the variable is already tracked, we don't need to do anything.
         if self.variables.contains(&variable) {
-            return;
+            return false;
         }
 
         // If there are no variables yet, it means that this is the first variable that
@@ -42,7 +42,7 @@ impl<V: Hash + Eq + Clone> AtMostOnceTracker<V> {
         // need to add any clauses.
         if self.variables.is_empty() {
             self.variables.insert(variable.clone());
-            return;
+            return true;
         }
 
         // Allocate additional helper variables as needed and create clauses for the
@@ -69,6 +69,8 @@ impl<V: Hash + Eq + Clone> AtMostOnceTracker<V> {
                 ((var_idx >> bit_idx) & 1) == 1,
             );
         }
+
+        true
     }
 }
 

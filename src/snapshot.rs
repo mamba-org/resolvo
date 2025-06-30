@@ -15,9 +15,10 @@ use ahash::HashSet;
 use futures::FutureExt;
 
 use crate::{
-    Candidates, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner, Mapping,
-    NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId, VersionSetUnionId,
-    internal::arena::ArenaId,
+    Candidates, Condition, Dependencies, DependencyProvider, HintDependenciesAvailable, Interner,
+    Mapping, NameId, Requirement, SolvableId, SolverCache, StringId, VersionSetId,
+    VersionSetUnionId,
+    internal::{arena::ArenaId, id::ConditionId},
 };
 
 /// A single solvable in a [`DependencySnapshot`].
@@ -112,6 +113,13 @@ pub struct DependencySnapshot {
         serde(default, skip_serializing_if = "Mapping::is_empty")
     )]
     pub strings: Mapping<StringId, String>,
+
+    /// All the conditions
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Mapping::is_empty")
+    )]
+    pub conditions: Mapping<ConditionId, Condition>,
 }
 
 impl DependencySnapshot {
@@ -153,6 +161,7 @@ impl DependencySnapshot {
             VersionSet(VersionSetId),
             Package(NameId),
             String(StringId),
+            Condition(ConditionId),
         }
 
         let cache = SolverCache::new(provider);
@@ -163,6 +172,7 @@ impl DependencySnapshot {
             version_sets: Mapping::new(),
             packages: Mapping::new(),
             strings: Mapping::new(),
+            conditions: Mapping::new(),
         };
 
         let mut queue = names
@@ -228,8 +238,13 @@ impl DependencySnapshot {
                                 }
                             }
 
-                            for &requirement in deps.requirements.iter() {
-                                match requirement {
+                            for requirement in deps.requirements.iter() {
+                                if let Some(condition) = requirement.condition {
+                                    if seen.insert(Element::Condition(condition)) {
+                                        queue.push_back(Element::Condition(condition))
+                                    }
+                                }
+                                match requirement.requirement {
                                     Requirement::Single(version_set) => {
                                         if seen.insert(Element::VersionSet(version_set)) {
                                             queue.push_back(Element::VersionSet(version_set));
@@ -298,6 +313,24 @@ impl DependencySnapshot {
                     };
 
                     result.version_sets.insert(version_set_id, version_set);
+                }
+                Element::Condition(condition_id) => {
+                    let condition = cache.provider().resolve_condition(condition_id);
+                    match condition {
+                        Condition::Requirement(version_set) => {
+                            if seen.insert(Element::VersionSet(version_set)) {
+                                queue.push_back(Element::VersionSet(version_set))
+                            }
+                        }
+                        Condition::Binary(_, lhs, rhs) => {
+                            for cond in [lhs, rhs] {
+                                if seen.insert(Element::Condition(cond)) {
+                                    queue.push_back(Element::Condition(cond))
+                                }
+                            }
+                        }
+                    }
+                    result.conditions.insert(condition_id, condition);
                 }
             }
         }
@@ -455,6 +488,14 @@ impl Interner for SnapshotProvider<'_> {
             .expect("missing constraint")
             .iter()
             .copied()
+    }
+
+    fn resolve_condition(&self, condition: ConditionId) -> Condition {
+        self.snapshot
+            .conditions
+            .get(condition)
+            .expect("missing condition")
+            .clone()
     }
 }
 

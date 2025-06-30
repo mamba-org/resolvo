@@ -1,0 +1,5 @@
+---
+source: tests/solver.rs
+expression: "solve_for_snapshot(provider, &requirements, &[])"
+---
+menu=1

@@ -8,23 +8,6 @@ using cbindgen_private::Problem;
 using cbindgen_private::Requirement;
 
 /**
- * Specifies a requirement (dependency) of a single version set.
- */
-inline Requirement requirement_single(VersionSetId id) {
-    return cbindgen_private::resolvo_requirement_single(id);
-}
-
-/**
- * Specifies a requirement (dependency) of the union (logical OR) of multiple version sets.
- * A solvable belonging to any of the version sets contained in the union satisfies the
- * requirement. This variant is typically used for requirements that can be satisfied by two
- * or more version sets belonging to different packages.
- */
-inline Requirement requirement_union(VersionSetUnionId id) {
-    return cbindgen_private::resolvo_requirement_union(id);
-}
-
-/**
  * Called to solve a package problem.
  *
  * If the solve was successful, an empty string is returned and selected solvable ids will be
@@ -44,6 +27,7 @@ inline String solve(DependencyProvider &provider, const Problem &problem,
         private_api::bridge_version_set_name,
         private_api::bridge_solvable_name,
         private_api::bridge_version_sets_in_union,
+        private_api::bridge_resolve_condition,
         private_api::bridge_get_candidates,
         private_api::bridge_sort_candidates,
         private_api::bridge_filter_candidates,
