@@ -11,6 +11,7 @@ use crate::internal::id::VariableId;
 /// `< 0`: level of decision when the variable is set to false
 #[repr(transparent)]
 #[derive(Copy, Clone)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 struct DecisionAndLevel(i32);
 
 impl DecisionAndLevel {
@@ -38,7 +39,9 @@ impl DecisionAndLevel {
 
 /// A map of the assignments to solvables.
 #[derive(Default)]
+#[cfg_attr(kani, derive(kani::BoundedArbitrary))]
 pub(crate) struct DecisionMap {
+    #[cfg_attr(kani, bounded)]
     map: Vec<DecisionAndLevel>,
 }
 
@@ -60,7 +63,7 @@ impl DecisionMap {
         let variable_id = variable_id.to_usize();
         if variable_id >= self.map.len() {
             self.map
-                .resize_with(variable_id + 1, DecisionAndLevel::undecided);
+                .resize(variable_id + 1, DecisionAndLevel::undecided());
         }
 
         // SAFE: because we ensured that vec contains at least the correct number of
@@ -80,5 +83,51 @@ impl DecisionMap {
     #[inline(always)]
     pub fn value(&self, variable_id: VariableId) -> Option<bool> {
         self.map.get(variable_id.to_usize()).and_then(|d| d.value())
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn decision_map_reset_correct() {
+        let mut decision_map: DecisionMap = kani::bounded_any::<_, 8>();
+        let initial_length = decision_map.map.len();
+        let variable_id: VariableId = kani::any();
+
+        decision_map.reset(variable_id);
+
+        assert!(decision_map.value(variable_id).is_none());
+        assert_eq!(initial_length, decision_map.map.len());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    #[kani::solver(kissat)] // Faster for this check
+    fn decision_map_set_correct() {
+        let mut decision_map: DecisionMap = kani::bounded_any::<_, 8>();
+        let initial_length = decision_map.map.len();
+        let variable_id: VariableId = kani::any();
+        let value: bool = kani::any();
+        let level: u32 = kani::any();
+
+        // Since vector gets extended we want to limit its maximal
+        // length, otherwise we will face unwinding issues.
+        kani::assume(variable_id.to_usize() < 10);
+
+        kani::assume(level <= (i32::MAX as u32));
+
+        decision_map.set(variable_id, value, level);
+
+        assert!(
+            (decision_map.map.len() == variable_id.to_usize() + 1)
+                || (decision_map.map.len() == initial_length),
+        );
+        assert!(
+            (level != 0 && decision_map.value(variable_id) == Some(value))
+                != (level == 0 && decision_map.value(variable_id).is_none())
+        );
+        assert_eq!(decision_map.level(variable_id), level)
     }
 }

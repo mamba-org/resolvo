@@ -8,15 +8,15 @@ use std::{
 use elsa::FrozenMap;
 
 use crate::{
-    Interner, NameId, Requirement,
     internal::{
         arena::{Arena, ArenaId},
         id::{ClauseId, LearntClauseId, StringId, VersionSetId},
     },
     solver::{
-        VariableId, decision_map::DecisionMap, decision_tracker::DecisionTracker,
-        variable_map::VariableMap,
+        decision_map::DecisionMap, decision_tracker::DecisionTracker, variable_map::VariableMap,
+        VariableId,
     },
+    Interner, NameId, Requirement,
 };
 
 /// Represents a single clause in the SAT problem
@@ -821,5 +821,20 @@ mod test {
             std::mem::size_of::<Option<WatchedLiterals>>(),
             std::mem::size_of::<WatchedLiterals>()
         );
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    // TODO: Remove panic
+    #[kani::proof]
+    fn literal_from_usize_correct() {
+        let x: usize = kani::any();
+        // If we don't assume it, try_into will handle expectional situation by panicking
+        kani::assume(x < (u32::MAX as usize));
+        let y = Literal::from_usize(x);
+        assert_eq!(y.to_usize(), x);
     }
 }
